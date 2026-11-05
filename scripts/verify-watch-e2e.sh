@@ -216,6 +216,7 @@ keep_setting_original=
 cleanup() {
   trap - EXIT
   kill_children
+  archive_stage2_log
   clip_restore
   [ -n "$log_pid" ] && kill "$log_pid" 2>/dev/null
   if [ -s "$out/chrome-handles" ]; then
@@ -371,22 +372,34 @@ if { [ "$build" = 1 ] || [ ! -x "$sim" ]; } && { stage_on 1 || stage_on 3; }; th
 
 status_json() { "$hex" status --json 2>/dev/null; }
 
+# Wristper Test is this project's own test app, so each run stops it and gives it a
+# NEW relay room: its room, secret, pairings, and delivered-id table (all inside
+# "Wristper Test", never the installed app's folder) go to the Trash and the
+# service makes new ones at launch. No earlier run's room, pairing, or recording
+# id can be reused or can reach this run.
+fresh_room() {
+  local f old_room=
+  case "$TEST_DATA" in */"Wristper Test") ;; *) die "refusing to reset a data folder that is not Wristper Test: $TEST_DATA" 2 ;; esac
+  [ "$TEST_DATA" != "$OLD_DATA" ] || die "refusing to reset the installed app's data folder" 2
+  [ ! -s "$TEST_DATA/relay-room" ] || old_room=$(cat "$TEST_DATA/relay-room")
+  printf %s "$old_room" > "$tmp/old-room"
+  for f in relay-room relay-secret paired-devices.json delivered-ids.json; do
+    [ -e "$TEST_DATA/$f" ] && /usr/bin/trash "$TEST_DATA/$f" >/dev/null 2>&1
+  done
+}
+
 start_app() {
-  if [ "$build" = 1 ] && status_json >/dev/null; then
-    log "restarting Wristper Test so the new build runs (hex quit)"
-    "$hex" quit >/dev/null 2>&1
-    for _ in $(seq 1 30); do status_json >/dev/null || break; sleep 1; done
-  fi
-  if status_json >/dev/null; then
-    log "Wristper Test is already running"
-  else
-    log "launching Wristper Test in the background"
-    open -g "$app" || die "could not open $app"
-  fi
+  stop_wristper_test
+  for _ in $(seq 1 30); do status_json >/dev/null || break; sleep 1; done
+  fresh_room
+  log "launching Wristper Test in the background (new relay room)"
+  open -g "$app" || die "could not open $app"
   for _ in $(seq 1 60); do status_json >/dev/null && break; sleep 1; done
   status_json > "$out/status-start.json" || die "Wristper Test did not answer hex status within 60 s"
+  for _ in $(seq 1 30); do [ -s "$TEST_DATA/relay-room" ] && break; sleep 1; done
   [ -s "$TEST_DATA/relay-room" ] || die "no relay room in $TEST_DATA; the watch service did not start (see $TEST_DATA/logs/process.log)"
-  log "relay room: $(cut -c1-6 "$TEST_DATA/relay-room")… (Wristper Test's own)"
+  [ "$(cat "$TEST_DATA/relay-room")" != "$(cat "$tmp/old-room")" ] || die "the relay room is the same as the previous run's; it was not renewed"
+  log "relay room: new for this run (differs from the previous one)"
 }
 
 # The watch sends language "auto"; the Mac transcribes with the selected
@@ -637,6 +650,9 @@ record() {
   log "stage $1 $2 $3: $4 (match ${5}%, state $6, ${7} ms)"
 }
 
+# Pairing codes are single use and expire in 2 minutes, but they are still kept out of the saved logs.
+redact_pairing() { sed -E 's/"code":"[0-9]{6}"/"code":"******"/; s/pair-code [0-9]{6}/pair-code ******/'; }
+
 judge() { # lang-or-kind readback -> percent
   "$sim" match --expected "$(text_for "$1")" --actual "$2" | jq -r .percent
 }
@@ -647,22 +663,26 @@ want() { [ -z "$only" ] || [[ $1 =~ $only ]]; }
 
 sim_paired=0
 pair_sim() { # stage
-  export WATCH_SIM_STATE="$out/watch-sim-state"
+  # The watch's pairing state (device id, token, private key) and the pairing code live only in $tmp.
+  mkdir -m 700 -p "$tmp/watch-sim-state"
+  export WATCH_SIM_STATE="$tmp/watch-sim-state"
+  local raw="$tmp/stage$1-pair.jsonl"
   log "stage $1: pairing watch-sim through the production relay"
-  "$sim" pair --timeout 150 > "$out/stage$1-pair.jsonl" 2>&1 &
+  "$sim" pair --timeout 150 > "$raw" 2>&1 &
   local pid=$! code=
   for _ in $(seq 1 30); do
-    code=$(jq -r 'select(.event=="code") | .code' "$out/stage$1-pair.jsonl" 2>/dev/null | head -1)
+    code=$(jq -r 'select(.event=="code") | .code' "$raw" 2>/dev/null | head -1)
     [ -n "$code" ] && break
     sleep 0.5
   done
-  [ -n "$code" ] || { cat "$out/stage$1-pair.jsonl" >&2; die "watch-sim got no pairing code"; }
-  log "watch-sim code $code; hex watch pair $code"
+  [ -n "$code" ] || { redact_pairing < "$raw" | tee "$out/stage$1-pair.jsonl" >&2; die "watch-sim got no pairing code"; }
+  log "watch-sim got a pairing code; hex watch pair ******"
   "$hex" watch pair "$code" 2>&1 | tee -a "$out/run.log"
   wait "$pid"
-  jq -e 'select(.event=="paired") | .ok' "$out/stage$1-pair.jsonl" >/dev/null \
+  redact_pairing < "$raw" > "$out/stage$1-pair.jsonl"
+  jq -e 'select(.event=="paired") | .ok' "$raw" >/dev/null \
     || { cat "$out/stage$1-pair.jsonl" >&2; record "$1" pairing - FAIL 0 unpaired 0 "" "null"; return 1; }
-  record "$1" pairing - PASS 100 paired "$(jq -r 'select(.event=="paired") | .ms' "$out/stage$1-pair.jsonl")" "" \
+  record "$1" pairing - PASS 100 paired "$(jq -r 'select(.event=="paired") | .ms' "$raw")" "" \
     "$(jq -c 'select(.event=="paired")' "$out/stage$1-pair.jsonl")"
   sim_paired=1
 }
@@ -905,7 +925,7 @@ sim_device() {
 wait_log() { # pattern timeout-seconds start-line -> matching line
   local i m
   for i in $(seq 1 $(( $2 * 2 ))); do
-    m=$(tail -n +"$3" "$out/stage2-watch.log" | grep -E "$1"; true)
+    m=$(tail -n +"$3" "$tmp/stage2-watch.log" | grep -E "$1"; true)
     if [ -n "$m" ]; then echo "${m%%$'\n'*}"; return 0; fi
     sleep 0.5
   done
@@ -935,19 +955,19 @@ stage2() {
   xcrun simctl install "$sim_udid" "$watch_app" || die "simctl install failed"
   xcrun simctl privacy "$sim_udid" grant microphone "$WATCH_BUNDLE" >/dev/null 2>&1
 
-  : > "$out/stage2-watch.log"
+  : > "$tmp/stage2-watch.log"
   xcrun simctl spawn "$sim_udid" log stream --style compact \
-    --predicate 'subsystem == "dev.wristper.probe"' > "$out/stage2-watch.log" 2>&1 &
+    --predicate 'subsystem == "dev.wristper.probe"' > "$tmp/stage2-watch.log" 2>&1 &
   log_pid=$!
   sleep 2
 
   local start line code
-  start=$(( $(wc -l < "$out/stage2-watch.log") + 1 ))
+  start=$(( $(wc -l < "$tmp/stage2-watch.log") + 1 ))
   xcrun simctl launch --terminate-running-process "$sim_udid" "$WATCH_BUNDLE" -e2ePair >/dev/null \
     || die "simctl launch failed"
   line=$(wait_log 'E2E pair-code [0-9]{6}' 30 "$start") || { record 2 pairing - FAIL 0 no-code 0 "" null; return; }
   code=$(grep -oE '[0-9]{6}$' <<<"$line")
-  log "watch app code $code; hex watch pair $code"
+  log "watch app showed a pairing code; hex watch pair ******"
   local t0; t0=$(now_ms)
   "$hex" watch pair "$code" 2>&1 | tee -a "$out/run.log"
   line=$(wait_log 'E2E (paired|pair-failed)' 150 "$start")
@@ -969,7 +989,7 @@ stage2() {
       sleep 1
       focus_target "$target" "$handle"
       enter_arg=; [ "$target" = terminal ] && enter_arg=-e2eEnter
-      start=$(( $(wc -l < "$out/stage2-watch.log") + 1 ))
+      start=$(( $(wc -l < "$tmp/stage2-watch.log") + 1 ))
       started=$(now_ms)
       xcrun simctl launch --terminate-running-process "$sim_udid" "$WATCH_BUNDLE" \
         -e2eRecord -fixtureAudio "$container/tmp/fixture-$lang.m4a" $enter_arg >/dev/null
@@ -978,15 +998,17 @@ stage2() {
       sleep 1
       readback=$(read_target "$target" "$handle")
       close_target "$target" "$handle"
-      detail=$(tail -n +"$start" "$out/stage2-watch.log" | grep -E 'E2E (fixture|result|enter)' | jq -R . | jq -sc '{log:.}')
+      detail=$(tail -n +"$start" "$tmp/stage2-watch.log" | grep -E 'E2E (fixture|result|enter)' | jq -R . | jq -sc '{log:.}')
       percent=$(judge "$lang" "$readback")
       result=FAIL; [ "${percent:-0}" -ge "$(pass_for "$lang")" ] && result=PASS
       record 2 "$target" "$lang" "$result" "$percent" \
-        "$(tail -n +"$start" "$out/stage2-watch.log" | grep -m1 -oE 'phase=[a-z]+' || echo no-result)" "$ms" \
+        "$(tail -n +"$start" "$tmp/stage2-watch.log" | grep -m1 -oE 'phase=[a-z]+' || echo no-result)" "$ms" \
         "$(tr '\n' ' ' <<<"$readback" | tail -c 200)" "$detail"
     done
   done
 }
+
+archive_stage2_log() { [ -s "$tmp/stage2-watch.log" ] && redact_pairing < "$tmp/stage2-watch.log" > "$out/stage2-watch.log"; return 0; }
 
 # --- stage 4: the B2 live tests ---------------------------------------------
 
@@ -1019,7 +1041,7 @@ select_model "${langs%%,*}"
 wait_listener
 make_fixtures
 stage_on 1 && stage1
-stage_on 2 && stage2
+stage_on 2 && { stage2; archive_stage2_log; }
 stage_on 3 && stage3
 stage_on 4 && stage4
 
