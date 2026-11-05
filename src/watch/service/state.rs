@@ -14,6 +14,7 @@ use crate::watch::Timestamp;
 use crate::watch::delivered::DeliveredIds;
 use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
 use crate::watch::e2ee::NonceCache;
+use crate::watch::field::Withheld;
 use crate::watch::frame::{Inbound, claim_frame};
 use crate::watch::pairing::PairedDevices;
 use crate::watch::pairing::requests::PairingRequests;
@@ -154,6 +155,7 @@ impl Core {
         match message {
             Message::Relay(event) => self.on_relay(event, now),
             Message::Delivered { id, report } => self.on_delivered(&id, report, now),
+            Message::Confirmed { id, verified } => self.on_confirmed(&id, verified, now),
             Message::Claim {
                 code,
                 reply,
@@ -377,13 +379,26 @@ impl Core {
         let chinese = record.language.starts_with("zh");
         record.paste = PasteMarks::default();
         match report.outcome {
-            DeliveryOutcome::Unverified => {
-                record.state = State::Unverified;
-                record.paste = PasteMarks::sent(Verification::None, false);
+            DeliveryOutcome::Sent(verification) => {
+                record.state = if verification == Verification::Terminal {
+                    State::Pasted
+                } else {
+                    State::Unverified
+                };
+                record.paste = PasteMarks::sent(verification, false);
             }
             DeliveryOutcome::Copied => {
                 record.state = State::Copied;
                 record.paste = PasteMarks::sent(Verification::None, false);
+            }
+            DeliveryOutcome::Withheld(withheld) => {
+                record.state = match withheld {
+                    Withheld::TargetChanged | Withheld::NoSnapshot => State::TargetChanged,
+                    Withheld::NotEditable => State::NotEditable,
+                    Withheld::SecureInput | Withheld::PasswordField => State::Sensitive,
+                };
+                record.paste_reason = withheld.paste_reason().map(str::to_owned);
+                record.reason = withheld.reason(chinese).map(str::to_owned);
             }
             DeliveryOutcome::Suspect(reason) => {
                 record.state = State::Suspect;
@@ -421,6 +436,24 @@ impl Core {
                 Waiting::Focus { .. } => unreachable!("focus waiters were kept"),
             }
         }
+    }
+
+    /// The read-back's verdict (`recordConfirmation`): a confirmed paste
+    /// still `unverified` and not yet entered becomes `pasted` with
+    /// `read-back`; anything else keeps its state.
+    fn on_confirmed(&mut self, id: &str, verified: bool, now: Now) {
+        let Some(live) = self.records.get_mut(id) else {
+            return;
+        };
+        let record = &mut live.record;
+        if !verified || record.state != State::Unverified || record.paste.entered {
+            return;
+        }
+        record.state = State::Pasted;
+        record.paste = PasteMarks::sent(Verification::ReadBack, false);
+        record.updated_at = Timestamp::string(now.wall);
+        live.touched = now.at;
+        self.remember_handled(id, now);
     }
 
     /// The watch `id` belongs to: the live record's, else the dedupe

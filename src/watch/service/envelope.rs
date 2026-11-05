@@ -9,8 +9,9 @@ use serde_json::json;
 
 use super::pending::{AudioJob, Reply, Seal, Waiting};
 use super::state::{Core, LiveRecord, Now, TRANSCRIPT_WAIT};
-use crate::watch::delivery::WatchDelivery;
+use crate::watch::delivery::{DeliveryEvent, Job, WatchDelivery};
 use crate::watch::e2ee::{self, Aad, QueryShape, SharedKey};
+use crate::watch::field::Expectation;
 use crate::watch::frame::{MAX_AUDIO_BYTES, RequestHead};
 use crate::watch::pairing::tokens_equal;
 use crate::watch::recording::{
@@ -357,9 +358,26 @@ impl Core {
         live.touched = now.at;
         let inbox = self.inbox.clone();
         let id = job.id.clone();
-        let delivery = WatchDelivery::new(&job.id, move |report| {
-            let _ = inbox.send(Message::Delivered { id, report });
-        });
+        let delivery = WatchDelivery::new(
+            Job {
+                id: job.id.clone(),
+                language: job.language.clone(),
+                expectation: Expectation::Current,
+            },
+            move |event| {
+                let message = match event {
+                    DeliveryEvent::Report(report) => Message::Delivered {
+                        id: id.clone(),
+                        report,
+                    },
+                    DeliveryEvent::Confirmed { verified } => Message::Confirmed {
+                        id: id.clone(),
+                        verified,
+                    },
+                };
+                let _ = inbox.send(message);
+            },
+        );
         if let Err(why) = self.dictation.transcribe(samples, delivery) {
             tracing::warn!(
                 id = job.id,

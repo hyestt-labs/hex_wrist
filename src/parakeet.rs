@@ -1108,7 +1108,7 @@ fn watch_delivery_report(
     } else if details.copied {
         DeliveryOutcome::Copied
     } else {
-        DeliveryOutcome::Unverified
+        DeliveryOutcome::Sent(crate::watch::recording::Verification::None)
     };
     DeliveryReport {
         outcome,

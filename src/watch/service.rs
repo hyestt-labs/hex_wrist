@@ -197,6 +197,11 @@ pub(crate) enum Message {
         id: String,
         report: DeliveryReport,
     },
+    /// The read-back after a paste of `id` found the text, or did not.
+    Confirmed {
+        id: String,
+        verified: bool,
+    },
 }
 
 impl WatchService {
