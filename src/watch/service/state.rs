@@ -288,7 +288,7 @@ impl Core {
                     id, key, op, reply, ..
                 } => {
                     tracing::warn!(id, "the watch-ax thread did not answer a key request");
-                    let (status, body) = self.key_timed_out(key);
+                    let (status, body) = self.key_timed_out(&id, key, op, now);
                     self.answer(reply, status, body);
                     self.end_key(&id, op, true, now);
                 }

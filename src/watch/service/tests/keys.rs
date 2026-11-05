@@ -409,3 +409,51 @@ fn a_late_answer_to_a_timed_out_enter_cannot_free_the_retrys_claim() {
     let status = h.status_of(&watch, ID);
     assert_eq!(status["entered"], true);
 }
+
+/// The first Enter's Return was already pressed when the service gave up
+/// waiting for its answer. The timeout must not read that as "never sent":
+/// a retry would press Return again.
+#[test]
+fn an_enter_that_was_sent_but_answered_late_is_never_pressed_again() {
+    let mut h = harness("enter-sent-late");
+    let watch = h.pair("watch-1");
+    read_back_paste(&mut h, &watch);
+    h.core.desktop = Desktop::manual(h.screen.clone());
+    h.frames.lock().unwrap().clear();
+    assert!(h.query(&watch, "/enter", &[("id", ID)]).is_none());
+    // The watch-ax thread presses Return; its answer waits in the inbox.
+    h.core.desktop.run_pending();
+    assert_eq!(h.screen.keys(), ["return"]);
+    h.advance(KEY_WAIT + Duration::from_secs(1));
+    h.core.tick(h.now);
+    // A retry and a third request, with the late answer arriving between.
+    let retry = h.query(&watch, "/enter", &[("id", ID)]);
+    h.core.desktop.run_pending();
+    h.pump();
+    let third = h.query(&watch, "/enter", &[("id", ID)]);
+    h.core.desktop.run_pending();
+    h.pump();
+    drop((retry, third));
+    assert_eq!(h.screen.keys(), ["return"], "Return went in once");
+    assert_eq!(h.status_of(&watch, ID)["entered"], true);
+}
+
+/// Same for Command-Z: sent, then timed out, must read as undone.
+#[test]
+fn an_undo_that_was_sent_but_answered_late_is_never_pressed_again() {
+    let mut h = harness("undo-sent-late");
+    let watch = h.pair("watch-1");
+    read_back_paste(&mut h, &watch);
+    h.core.desktop = Desktop::manual(h.screen.clone());
+    h.frames.lock().unwrap().clear();
+    assert!(h.query(&watch, "/undo", &[("id", ID)]).is_none());
+    h.core.desktop.run_pending();
+    h.advance(KEY_WAIT + Duration::from_secs(1));
+    h.core.tick(h.now);
+    let retry = h.query(&watch, "/undo", &[("id", ID)]);
+    h.core.desktop.run_pending();
+    h.pump();
+    drop(retry);
+    assert_eq!(h.screen.keys(), ["undo"], "Command-Z went in once");
+    assert_eq!(h.status_of(&watch, ID)["state"], "undone");
+}

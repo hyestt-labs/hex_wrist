@@ -254,3 +254,35 @@ fn a_slow_focus_read_does_not_press_after_the_deadline() {
     ));
     assert!(screen.keys().is_empty());
 }
+
+#[test]
+fn a_pressed_key_marks_its_ticket_sent_and_it_can_no_longer_be_cancelled() {
+    let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
+    let desktop = desktop(&screen);
+    let ticket = Ticket::new(1);
+    let (done, outcome) = mpsc::channel();
+    let valid_until = Instant::now() + Duration::from_secs(5);
+    desktop.press(
+        Key::Enter,
+        text_area(7),
+        valid_until,
+        ticket.clone(),
+        move |r| {
+            done.send(r).unwrap();
+        },
+    );
+    assert_eq!(outcome.recv().unwrap(), KeyOutcome::Pressed);
+    assert!(ticket.was_sent());
+    assert!(
+        !ticket.cancel(),
+        "the caller learns the key already went out"
+    );
+}
+
+#[test]
+fn a_cancelled_ticket_is_never_sent() {
+    let ticket = Ticket::new(1);
+    assert!(ticket.cancel());
+    assert!(!ticket.claim());
+    assert!(!ticket.was_sent());
+}

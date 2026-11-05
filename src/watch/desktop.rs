@@ -84,22 +84,28 @@ impl Drop for Held {
     }
 }
 
-/// One key request's claim on the keyboard. The service cancels it when it
-/// gives up on the request (timeout, a recording that started over), and the
-/// `watch-ax` thread checks it inside the lock, so a key that waited for a
-/// paste's read-back is not pressed for a request that no longer stands.
+/// One key request's claim on the keyboard. It is live until one side
+/// settles it, atomically: the `watch-ax` thread `claim`s it right before
+/// the key event (it was sent from then on), or the service `cancel`s it
+/// while no key has gone out (timeout, a recording that started over,
+/// shutdown). Exactly one wins, so a timeout can tell "never pressed" from
+/// "pressed, answer not in yet", and a cancelled key is never pressed.
 #[derive(Clone, Debug)]
 pub(crate) struct Ticket {
     /// Which operation this is, so an answer is matched to its own request.
     op: u64,
-    live: Arc<std::sync::atomic::AtomicBool>,
+    state: Arc<std::sync::atomic::AtomicU8>,
 }
+
+const LIVE: u8 = 0;
+const SENT: u8 = 1;
+const CANCELLED: u8 = 2;
 
 impl Ticket {
     pub(crate) fn new(op: u64) -> Self {
         Self {
             op,
-            live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            state: Arc::new(std::sync::atomic::AtomicU8::new(LIVE)),
         }
     }
 
@@ -107,12 +113,35 @@ impl Ticket {
         self.op
     }
 
-    pub(crate) fn cancel(&self) {
-        self.live.store(false, std::sync::atomic::Ordering::Release);
+    /// Stops a key that has not been pressed. `false` when it was already
+    /// pressed (or cancelled before): the caller must treat the key as sent.
+    pub(crate) fn cancel(&self) -> bool {
+        use std::sync::atomic::Ordering::AcqRel;
+        let result = self.state.compare_exchange(
+            LIVE,
+            CANCELLED,
+            AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        result.is_ok() || result == Err(CANCELLED)
+    }
+
+    /// The key event is about to go out; `false` when the request was
+    /// cancelled and nothing may be pressed.
+    fn claim(&self) -> bool {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        self.state
+            .compare_exchange(LIVE, SENT, AcqRel, Acquire)
+            .is_ok()
+    }
+
+    /// The key went out (or is going out right now).
+    pub(crate) fn was_sent(&self) -> bool {
+        self.state.load(std::sync::atomic::Ordering::Acquire) == SENT
     }
 
     pub(crate) fn is_live(&self) -> bool {
-        self.live.load(std::sync::atomic::Ordering::Acquire)
+        self.state.load(std::sync::atomic::Ordering::Acquire) == LIVE
     }
 }
 
@@ -356,6 +385,11 @@ fn press(
         if !live() {
             return KeyOutcome::Failed("the request ended before the key was pressed".to_owned());
         }
+    }
+    // The last word on whether this key goes out: after it the service
+    // knows the key was sent, before it the service can still cancel.
+    if !ticket.claim() {
+        return KeyOutcome::Failed("the request ended before the key was pressed".to_owned());
     }
     let sent = match key {
         Key::Enter => screen.press_return(),

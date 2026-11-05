@@ -195,8 +195,25 @@ impl Core {
         }
     }
 
-    /// The reply at the deadline when the `watch-ax` thread never answered.
-    pub(super) fn key_timed_out(&self, key: Key) -> (u16, Value) {
+    /// The reply at the deadline when the `watch-ax` thread has not answered.
+    /// If its key already went out (it claimed the ticket) the key counts as
+    /// pressed even though the result is unconfirmed: the record says so, so
+    /// no retry presses it again. Only a key that never went out is
+    /// cancelled and reads as failed.
+    pub(super) fn key_timed_out(&mut self, id: &str, key: Key, op: u64, now: Now) -> (u16, Value) {
+        let sent = self
+            .records
+            .get(id)
+            .and_then(|live| live.in_flight.as_ref())
+            .filter(|ticket| ticket.op() == op)
+            .is_some_and(|ticket| !ticket.cancel());
+        if sent {
+            tracing::warn!(
+                id,
+                "a key was sent but its answer is late; counting it as pressed"
+            );
+            return self.keyed(id, key, KeyOutcome::Pressed, now);
+        }
         match key {
             Key::Enter => {
                 let failed = EnterReply::Refused(EnterRefusal::Failed);
