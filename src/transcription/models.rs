@@ -1400,6 +1400,23 @@ mod tests {
 
     static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
+    const EXPECTED_ROUTING: &str = "\
+        whisper_large_v3_turbo:Recommended qwen3_asr06_b:Fastest -> whisper_large_v3_turbo <= auto\n\
+        parakeet_unified_en:Recommended cohere_transcribe:MostAccurate whisper_large_v3_turbo:Vocabulary -> parakeet_unified_en <= en\n\
+        qwen3_asr06_b:Recommended sense_voice_small:Fastest whisper_large_v3_turbo:Vocabulary -> qwen3_asr06_b <= zh\n\
+        qwen3_asr06_b:Recommended whisper_large_v3_turbo:Vocabulary -> qwen3_asr06_b <= yue ko hi id th\n\
+        whisper_large_v3_turbo:Recommended sense_voice_small:Fastest -> whisper_large_v3_turbo <= ja\n\
+        parakeet_v3:Recommended whisper_large_v3_turbo:Vocabulary -> parakeet_v3 <= es fr de pt it uk nl pl cs ro hu bg hr et lv lt sk sl\n\
+        whisper_large_v3_turbo:Recommended cohere_transcribe:MostAccurate -> whisper_large_v3_turbo <= ar\n\
+        whisper_large_v3_turbo:Recommended -> whisper_large_v3_turbo <= bn tr ms fa mk fil\n\
+        qwen3_asr06_b:Recommended cohere_transcribe:MostAccurate whisper_large_v3_turbo:Vocabulary -> qwen3_asr06_b <= vi\n\
+        gigaam_v3:Recommended whisper_large_v3_turbo:Vocabulary -> gigaam_v3 <= ru\n\
+        whisper_large_v3_turbo:Recommended parakeet_v3:Fastest -> whisper_large_v3_turbo <= sv da fi\n\
+        nb_whisper_medium:Recommended whisper_large_v3_turbo:Vocabulary -> nb_whisper_medium <= no\n\
+        cohere_transcribe:Recommended whisper_large_v3_turbo:Vocabulary -> cohere_transcribe <= el\n\
+        ivrit_whisper_large_v3_turbo:Recommended whisper_large_v3_turbo:Vocabulary -> ivrit_whisper_large_v3_turbo <= he\n\
+        parakeet_v3:Recommended -> parakeet_v3 <= mt";
+
     /// A five-byte artifact whose checksum is `sha256("hello")`.
     fn fixture_model() -> ModelDefinition {
         const FIXTURE_ARTIFACT: GgufArtifact = GgufArtifact {
@@ -1558,6 +1575,76 @@ mod tests {
         let mandarin = choices_for_runtime("zh");
         assert_eq!(mandarin[0].model.id, TranscriptionModelId::Qwen3Asr06B);
         assert_eq!(mandarin[1].model.id, TranscriptionModelId::SenseVoiceSmall);
+    }
+
+    /// Unit F adds models without touching what any language recommends:
+    /// each line is one routing (every choice with its badge, then the
+    /// starting selection) and the languages that share it.
+    #[test]
+    fn recommendations_stay_as_before_unit_f() {
+        let mut groups: Vec<(String, Vec<&str>)> = Vec::new();
+        for (language, _) in LANGUAGES {
+            let choices = choices_for_runtime(language)
+                .iter()
+                .map(|choice| format!("{}:{:?}", choice.model.id.as_str(), choice.recommendation))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let routing = format!(
+                "{choices} -> {}",
+                recommended_selection(language).model.as_str()
+            );
+            match groups.iter_mut().find(|(known, _)| *known == routing) {
+                Some((_, languages)) => languages.push(language),
+                None => groups.push((routing, vec![language])),
+            }
+        }
+        let actual = groups
+            .iter()
+            .map(|(routing, languages)| format!("{routing} <= {}", languages.join(" ")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(actual, EXPECTED_ROUTING);
+        assert_eq!(
+            TranscriptionModelId::default(),
+            TranscriptionModelId::ParakeetUnifiedEnglish
+        );
+        assert_eq!(TranscriptionSelection::default().language, "en");
+        assert_eq!(
+            recommended_selection("not-a-language").model,
+            TranscriptionModelId::default()
+        );
+    }
+
+    /// The catalog's order picks the fallback model, so the models that
+    /// exist today keep their relative order whatever is added.
+    #[test]
+    fn catalog_models_keep_their_order_before_unit_f() {
+        use TranscriptionModelId::*;
+        let before = [
+            ParakeetUnifiedEnglish,
+            ParakeetV2,
+            ParakeetV3,
+            WhisperLargeV3Turbo,
+            Qwen3Asr06B,
+            QwenCleoAsr17B,
+            IvritWhisperLargeV3Turbo,
+            SenseVoiceSmall,
+            CohereTranscribe,
+            UnderdogBark3Pro,
+            UnderdogBark3Clean,
+            ParakeetUltra,
+            Nemotron35Asr,
+            GigaAmV3,
+            NbWhisperMedium,
+            GraniteSpeech5,
+            AppleSpeech,
+        ];
+        let now: Vec<_> = MODELS
+            .iter()
+            .map(|model| model.id)
+            .filter(|id| before.contains(id))
+            .collect();
+        assert_eq!(now, before);
     }
 
     #[test]
