@@ -231,7 +231,9 @@ reap_all() { # every registered process group
 act_trash_path() {
   local p=$1 real
   [ -e "$p" ] || [ -L "$p" ] || return 0
-  real=$(real_path "$p")
+  # A link is judged by where the link itself sits (Trash moves the link, never its target); anything
+  # else, and any path that goes THROUGH a link, by its real location.
+  if [ -L "$p" ]; then real="$(real_path "$(dirname -- "$p")")/$(basename -- "$p")"; else real=$(real_path "$p"); fi
   case "$real" in
     "$tmp_real"|"$tmp_real"/*) /usr/bin/trash "$p" >/dev/null 2>&1 ;;
     *) refuse path "$p" "its real path $real is outside the temp root $tmp_real"; return 99 ;;
@@ -621,7 +623,9 @@ teardown() {
   if [ "$CLIP_STATE" = failed ] || [ "$CLIP_STATE" = saved ]; then
     for entry in "$tmp"/* "$tmp"/.[!.]*; do
       [ -e "$entry" ] || continue
-      [ "$entry" = "$tmp/clipboard" ] && continue
+      # The backup stays. The registry and the row marker stay too: the gate still needs them to run, and
+      # they hold no secret.
+      case "$entry" in "$tmp/clipboard"|"$tmp/registry.tsv"|"$tmp/registry.new"|"$tmp/row-refused") continue ;; esac
       trash_own "$entry"
     done
     log "YOUR CLIPBOARD WAS NOT PUT BACK. The backup is kept at $tmp/clipboard. Restore it with: \"$pbtool\" restore \"$tmp/clipboard\""
@@ -828,6 +832,7 @@ start_app() {
     need "Wristper Test is already running (pid $(wt_pids | tr '\n' ' ')). This script only stops and resets a Wristper Test that it started itself, so it refuses. Quit it yourself (\"$hex\" quit), then run again. Nothing was stopped or reset."
     print_blocked
   fi
+  reg_add ran "Wristper Test" not-running
   launch_wristper_test
   status_json > "$out/status-start.json"
 }
@@ -1629,10 +1634,13 @@ selftest_main() {
   owned path /etc/hosts act_trash_path /etc/hosts
   st_check "Trash of a path that is not registered is refused" row_refused
   st_reset
-  ln -s /etc "$tmp/link-out"; reg_add path "$tmp/link-out"
-  trash_own "$tmp/link-out"
-  st_check "a registered symlink pointing outside the temp root is refused" row_refused
-  st_check "…and /etc is still there" test -d /etc
+  ln -s /etc "$tmp/dirlink"
+  trash_own "$tmp/dirlink/hosts"
+  st_check "a path that goes through a link out of the temp root is refused" row_refused
+  st_check "…and /etc/hosts is still there" test -f /etc/hosts
+  st_reset
+  trash_own "$tmp/dirlink"
+  st_check "a link inside the temp root is Trashed as a link (never its target)" bash -c "[ ! -L '$tmp/dirlink' ] && [ -f /etc/hosts ] && [ ! -s '$tmp/row-refused' ]"
   : > "$tmp/victim"; reg_add path "$tmp/victim"
   st_reset
   trash_own "$tmp/victim"
@@ -1695,7 +1703,21 @@ selftest_main() {
     echo "  (skipped: $real_sim is not built; run the script once without --skip-build)"
   fi
 
+  echo "[7] the clipboard cannot be put back: its backup stays, the other secrets go, the gate refuses nothing"
+  mkdir -p "$tmp/clipboard"; echo '{"items":[]}' > "$tmp/clipboard/manifest.json"
+  mkdir -p "$tmp/watch-sim-state"; echo "private key" > "$tmp/watch-sim-state/watch-state.json"
+  printf '#!/bin/sh\nexit 1\n' > "$tmp/failing-pbtool"; chmod +x "$tmp/failing-pbtool"
+  pbtool="$tmp/failing-pbtool"; CLIP_STATE=saved
+  : > "$out/refusals.tsv"
   teardown
+  st_check "the restore is reported as failed" test "$CLIP_STATE" = failed
+  st_check "the clipboard backup is still on disk" test -f "$tmp/clipboard/manifest.json"
+  st_check "the pairing keys were moved to the Trash" bash -c "[ ! -e '$tmp/watch-sim-state' ]"
+  st_check "the cleanup was not refused by the gate" bash -c "[ ! -s '$out/refusals.tsv' ]"
+  # Leave nothing behind: the kept backup is part of this test, so Trash the folder now.
+  trash_own "$tmp"
+  st_check "(test cleanup) the temp folder is gone" bash -c "[ ! -e '$tmp' ]"
+
   print_table
   echo
   echo "selftest: $ST_PASS passed, $ST_FAIL failed"
