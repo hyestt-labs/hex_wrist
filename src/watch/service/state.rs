@@ -214,6 +214,13 @@ impl Core {
 
     pub(crate) fn shutdown(mut self) {
         self.hide_capsule();
+        // A key still queued or waiting for the keyboard lock must not go
+        // out once nobody can hear its answer.
+        for live in self.records.values() {
+            if let Some(ticket) = &live.in_flight {
+                ticket.cancel();
+            }
+        }
         for waiting in self.waiting {
             match waiting {
                 Waiting::Transcript { reply, .. }

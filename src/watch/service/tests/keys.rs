@@ -457,3 +457,18 @@ fn an_undo_that_was_sent_but_answered_late_is_never_pressed_again() {
     assert_eq!(h.screen.keys(), ["undo"], "Command-Z went in once");
     assert_eq!(h.status_of(&watch, ID)["state"], "undone");
 }
+
+/// Stopping the service cancels keys still queued or waiting for the
+/// keyboard lock: they must not be pressed afterwards.
+#[test]
+fn a_queued_key_is_not_pressed_after_the_service_stops() {
+    let mut h = harness("enter-shutdown");
+    let watch = h.pair("watch-1");
+    read_back_paste(&mut h, &watch);
+    h.core.desktop = Desktop::manual(h.screen.clone());
+    assert!(h.query(&watch, "/enter", &[("id", ID)]).is_none());
+    let desktop = h.core.desktop.clone();
+    h.core.shutdown();
+    desktop.run_pending();
+    assert!(h.screen.keys().is_empty(), "no Return after shutdown");
+}
