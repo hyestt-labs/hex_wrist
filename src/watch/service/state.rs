@@ -212,15 +212,19 @@ impl Core {
         Flow::Continue
     }
 
-    pub(crate) fn shutdown(mut self) {
-        self.hide_capsule();
-        // A key still queued or waiting for the keyboard lock must not go
-        // out once nobody can hear its answer.
+    /// A key still queued or waiting for the keyboard lock must not go out
+    /// once nobody can hear its answer.
+    pub(crate) fn cancel_keys(&self) {
         for live in self.records.values() {
             if let Some(ticket) = &live.in_flight {
                 ticket.cancel();
             }
         }
+    }
+
+    pub(crate) fn shutdown(mut self) {
+        self.hide_capsule();
+        self.cancel_keys();
         for waiting in self.waiting {
             match waiting {
                 Waiting::Transcript { reply, .. }

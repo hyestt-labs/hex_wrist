@@ -468,7 +468,7 @@ fn a_queued_key_is_not_pressed_after_the_service_stops() {
     h.core.desktop = Desktop::manual(h.screen.clone());
     assert!(h.query(&watch, "/enter", &[("id", ID)]).is_none());
     let desktop = h.core.desktop.clone();
-    h.core.shutdown();
+    h.core.cancel_keys();
     desktop.run_pending();
     assert!(h.screen.keys().is_empty(), "no Return after shutdown");
 }
