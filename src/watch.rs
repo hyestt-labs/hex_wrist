@@ -28,6 +28,8 @@ pub(crate) mod desktop;
 pub(crate) mod e2ee;
 pub(crate) mod field;
 pub(crate) mod frame;
+#[cfg(all(test, target_os = "macos"))]
+mod live_tests;
 pub(crate) mod output;
 pub(crate) mod pairing;
 pub(crate) mod recording;
