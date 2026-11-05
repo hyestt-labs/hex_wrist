@@ -9,6 +9,7 @@ src=${WRISTPER_SRC:-/Users/glenhsu/orca/workspaces/wristper/coding}
 out=${1:-$here/../../target/watch-sim/watch-sim}
 gen=$(dirname "$out")/gen
 mkdir -p "$gen"
+echo "watch sources: $src" >&2
 [ -f "$src/WatchProbe/WatchMacPairing.swift" ] || { echo "WRISTPER_SRC=$src has no WatchProbe/" >&2; exit 1; }
 
 extract() { # file decl-header
