@@ -43,8 +43,7 @@ pub(crate) fn scheme() -> &'static str {
     ) {
         (true, true) => "wristper-test",
         (true, false) => "wristper",
-        (false, true) => "hex-test",
-        (false, false) => "hex",
+        (false, _) => "hex",
     }
 }
 

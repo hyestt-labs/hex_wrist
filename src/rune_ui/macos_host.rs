@@ -715,9 +715,6 @@ impl NativeHost for MacHost {
             }
             PlatformRequest::SystemAudio => {
                 self.note_permission_asked(PermissionKind::SystemAudio);
-                crate::desktop::permission_guide::clear_legacy_entries_async(
-                    PermissionKind::SystemAudio,
-                );
                 // macOS prompts once; after that the switch is in System
                 // Settings, with the guide beside it.
                 if !crate::meeting::request_system_audio_access() {
@@ -769,9 +766,6 @@ impl NativeHost for MacHost {
 
     fn poll(&mut self, state: &mut PlatformState) -> bool {
         let mut changed = false;
-        for &kind in &state.permissions_shown {
-            crate::desktop::permission_guide::clear_legacy_entries_async(kind);
-        }
         while let Ok(kind) = self.reset_rx.try_recv() {
             self.finish_permission_reset(kind);
             state.clear_stale(kind);

@@ -1666,7 +1666,11 @@ mod tests {
             settings
                 .meetings
                 .resolved_output_folder()
-                .ends_with("Hex Meetings")
+                .ends_with(if cfg!(target_os = "macos") {
+                    "Wristper Meetings"
+                } else {
+                    "Hex Meetings"
+                })
         );
         assert!(settings.text_replacements.is_empty());
     }

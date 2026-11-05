@@ -40,7 +40,7 @@ bundle=$("$root/scripts/build-app.sh")
 "$root/scripts/validate-app.sh" "$bundle" Wristper.app "$version" "$build_number" >/dev/null
 mkdir -p "$dist"
 rm -f "$dmg" "$zip"
-"$root/scripts/notarize-app.sh" "$bundle" "$dmg" Hex
+"$root/scripts/notarize-app.sh" "$bundle" "$dmg" Wristper
 # The updater unpacks this beside the installed bundle and swaps it in.
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$bundle" "$zip"
 

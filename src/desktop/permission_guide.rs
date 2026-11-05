@@ -1,16 +1,14 @@
 //! The floating guide beside System Settings' Privacy & Security pane: it
-//! opens the pane for one permission, clears retired Hex identities' stale TCC
-//! rows in the background, and offers Hex as a drag tile (or, for a refused
+//! opens the pane for one permission and offers Hex as a drag tile (or, for a refused
 //! microphone, asks to switch Hex on), closing once it is granted.
 
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::MainThreadMarker;
 
 use crate::desktop::onboarding::{
-    LEGACY_MAC_BUNDLE_IDS, PermissionKind, SettingsFocus, TccResetOutcome, classify_tccutil_reset,
-    default_mac_bundle_id, legacy_tcc_services, own_tcc_services,
+    PermissionKind, SettingsFocus, TccResetOutcome, classify_tccutil_reset, default_mac_bundle_id,
+    own_tcc_services,
 };
 
 unsafe extern "C" {
@@ -31,7 +29,6 @@ const fn code(kind: PermissionKind) -> i32 {
 }
 
 pub(crate) fn show(kind: PermissionKind) {
-    clear_legacy_entries_async(kind);
     if MainThreadMarker::new().is_some() {
         unsafe { hex_show_permission_guide(code(kind)) };
     }
@@ -122,41 +119,7 @@ fn reset_bundle_service(service: &str, bundle_id: &str) {
     }
 }
 
-/// Clears retired Hex bundle IDs (`com.kitlangton.hex2`, `com.kitlangton.Hex`,
-/// `com.kitlangton.Hex.debug`) once per process for `kind`'s TCC services off
-/// the UI thread, so System Settings never lists duplicate Hex rows.
-pub(crate) fn clear_legacy_entries_async(kind: PermissionKind) {
-    static ACCESSIBILITY_CLEARED: AtomicBool = AtomicBool::new(false);
-    static SCREEN_AUDIO_CLEARED: AtomicBool = AtomicBool::new(false);
-
-    let services = legacy_tcc_services(kind);
-    if services.is_empty() || !tccutil_allowed() {
-        return;
-    }
-    let guard = match kind {
-        PermissionKind::Accessibility => &ACCESSIBILITY_CLEARED,
-        PermissionKind::SystemAudio | PermissionKind::ScreenRecording => &SCREEN_AUDIO_CLEARED,
-        PermissionKind::Microphone => return,
-    };
-    if guard.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    if let Err(error) = std::thread::Builder::new()
-        .name("hex-tcc-legacy".into())
-        .spawn(move || {
-            for service in services {
-                for bundle_id in LEGACY_MAC_BUNDLE_IDS {
-                    reset_bundle_service(service, bundle_id);
-                }
-            }
-        })
-    {
-        guard.store(false, Ordering::Relaxed);
-        tracing::warn!(%error, "could not start legacy TCC cleanup");
-    }
-}
-
-/// Resets the running bundle ID plus retired Hex bundle IDs for `kind` off the
+/// Resets the running bundle ID for `kind` off the
 /// UI thread, then calls `done` so the main thread can re-prompt and reopen
 /// System Settings.
 pub(crate) fn reset_and_reopen_async(
@@ -164,7 +127,6 @@ pub(crate) fn reset_and_reopen_async(
     done: impl FnOnce(PermissionKind) + Send + 'static,
 ) {
     let own_services = own_tcc_services(kind);
-    let legacy_services = legacy_tcc_services(kind);
     if own_services.is_empty() {
         done(kind);
         return;
@@ -175,13 +137,6 @@ pub(crate) fn reset_and_reopen_async(
         .spawn(move || {
             for service in own_services {
                 reset_bundle_service(service, &bundle_id);
-            }
-            for service in legacy_services {
-                for legacy_id in LEGACY_MAC_BUNDLE_IDS {
-                    if legacy_id != bundle_id {
-                        reset_bundle_service(service, legacy_id);
-                    }
-                }
             }
             done(kind);
         })

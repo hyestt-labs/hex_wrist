@@ -580,32 +580,11 @@ fn grantable(state: PermissionState) -> bool {
     )
 }
 
-/// Bundle identifiers of older macOS Hex releases (2.3.1 and the Swift app)
-/// whose stale TCC rows can shadow or confuse grants for `dev.wristper.mac`.
-pub const LEGACY_MAC_BUNDLE_IDS: [&str; 3] = [
-    "com.kitlangton.hex2",
-    "com.kitlangton.Hex",
-    "com.kitlangton.Hex.debug",
-];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TccResetOutcome {
     Cleared,
     NothingToClear,
     Failed,
-}
-
-/// TCC services cleared for retired Hex bundle IDs when `kind` is missing.
-/// Both screen and system-audio lists live on the same System Settings pane, so
-/// clearing both leaves no duplicate Hex rows on either list.
-pub const fn legacy_tcc_services(kind: PermissionKind) -> &'static [&'static str] {
-    match kind {
-        PermissionKind::Accessibility => &["Accessibility"],
-        PermissionKind::SystemAudio | PermissionKind::ScreenRecording => {
-            &["ScreenCapture", "AudioCapture"]
-        }
-        PermissionKind::Microphone => &[],
-    }
 }
 
 /// TCC services reset for the running Hex bundle on `"Still grey? Fix it"`.
@@ -871,8 +850,8 @@ pub(crate) fn completion_recorded_at(directory: &Path) -> bool {
     true
 }
 
-/// Once per settings file from before `dev.wristper.mac` (2.3.1 shared the `hex`
-/// folder): macOS gave the new identity none of the old grants, so setup
+/// Once per settings file written before this app's identity was recorded:
+/// macOS gave the new identity none of the earlier grants, so setup
 /// that is not ready at launch reopens the tour instead of counting the old
 /// completion. Setup that is ready changes nothing.
 #[cfg(target_os = "macos")]
@@ -2023,15 +2002,7 @@ mod tests {
     }
 
     #[test]
-    fn tcc_services_scope_own_resets_narrowly_and_legacy_cleanup_across_shared_pane() {
-        assert_eq!(
-            LEGACY_MAC_BUNDLE_IDS,
-            [
-                "com.kitlangton.hex2",
-                "com.kitlangton.Hex",
-                "com.kitlangton.Hex.debug"
-            ]
-        );
+    fn tcc_services_scope_own_resets_narrowly() {
         assert_eq!(default_mac_bundle_id(None), "dev.wristper.mac");
         assert_eq!(default_mac_bundle_id(Some("0")), "dev.wristper.mac");
         assert_eq!(default_mac_bundle_id(Some("1")), "dev.wristper.mac.test");
@@ -2049,20 +2020,6 @@ mod tests {
             ["ScreenCapture"]
         );
         assert!(own_tcc_services(PermissionKind::Microphone).is_empty());
-
-        assert_eq!(
-            legacy_tcc_services(PermissionKind::Accessibility),
-            ["Accessibility"]
-        );
-        assert_eq!(
-            legacy_tcc_services(PermissionKind::SystemAudio),
-            ["ScreenCapture", "AudioCapture"]
-        );
-        assert_eq!(
-            legacy_tcc_services(PermissionKind::ScreenRecording),
-            ["ScreenCapture", "AudioCapture"]
-        );
-        assert!(legacy_tcc_services(PermissionKind::Microphone).is_empty());
     }
 
     #[test]

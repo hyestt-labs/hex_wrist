@@ -277,12 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn requirement_pins_a_team_so_no_developer_id_passes() {
+        assert!(REQUIREMENT.contains("certificate leaf[subject.OU] = \""));
+    }
+
+    #[test]
     fn only_the_expected_signature_identity_and_version_pass() {
         let root = temporary("verify");
         let app = bundle(&root, BUNDLE_ID, "9.9.9");
         // An ad-hoc signature satisfies a plain identifier requirement…
         verify_bundle(&app, "9.9.9", "identifier \"dev.wristper.mac\"").unwrap();
-        // …but never Anomaly's Developer ID requirement.
+        // …but never the pinned Developer ID requirement.
         let error = verify_bundle(&app, "9.9.9", REQUIREMENT).unwrap_err();
         assert!(error.to_string().contains("code signature"), "{error}");
         assert!(verify_bundle(&app, "9.9.8", "identifier \"dev.wristper.mac\"").is_err());

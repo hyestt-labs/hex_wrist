@@ -160,8 +160,6 @@ pub fn on_missing(show: impl Fn(CaptureNeed) + Send + Sync + 'static) {
 
 /// A capture (or a screenshot) was refused for `need`.
 pub fn report(need: CaptureNeed) {
-    #[cfg(target_os = "macos")]
-    crate::desktop::permission_guide::clear_legacy_entries_async(need.kind());
     if let Some(show) = HELPER.get() {
         show(need);
     }
