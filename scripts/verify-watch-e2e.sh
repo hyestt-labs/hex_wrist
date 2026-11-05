@@ -30,11 +30,12 @@ targets=textedit,terminal
 langs=en,zh
 keep=0
 with_agents=0
+c1=0
 preflight_only=0
 only=
 usage() {
   echo "usage: $0 [--all] [--stage 1|2|3|4|all] [--skip-build] [--targets textedit,terminal] [--langs en,zh]"
-  echo "          [--only <regex on scenario names>] [--with-agents] [--preflight-only] [--keep-running]"
+  echo "          [--only <regex on scenario names>] [--with-agents] [--c1] [--preflight-only] [--keep-running]"
 }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,6 +46,7 @@ while [ $# -gt 0 ]; do
     --langs) langs=$2; shift 2 ;;
     --only) only=$2; shift 2 ;;
     --with-agents) with_agents=1; shift ;;
+    --c1) c1=1; shift ;;
     --preflight-only) preflight_only=1; shift ;;
     --keep-running) keep=1; shift ;;
     -h|--help) sed -n 2,24p "$0"; echo; usage; exit 0 ;;
@@ -424,6 +426,9 @@ start_app() {
   stop_wristper_test
   for _ in $(seq 1 30); do status_json >/dev/null || break; sleep 1; done
   fresh_room
+  # Where Hex's log and the macOS log stood before this launch (the mic-stays-closed scenario reads what came after).
+  proc_log_offset=$(stat -f%z "$TEST_DATA/logs/process.log" 2>/dev/null || echo 0)
+  launch_time=$(date '+%Y-%m-%d %H:%M:%S')
   log "launching Wristper Test in the background (new relay room)"
   open -g "$app" || die "could not open $app"
   for _ in $(seq 1 60); do status_json >/dev/null && break; sleep 1; done
@@ -464,7 +469,8 @@ check_permissions() {
   echo "$s" > "$out/status-ready.json"
   mic=$(jq -r .permissions.microphone <<<"$s")
   ax=$(jq -r .permissions.accessibility <<<"$s")
-  if [ "$mic" != ready ]; then
+  # With --c1 (unit C1 merged) the watch must work without the Microphone grant, so it is not required.
+  if [ "$mic" != ready ] && [ "$c1" = 0 ]; then
     need "Microphone for Wristper Test.app ($mic): run open -g \"$app\", then \"$hex\" window show, and click Allow for Microphone in the setup page."
   fi
   if [ "$ax" != ready ]; then
@@ -693,6 +699,8 @@ want() { [ -z "$only" ] || [[ $1 =~ $only ]]; }
 
 # --- watch-sim cases (stages 1 and 3) ---------------------------------------
 
+proc_log_offset=0
+launch_time=
 sim_paired=0
 pair_sim() { # stage
   # The watch's pairing state (device id, token, private key) and the pairing code live only in $tmp.
@@ -753,13 +761,20 @@ count() { grep -o -- "$1" "$SC_FILE" | wc -l | tr -d ' '; }  # occurrences of a 
 enter_lines() { grep -c '^ENTER:[^[:space:]]' "$SC_FILE"; }          # Returns that carried the pasted text
 empty_enter_lines() { grep -c '^ENTER:[[:space:]]*$' "$SC_FILE"; }  # Returns on an empty line
 
-# finish STAGE SCENARIO LANG PERCENT: records PASS when FAILS is empty.
+# finish STAGE SCENARIO LANG PERCENT: records FAIL when FAILS has anything, else BLOCKED when
+# BLOCKED_NOTE names a missing dependency (FAIL under --c1, which asserts the dependency is met), else PASS.
+BLOCKED_NOTE=
 finish() {
-  local result=PASS
-  [ -z "$FAILS" ] || result=FAIL
+  local result=PASS note=${FAILS#; }
+  if [ -n "$FAILS" ]; then
+    result=FAIL
+  elif [ -n "$BLOCKED_NOTE" ]; then
+    result=BLOCKED; note=$BLOCKED_NOTE
+    [ "$c1" = 1 ] && result=FAIL
+  fi
   record "$1" "$2" "$3" "$result" "$4" "$(rj '.state // .event')" "$SC_MS" \
-    "$(tr '\r\n' '  ' <"$SC_FILE" | tail -c 200)" "$(jq -c --arg f "${FAILS#; }" '. + {fails:$f}' <<<"$SC_REPORT")"
-  FAILS=
+    "$(tr '\r\n' '  ' <"$SC_FILE" | tail -c 200)" "$(jq -c --arg f "$note" '. + {fails:$f}' <<<"$SC_REPORT")"
+  FAILS=; BLOCKED_NOTE=
 }
 
 judged() { # lang -> percent, with the pass threshold check
@@ -944,9 +959,46 @@ scenario_agents() {
   done
 }
 
+# Depends on unit C1 (the watch works without the Microphone grant and without opening the input
+# stream). What this can see today:
+#  - `hex status` permissions.microphone must stay needs-request after a successful watch dictation;
+#  - Hex's process.log, from this launch on, must have no microphone-stream line. The exact lines
+#    that exist today (src/audio.rs) are only failure and recovery ones: "dictation microphone
+#    reopened", "could not open dictation microphone at startup", "microphone stream stopped;
+#    reopening it", "microphone stream failed", "the default microphone changed". No line is
+#    logged for a successful first open, so absence here is weak evidence until C1 adds one
+#    (this pattern already expects "microphone stream opened");
+#  - the macOS TCC log, from this launch on, must hold no kTCCServiceMicrophone request naming
+#    this app (informational: that pattern has never been seen to match on this Mac).
+MIC_LOG_RE='microphone stream opened|dictation microphone (opened|reopened)|could not open dictation microphone|microphone stream (stopped|failed)|the default microphone changed'
+scenario_mic() {
+  want mic-stays-closed || return 0
+  local mic now_mic lines tcc
+  mic=$(status_json | jq -r .permissions.microphone)
+  if [ "$mic" != needs-request ]; then
+    SC_REPORT=$(jq -cn --arg m "$mic" '{event:"blocked",microphone:$m}'); SC_MS=0; : > "$SC_FILE"; SC_PERCENT=0
+    BLOCKED_NOTE="depends on C1: the Microphone grant is '$mic' here and the build still requires it, so a watch dictation cannot be shown to leave the microphone closed. Run --c1 once C1 is merged on a Mac where Wristper Test was never given Microphone."
+    finish 3 mic-stays-closed en 0
+    return 0
+  fi
+  sim_run textedit en; sim_close textedit
+  judged en
+  chk "$(is [ "$(rj '.terminal')" = true ])" "the dictation did not finish ($(rj '.state')): without Microphone the watch does not work yet (C1)"
+  now_mic=$(status_json | jq -r .permissions.microphone)
+  chk "$(is [ "$now_mic" = needs-request ])" "hex status microphone is '$now_mic' after the dictation, want needs-request"
+  lines=$(tail -c +"$((proc_log_offset + 1))" "$TEST_DATA/logs/process.log" 2>/dev/null | grep -E "$MIC_LOG_RE"; true)
+  chk "$(is [ -z "$lines" ])" "Hex's log shows microphone stream activity since launch: $(head -c 200 <<<"$lines" | tr '\n' '|')"
+  tcc=$(run_to 60 log show --start "$launch_time" --style compact --predicate \
+    'subsystem == "com.apple.TCC" AND eventMessage CONTAINS "kTCCServiceMicrophone" AND eventMessage CONTAINS "dev.wristper.mac.test"' 2>/dev/null | grep -c kTCCServiceMicrophone; true)
+  chk "$(is [ "${tcc:-0}" = 0 ])" "the macOS TCC log shows $tcc microphone request(s) from this app since launch"
+  SC_REPORT=$(jq -c --arg l "${lines:-}" --arg t "${tcc:-0}" '. + {mic_log_lines:$l, tcc_requests:$t}' <<<"$SC_REPORT")
+  finish 3 mic-stays-closed en "$SC_PERCENT"
+}
+
 stage3() {
   [ "$sim_paired" = 1 ] || pair_sim 3 || return
   select_model en
+  scenario_mic
   scenario_clipboard
   scenario_enter_undo
   scenario_double_enter
@@ -1115,8 +1167,13 @@ jq -r '[.stage,.target,.lang,.result,(.match_percent+"%"),.state,.ms,(.text|.[0:
   done
 echo
 echo "Details: $results"
-if jq -e 'select(.result!="PASS")' "$results" >/dev/null; then
+if jq -e 'select(.result=="FAIL")' "$results" >/dev/null; then
   echo "RESULT: FAIL"; exit 1
 fi
 [ -s "$results" ] || { echo "RESULT: FAIL (no cases ran)"; exit 1; }
+blocked_rows=$(jq -r 'select(.result=="BLOCKED") | .target' "$results" | tr '\n' ' ')
+if [ -n "$blocked_rows" ]; then
+  echo "RESULT: PASS, but not proven: ${blocked_rows}BLOCKED on C1 (run with --c1 after it merges; that makes them count)"
+  exit 0
+fi
 echo "RESULT: PASS"

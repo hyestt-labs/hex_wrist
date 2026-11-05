@@ -18,7 +18,9 @@ The script runs four stages:
    - `textedit-enter`, `textedit-undo`: Return is typed once. Undo removes the text.
    - `cat-enter`, `cat-undo`: in Terminal running `cat`, Return makes `cat` echo the line, and Undo is refused.
    - `shell-enter`: in a plain zsh, Return runs the line once (`command not found` appears once).
-   - `enter-twice-textedit`, `enter-twice-shell`: two `/enter` calls at the same moment type Return once.
+   - `recorder-enter`: a Terminal window runs `while IFS= read -r l; do echo "ENTER:$l"; done`, which prints one `ENTER:<line>` per Return it receives. One Enter must give exactly one `ENTER:` line with the text and no empty one.
+   - `enter-twice-textedit`, `enter-twice-shell`: two `/enter` calls at the same moment type Return once. The TextEdit row counts line breaks. The shell row uses the recorder window, so a second Return shows as a bare `ENTER:` and fails the row.
+   - `mic-stays-closed`: **depends on C1.** After a successful watch dictation, `hex status` must still say `microphone: needs-request`, Hex's `process.log` since launch must hold no microphone-stream line, and the macOS TCC log must hold no microphone request from this app. Today the build requires the Microphone grant, so this row reads `BLOCKED` ("depends on C1"). `--c1` drops the Microphone requirement from the preflight and turns BLOCKED into FAIL. The only microphone lines Hex logs today are failure and recovery ones (`src/audio.rs`: `dictation microphone reopened`, `could not open dictation microphone at startup`, `microphone stream stopped; reopening it`, `microphone stream failed`, `the default microphone changed`). **No line is logged for a successful first open**, so a clean log is weak proof until C1 adds one. The script already looks for `microphone stream opened`, so C1 should log exactly that when it opens the input stream.
    - `chrome-textarea`: a throwaway `data:text/html` page with one textarea, in a separate Chrome process that has its own empty profile. The page copies its text into its title, and the script reads the title from that Chrome's remote debugging port (`curl http://127.0.0.1:<port>/json`). Nothing in the user's Chrome is used, opened, or changed, and Chrome gets no Apple event.
    - `agent-claude`, `agent-codex` (only with `--with-agents`): an interactive agent in Terminal receives "Reply with only the word pong." and Return submits it, proven by the agent's reply.
 4. **B2 live tests.** `cargo nextest run --locked --bin hex --run-ignored only -E 'test(watch_live)' -j 1`. They read the focused field through Accessibility in TextEdit, Terminal, and Finder.
@@ -27,15 +29,24 @@ The script runs four stages:
 
 ## Safety rules
 
+What the script touches, and what it must leave alone:
+
 - Never touch `/Applications/Wristper.app`, `~/Library/Application Support/Wristper`, or its relay room.
-- `--with-agents` skips any `claude` or `codex` under `~/.wristper/` (the installed Wristper's wrappers) and uses the first other one on PATH.
 - Never touch the Keychain items of service `dev.wristper.mac.device*`. The test build uses `dev.wristper.mac.test.device`.
-- Everything runs under `Wristper Test` (bundle `dev.wristper.mac.test`, data folder `~/Library/Application Support/Wristper Test`, its own relay room).
+- Everything runs under `Wristper Test` (bundle `dev.wristper.mac.test`, data folder `~/Library/Application Support/Wristper Test`).
+- **A new relay room every run.** The script stops Wristper Test, moves its `relay-room`, `relay-secret`, `paired-devices.json`, and `delivered-ids.json` (all inside `Wristper Test`) to the Trash, and starts it again so the service makes new ones. It checks the new room differs from the old one.
+- **Secrets stay in one temp folder.** The clipboard backup, the watch's pairing state (device id, token, private key), and the raw logs with pairing codes live in `${TMPDIR}/wristper-e2e.XXXXXX` (mode 0700). It goes to the Trash at exit. The logs saved in the run folder have the pairing codes replaced by `******`.
+- **Your clipboard comes back.** Before the first paste, the script saves every item and type on the clipboard (`scripts/pasteboard-tool`), and it puts them back at exit and in the exit trap. It then compares the bytes. The table has a `clipboard-restored` row, and a FAIL there means your clipboard was not restored. If the clipboard holds a concealed item (a password manager's copy), the script stops with exit 3 instead of saving it.
+- **Only what it made is closed.** TextEdit and Terminal windows are found by the window id (and tty) from creation and checked again before every use and before closing. Nothing relies on the front window or document. A Terminal window is closed by hanging up the processes on its own tty and then closing that window. The script uses no `pkill` and no `killall`.
+- **Apps that were already running stay open.** The script records whether TextEdit, Terminal, and Chrome were running before the first probe. It quits an app only if it started it and nothing is left open in it. It never drives your Chrome (see below).
+- **Every child process is collected.** The exit trap (also on INT, TERM, HUP) stops watch-sim, the log stream, `hex watch pair`, the throwaway Chrome, and Wristper Test (`hex quit`, then only the processes that run its exact executable).
+- **A simulator of its own.** Stage 2 creates a new watchOS Simulator named `Wristper E2E <run id>` and deletes that one at exit (after checking its udid and name). It never resets a Keychain, erases, shuts down, or reuses another device. With `--keep-running` it stays and the log prints the `xcrun simctl delete` command.
+- The Chromium scenario starts its own Chrome process (`--user-data-dir=<temp folder>`, `--use-mock-keychain`, `--remote-debugging-port`). It stops only that process, found by its profile folder on the command line, and moves the temp profile to the Trash.
+- `--with-agents` skips any `claude` or `codex` under `~/.wristper/` (the installed Wristper's wrappers) and uses the first other one on PATH.
+- The scenarios change Labs › Keep dictation on clipboard on the test app. The script restores that setting at exit.
 - The script never tries to grant a permission or to unlock the screen.
 - Do not deploy the relay.
 - Delete only with `/usr/bin/trash`. Nothing else deletes anything here.
-- The Chromium scenario starts its own Chrome process (`--user-data-dir=<temp folder>`, `--use-mock-keychain`, `--remote-debugging-port`). It stops only that process, found by its profile folder on the command line, and moves the temp profile to the Trash. It never touches the user's Chrome.
-- The scenarios overwrite the Mac's clipboard and change Labs › Keep dictation on clipboard on the test app. The script restores that setting when it exits. It cannot restore the clipboard.
 
 ## Launch (one command)
 
@@ -49,16 +60,17 @@ scripts/verify-watch-e2e.sh --stage 1             # one stage: 1, 2, 3, or 4
 scripts/verify-watch-e2e.sh --stage 3 --only 'enter|clipboard'    # scenarios whose name matches
 scripts/verify-watch-e2e.sh --stage 2 --targets textedit --langs en
 scripts/verify-watch-e2e.sh --all --with-agents   # also claude and codex in Terminal
+scripts/verify-watch-e2e.sh --all --c1            # after unit C1 merged: no Microphone grant needed, mic-stays-closed must pass
 ```
 
 The script uses these exit codes:
 
-- `0` means every case passed.
-- `1` means a case failed.
+- `0` means no case failed. If a row reads `BLOCKED` (today only `mic-stays-closed`), the last line says `RESULT: PASS, but not proven: ...`. Report those rows by name; they are not passes.
+- `1` means a case failed (with `--c1`, a BLOCKED row counts as a failure).
 - `2` means bad usage or a missing tool or source tree.
 - `3` means it is blocked on a human. The output prints a `BLOCKED` block that lists every missing click in one go. The causes are a locked screen, Microphone or Accessibility for Wristper Test, Automation for the app that runs the script (to control TextEdit, Terminal, and System Events), Accessibility for that app (stage 4 and the Chrome scenario, which brings its throwaway Chrome to the front), and Google Chrome missing from `/Applications`.
 
-The last line is `RESULT: PASS` or `RESULT: FAIL`. Before it, a table prints stage, scenario, language, result, match %, state, milliseconds, and the text read back. A failing row has a `└` line with the reasons.
+The last line is `RESULT: PASS`, `RESULT: PASS, but not proven: ...`, or `RESULT: FAIL`. Before it, a table prints stage, scenario, language, result, match %, state, milliseconds, and the text read back. A failing row has a `└` line with the reasons.
 
 Without a build step the script needs about 15 minutes. The first Mandarin run also downloads a model (the script waits up to 60 minutes).
 
@@ -70,7 +82,7 @@ You can set these environment variables:
   - Both are constants at the top of `scripts/verify-watch-e2e.sh`, and the run log prints them. An override must be a full 40-character sha. `WRISTPER_SRC` (default `/Users/glenhsu/orca/workspaces/wristper/coding`) is only the checkout whose history holds them. To move a pin, change the constant and this paragraph in the same commit.
 - `WATCH_E2E_B2_ENV` is the file that links the Rust test binary on this Mac (stage 4). The default is `.../migration_to_hex/artifacts/wristper-migration-20261104/b2-test-env/env.sh`.
 - `WATCH_E2E_EN_MODEL` and `WATCH_E2E_ZH_MODEL` set the model for each language. The defaults are `parakeet_unified_en` and `nemotron_3_5_asr`. The watch sends language `auto`, so the Mac transcribes with the selected model and language. The script selects the model before each language with `hex model install <id> --language <lang>`.
-- `WATCH_E2E_EN_PASS` and `WATCH_E2E_ZH_PASS` set the pass thresholds in percent. The defaults are 80 and 60.
+- `WATCH_E2E_EN_PASS` and `WATCH_E2E_ZH_PASS` set the pass thresholds in percent. The defaults are 80 and 60. The score is ordered: the longest common subsequence of the words (English) or characters (Mandarin) over the expected length, so words out of order do not count. An empty read-back, or one with fewer than half the expected words or characters, scores 0. A stage 2 row passes only when the watch app also reports phase `finished` and the Mac's own state is `pasted` or `unverified`.
 - `WATCH_E2E_AGENT_DIR` is the folder where `--with-agents` starts claude and codex. The default is the repository. The agent must already trust that folder, or its trust prompt eats the first Return.
 - `SIGN_IDENTITY` is the identity the app is re-signed with. The default is `Developer ID Application: WEI CHIEH HSU (VQY3J86U79)`. `build-app.sh` signs a test build ad hoc. An ad hoc identity changes with every build, so macOS would drop the permissions after each rebuild. Re-signing keeps one identity.
 
@@ -129,9 +141,10 @@ Each run writes `target/watch-e2e/<YYYYmmdd-HHMMSS>/`, and cleanup never removes
 
 - `results.jsonl` has one row per case. For `watch-sim` cases, `detail` holds the decrypted `/status` JSON, `send_ms`, `transcribe_ms`, `total_ms`, the raw `/enter`, `/undo`, and double-Enter replies, and `fails`, the reasons of a FAIL. For stage 2, it holds the watch app's `E2E result` log line.
 - `run.log` has the timeline.
-- `stage1-pair.jsonl` and `stage2-watch.log` hold the pairing evidence (code, claim, paired).
+- `stage1-pair.jsonl`, `stage3-pair.jsonl` (if stage 3 paired alone), and `stage2-watch.log` hold the pairing evidence (claim, paired), with the pairing codes replaced by `******`.
 - `stage4-live.log` holds the nextest output.
 - `readback.txt` is the last read-back, raw.
+- `chrome-handles` lists the throwaway Chrome processes this run started.
 - `en.m4a`, `zh.m4a`, and `agent.m4a` are the fixtures. They are 16 kHz mono AAC at 32 kbps, which is the watch recorder's setting in `WatchProbe/ProbeModel.swift`.
 - The `build-*.log` files are the build logs.
 
@@ -146,7 +159,15 @@ The watch can hold several Macs. Pick the test Mac on the watch while you test, 
 
 ## Cleanup
 
-The script's exit trap restores Labs › Keep dictation on clipboard, quits Wristper Test (`hex quit`), and shuts down the `Wristper E2E` simulator. It does these unless you pass `--keep-running` or the run is blocked. Each case closes the TextEdit document or Terminal window it opened, and stops the throwaway Chrome process it started (the exit trap closes any left over and moves their temp profiles to the Trash). It never kills by process name across the system. It stops `cat`, `claude`, and `codex` only on the tty of its own Terminal window. To remove a stale simulator, run `xcrun simctl delete "Wristper E2E"`. To start over from a fresh test data folder, run `/usr/bin/trash ~/Library/Application\ Support/Wristper\ Test`. That also loses the test room and the downloaded test models.
+The exit trap (it also runs on Ctrl-C and on a kill) does this, unless you pass `--keep-running`:
+
+1. It stops the script's own child processes and the throwaway Chrome, and moves its temp profile to the Trash.
+2. It puts your clipboard back and restores Labs › Keep dictation on clipboard.
+3. It quits Wristper Test and deletes the simulator this run made.
+4. It quits TextEdit and Terminal only if this run started them and nothing is open in them.
+5. It moves the temp folder with the secrets to the Trash.
+
+The run folder is never removed. To start over from a fresh test data folder (this also loses the downloaded test models), run `/usr/bin/trash ~/Library/Application\ Support/Wristper\ Test`. An old simulator named `Wristper E2E` without a run id comes from an earlier version of this script; remove it with `xcrun simctl delete <udid>` after checking its name.
 
 ## Helpers
 
