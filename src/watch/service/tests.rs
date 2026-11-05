@@ -665,6 +665,35 @@ fn another_watch_cannot_touch_a_recording() {
     assert_eq!(answer.body["error"], "not-owner");
 }
 
+/// Another paired watch, with its own token and key, learns nothing about
+/// a recording it did not make: `/status` reads as an unknown id.
+#[test]
+fn status_hides_another_watchs_recording() {
+    let mut h = harness("status-owner");
+    let owner = h.pair("watch-1");
+    let other = h.pair("watch-2");
+    let index = h.start_recording(&owner, ID);
+    h.deliver(index, report(DeliveryOutcome::Copied, "the owner's words"));
+    h.frames.lock().unwrap().clear();
+
+    let sealed = h.query(&other, "/status", &[("id", ID)]).unwrap();
+    assert_eq!(
+        (sealed.status, sealed.body["error"].as_str()),
+        (404, Some("unknown-id")),
+        "{}",
+        sealed.body
+    );
+    let headers = h.device_headers(&other);
+    let (status, body) = h
+        .request("GET", "/status", &[("id", ID)], &headers, &[])
+        .unwrap();
+    assert_eq!((status, body["error"].as_str()), (404, Some("unknown-id")));
+
+    let mine = h.query(&owner, "/status", &[("id", ID)]).unwrap();
+    assert_eq!(mine.status, 200);
+    assert_eq!(mine.body["text"], "the owner's words");
+}
+
 /// Swift's `isInsideOwnEnvelope`: a token from another watch inside an
 /// envelope counts as plaintext, so it reads no text and passes no ratchet.
 #[test]

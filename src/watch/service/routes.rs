@@ -87,7 +87,7 @@ impl Core {
             auth.map_or((String::new(), false), |auth| (auth.device, auth.inside));
         let served = match (route.method, route.path) {
             ("GET", "/health") => self.health(),
-            ("GET", "/status") => self.status(&head.query, inside, now),
+            ("GET", "/status") => self.status(&head.query, &device, inside, now),
             ("POST", "/focus") => self.focus(&body, &device, now),
             ("POST", "/enter") => Ok(not_supported("Enter")),
             ("POST", "/undo") => Ok(not_supported("Undo")),
@@ -186,15 +186,23 @@ impl Core {
         ))
     }
 
+    /// Another watch's recording reads as unknown, not `not-owner`: the
+    /// watch takes a 403 here as a revoked token and forgets the pairing,
+    /// while a 404 only resends the audio, which `/audio` refuses.
     fn status(
         &self,
         query: &BTreeMap<String, String>,
+        device: &str,
         inside: bool,
         now: Now,
     ) -> Result<(u16, Value), Refusal> {
         let id = query.get("id").map(String::as_str).unwrap_or("");
         if !is_valid_recording_id(id) {
             return Err(Refusal::InvalidId);
+        }
+        let live = self.records.get(id).map(|live| &live.record);
+        if refuse_non_owner(live, Caller::Device(device)).is_err() {
+            return Err(Refusal::UnknownId);
         }
         let channel = if inside {
             Channel::InsideE2ee
