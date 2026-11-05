@@ -8,8 +8,15 @@ name: Test builds
 on:
   push:
     branches: [dev]
-    # Like Release: a docs- or site-only change builds nothing.
-    paths-ignore: ["docs/**", "site/**", "**/*.md"]
+    # A docs- or site-only change builds nothing. Markdown the build reads
+    # comes back in: src/ (include_str!) and the notices the app bundles.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!site/**"
+      - "!**/*.md"
+      - "src/**"
+      - "THIRD_PARTY_NOTICES.md"
   workflow_dispatch:
 
 permissions:

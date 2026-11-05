@@ -32,13 +32,15 @@ dist=$(realpath "$dist") cargo_home=$(realpath "$cargo_home") rustup_home=$(real
 # The toolchain's own directory, so the build needs no rustup proxy in PATH.
 toolchain=$(cd "$root" && dirname "$(rustup which cargo)")
 if ! docker image inspect "$image" >/dev/null 2>&1 && [ -n "$archive" ] && [ -f "$archive" ]; then
-  zstd -dcq "$archive" | docker load --quiet >&2
+  zstd -dcq "$archive" | docker load --quiet >&2 ||
+    echo "Ignoring an unreadable build image archive; building it." >&2
 fi
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   docker build --quiet --tag "$image" --file "$dockerfile" "$root/packaging/linux" >&2
   if [ -n "$archive" ]; then
     mkdir -p "$(dirname "$archive")"
-    docker save "$image" | zstd -T0 -3 -q -o "$archive"
+    docker save "$image" | zstd -T0 -3 -q -f -o "$archive.partial"
+    mv -f "$archive.partial" "$archive"
   fi
 fi
 home=$(mktemp -d)
