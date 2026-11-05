@@ -203,17 +203,28 @@ Apple Watch                               // watch.pair, watch.dictate
   tolerance. A terminal whose prompt frame jumps clear of the original reads
   `target-changed`. The Terminal, Orca, and Ghostty live check shows how often
   these happen.
-- Focus is judged more than once, and a window remains. Paste: the gate reads
-  and judges the focus, reads the field's text, then inside the Paster, after
-  the clipboard snapshot and write (the slow steps, tens of ms; hundreds if
-  the clipboard holds large data), a last comparison runs immediately before
-  ⌘V; a switch before it sends nothing and restores the clipboard. Keys
-  (Return, ⌘Z): the focus is read and judged twice and the 5 s deadline and
-  the ticket are checked after both reads, right before the key. What cannot
-  be closed: from the key event being posted until the target app handles it
-  (a few ms, longer if the app is busy), the user can still switch apps, and
-  the key then lands in the new one. Accessibility cannot pin the target, so
-  this needs the live check to size it, and it is not excluded.
+- Focus is judged more than once, and windows remain. Paste: the gate reads
+  and judges the focus and the field's text; then inside the Paster, after
+  the clipboard snapshot and write (the slow steps, tens of ms, hundreds if
+  the clipboard holds large data), a last comparison reads the focus again
+  and runs immediately before ⌘V. A switch that happened before that read
+  completes sends nothing and the clipboard goes back as it was (also with
+  Labs › Keep dictation on clipboard: with ⌘V never sent, the earlier
+  clipboard returns unless something else changed it meanwhile). Keys
+  (Return, ⌘Z): the focus is read and judged twice, and the deadline and the
+  ticket are settled after both reads, right before the key. Not closed, for
+  paste and keys alike: the time between the last focus read finishing and
+  the key event being posted (the read is not atomic with the post; the
+  user can switch in that gap), and from the event being posted until the
+  target handles it (a few ms, longer if the app is busy); the key then lands
+  in the new app. Accessibility cannot pin the target, so the live check has
+  to size these; they are not excluded.
+- A key's claim is settled atomically: the `watch-ax` thread claims it right
+  before the key event, the service cancels it on timeout, a restart of the
+  recording, or shutdown. If the key already went out when the service gives
+  up waiting for the answer, the record counts it as pressed (Enter
+  `entered`, Undo `undone`) without confirmation and a retry is refused,
+  never pressed a second time.
 - The clipboard restore has a window, as in Wristper's Swift version: it
   checks the generation and the pasteboard `changeCount`, then writes the old
   contents back, and a copy the user makes between that check and the write

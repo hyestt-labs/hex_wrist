@@ -392,8 +392,18 @@ impl Paster {
                     return Err(error);
                 }
                 if keep {
+                    // What would come back if the paste is refused before
+                    // ⌘V: the clipboard before this chain of pastes began.
+                    let original = if restore.last_change_count == Some(previous_change_count) {
+                        restore.original.clone()
+                    } else {
+                        Some(previous)
+                    };
                     restore.keep();
-                    return Ok(None);
+                    return Ok((
+                        None,
+                        original.map(|original| (original, self.clipboard.changeCount())),
+                    ));
                 }
                 let inserted_change_count = self.clipboard.changeCount();
                 let generation =
@@ -403,9 +413,10 @@ impl Paster {
                     // capture is Hex's own transient transcript.
                     restore.original = restore.original.take().and_then(deferred::restorable);
                 }
-                Ok(Some(generation))
+                Ok((Some(generation), None))
             },
         )?;
+        let (generation, kept) = generation;
 
         let clipboard_restore = self.clipboard_restore.clone();
         let deferred =
@@ -419,6 +430,16 @@ impl Paster {
         if verify.is_some_and(|verify| !verify()) {
             if let Some(handle) = deferred {
                 handle.restore_after(Duration::ZERO);
+            }
+            // Keep on clipboard leaves the transcript there only for a paste
+            // that happened; with ⌘V never sent there is no reason to, so the
+            // earlier clipboard comes back unless something else changed it.
+            if let Some((original, written)) = kept
+                && self.clipboard.changeCount() == written
+                && let Some(original) = deferred::restorable(original)
+                && let Err(error) = restore_clipboard(&self.clipboard, &original)
+            {
+                tracing::warn!(%error, "could not restore the clipboard after a refused paste");
             }
             return Ok(Pasted::Refused);
         }
