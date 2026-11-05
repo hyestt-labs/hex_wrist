@@ -329,6 +329,10 @@ fn a_watch_pairs_records_and_reads_its_status_through_the_relay() {
             samples: Arc::clone(&samples),
         }),
         Box::new(MemorySecretStore::default()),
+        crate::watch::desktop::Desktop::start(Arc::new(
+            crate::watch::desktop::fake::FakeScreen::default(),
+        ))
+        .unwrap(),
     )
     .unwrap();
     let deadline = Instant::now() + WAIT;

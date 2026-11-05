@@ -265,6 +265,8 @@ impl Core {
             id: id.to_owned(),
             language: head.header(LANGUAGE_HEADER).unwrap_or("").to_owned(),
             audio: body,
+            at_cursor: !focus_requested,
+            snapshot_missing: false,
         };
         self.accept_audio(job, reply, focus_requested, now);
     }
@@ -346,6 +348,17 @@ impl Core {
             .records
             .entry(job.id.clone())
             .or_insert_with(|| LiveRecord::new(&job.id, &job.device, now));
+        let expectation = if job.at_cursor {
+            Expectation::Current
+        } else if job.snapshot_missing {
+            Expectation::Missing
+        } else {
+            // A `/focus` that captured nothing pastes at the cursor, as
+            // Wristper does.
+            live.field
+                .clone()
+                .map_or(Expectation::Current, Expectation::Field)
+        };
         // A resend of the same id must not keep the previous attempt's text.
         live.record = Record {
             state: State::Transcribing,
@@ -362,7 +375,8 @@ impl Core {
             Job {
                 id: job.id.clone(),
                 language: job.language.clone(),
-                expectation: Expectation::Current,
+                expectation,
+                desktop: self.desktop.clone(),
             },
             move |event| {
                 let message = match event {

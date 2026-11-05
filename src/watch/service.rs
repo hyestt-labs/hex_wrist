@@ -23,6 +23,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryReport, WatchDelivery};
+use super::desktop::Desktop;
+use super::field;
 use super::pairing::{self, PairedDevices, SecretStore};
 use super::relay::{NotConnected, Relay, RelayConfig, RelayEvent, RelayTiming};
 #[cfg(target_os = "macos")]
@@ -192,6 +194,11 @@ pub(crate) enum Message {
     },
     Stop,
     Relay(RelayEvent),
+    /// The `watch-ax` thread read the focused field for `/focus` of `id`.
+    Captured {
+        id: String,
+        field: Option<field::FieldSnapshot>,
+    },
     /// The dictation worker finished recording `id`.
     Delivered {
         id: String,
@@ -211,6 +218,7 @@ impl WatchService {
         config: WatchConfig,
         dictation: Box<dyn Dictation>,
         store: Box<dyn SecretStore + Send>,
+        desktop: Desktop,
     ) -> std::io::Result<Self> {
         let room = super::relay::read_or_create_room(&config.support_dir)?;
         let mac_id = read_or_create_device_id(&config.support_dir.join(DEVICE_ID_FILE))?;
@@ -260,6 +268,7 @@ impl WatchService {
                     delivered_path,
                     Box::new(relay),
                     dictation,
+                    desktop,
                     core_inbox,
                 );
                 run(core, messages);

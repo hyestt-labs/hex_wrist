@@ -15,6 +15,8 @@ use super::pending::Outbound;
 use super::state::{Core, Identity, MAX_LIVE_RECORDS, Now, TRANSCRIPT_WAIT};
 use super::*;
 use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
+use crate::watch::desktop::Desktop;
+use crate::watch::desktop::fake::FakeScreen;
 use crate::watch::e2ee::{self, Aad, AudioHead, SharedKey};
 use crate::watch::frame::{Inbound, RequestHead};
 use crate::watch::pairing::MemorySecretStore;
@@ -22,6 +24,8 @@ use crate::watch::recording::{DUPLICATE_AUDIO_WAIT_SECONDS, Verification};
 use crate::watch::relay::{NotConnected, RelayEvent, RelayState};
 use crate::watch::suspect::SuspectReason;
 use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
+
+mod field;
 
 const M4A: &[u8] = include_bytes!("../../../tests/fixtures/watch-audio/tone-440-16k.m4a");
 const ID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
@@ -90,6 +94,7 @@ struct Harness {
     connected: Arc<AtomicBool>,
     jobs: Jobs,
     refuse: Arc<AtomicBool>,
+    screen: Arc<FakeScreen>,
     now: Now,
     next_frame: u64,
     dir: PathBuf,
@@ -114,6 +119,7 @@ fn harness(name: &str) -> Harness {
     let jobs: Jobs = Arc::new(Mutex::new(Vec::new()));
     let refuse = Arc::new(AtomicBool::new(false));
     let (inbox, messages) = mpsc::channel();
+    let screen = Arc::new(FakeScreen::default());
     let paired = PairedDevices::load(
         &dir.join(pairing::FILE_NAME),
         Box::new(MemorySecretStore::default()),
@@ -135,6 +141,7 @@ fn harness(name: &str) -> Harness {
             jobs: Arc::clone(&jobs),
             refuse: Arc::clone(&refuse),
         }),
+        Desktop::inline(screen.clone()),
         inbox,
     );
     Harness {
@@ -144,6 +151,7 @@ fn harness(name: &str) -> Harness {
         connected,
         jobs,
         refuse,
+        screen,
         now: Now::current(),
         next_frame: 0,
         dir,
@@ -256,6 +264,8 @@ impl Harness {
             body_len: body.len(),
         };
         self.core.on_request(head, body.to_vec(), self.now);
+        // Captures answer through the inbox, even with the inline desktop.
+        self.pump();
         self.take(&id)
     }
 
@@ -542,7 +552,12 @@ fn health_has_wristpers_shape() {
         .collect()
     );
     assert_eq!(body["ok"], true);
-    assert_eq!(body["paste_ready"], true);
+    assert_eq!(body["paste_ready"], false, "Accessibility is not granted");
+    assert!(
+        body["paste_detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Accessibility"))
+    );
     assert_eq!(body["model"], "cold");
     assert_eq!(body["model_id"], "parakeet-tdt-0.6b-v3");
     assert_eq!(body["model_name"], "Parakeet v3");
@@ -1757,6 +1772,7 @@ fn listener_dictation_names_a_full_queue_and_a_gone_listener() {
                 id: ID.to_owned(),
                 language: "en".to_owned(),
                 expectation: crate::watch::field::Expectation::Current,
+                desktop: Desktop::null(),
             },
             move |event| {
                 let _ = sink.send(event);

@@ -8,13 +8,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use super::pending::{Outbound, Reply, Waiting};
+use super::pending::{AudioJob, Outbound, Reply, Waiting};
 use super::{ClaimError, ClaimOk, Dictation, Message, WatchSnapshot};
 use crate::watch::Timestamp;
 use crate::watch::delivered::DeliveredIds;
 use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
+use crate::watch::desktop::Desktop;
 use crate::watch::e2ee::NonceCache;
-use crate::watch::field::Withheld;
+use crate::watch::field::{FieldSnapshot, Withheld};
 use crate::watch::frame::{Inbound, claim_frame};
 use crate::watch::pairing::PairedDevices;
 use crate::watch::pairing::requests::PairingRequests;
@@ -28,6 +29,10 @@ pub(crate) const RECORD_RETENTION: Duration = Duration::from_secs(86_400);
 pub(crate) const MAX_LIVE_RECORDS: usize = 500;
 /// `/e2ee` is answered `transcribing` after this long at the latest.
 pub(crate) const TRANSCRIPT_WAIT: Duration = Duration::from_secs(50);
+/// `/focus` answers `captured: false` after this long when the focused
+/// application does not answer Accessibility (each element is bounded at
+/// 250 ms; the watch itself waits 8 s).
+pub(crate) const CAPTURE_WAIT: Duration = Duration::from_millis(1500);
 
 /// The moment a message is handled, on both clocks: `at` for deadlines,
 /// `wall` for timestamps and freshness. Tests pass their own.
@@ -66,6 +71,8 @@ pub(crate) struct LiveRecord {
     /// When the audio was accepted; `receive_to_paste_ms` counts from here.
     pub(crate) received_at: Option<Instant>,
     pub(crate) touched: Instant,
+    /// The field `/focus` locked; `/enter` and `/undo` compare against it.
+    pub(crate) field: Option<FieldSnapshot>,
 }
 
 impl LiveRecord {
@@ -92,6 +99,7 @@ impl LiveRecord {
             },
             received_at: None,
             touched: now.at,
+            field: None,
         }
     }
 }
@@ -120,6 +128,7 @@ pub(crate) struct Core {
     pub(super) relay_state: RelayState,
     pub(super) outbound: Box<dyn Outbound>,
     pub(super) dictation: Box<dyn Dictation>,
+    pub(super) desktop: Desktop,
     /// Deliveries come back through here.
     pub(super) inbox: mpsc::Sender<Message>,
 }
@@ -132,6 +141,7 @@ impl Core {
         delivered_path: PathBuf,
         outbound: Box<dyn Outbound>,
         dictation: Box<dyn Dictation>,
+        desktop: Desktop,
         inbox: mpsc::Sender<Message>,
     ) -> Self {
         Self {
@@ -147,6 +157,7 @@ impl Core {
             relay_state: RelayState::Offline,
             outbound,
             dictation,
+            desktop,
             inbox,
         }
     }
@@ -156,6 +167,7 @@ impl Core {
             Message::Relay(event) => self.on_relay(event, now),
             Message::Delivered { id, report } => self.on_delivered(&id, report, now),
             Message::Confirmed { id, verified } => self.on_confirmed(&id, verified, now),
+            Message::Captured { id, field } => self.on_captured(&id, field, now),
             Message::Claim {
                 code,
                 reply,
@@ -177,7 +189,8 @@ impl Core {
             match waiting {
                 Waiting::Transcript { reply, .. }
                 | Waiting::Duplicate { reply, .. }
-                | Waiting::Focus { reply, .. } => reply.abandon(),
+                | Waiting::Focus { reply, .. }
+                | Waiting::Capture { reply, .. } => reply.abandon(),
             }
         }
         self.outbound.stop();
@@ -217,9 +230,19 @@ impl Core {
                 Waiting::Focus { id, job, reply, .. } => {
                     tracing::info!(
                         id,
-                        "no /focus arrived for this recording; pasting at the cursor"
+                        "no /focus arrived for this recording; it will not be pasted"
                     );
+                    let job = AudioJob {
+                        snapshot_missing: true,
+                        ..job
+                    };
                     self.accept_audio(job, reply, false, now);
+                }
+                Waiting::Capture {
+                    id, device, reply, ..
+                } => {
+                    tracing::warn!(id, "the focused application did not answer Accessibility");
+                    self.finish_capture(&id, &device, None, reply, now);
                 }
             }
         }
@@ -427,15 +450,75 @@ impl Core {
         self.remember_handled(id, now);
         let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting)
             .into_iter()
-            .partition(|waiting| waiting.id() == id && !matches!(waiting, Waiting::Focus { .. }));
+            .partition(|waiting| {
+                waiting.id() == id
+                    && !matches!(waiting, Waiting::Focus { .. } | Waiting::Capture { .. })
+            });
         self.waiting = others;
         for waiting in mine {
             match waiting {
                 Waiting::Transcript { reply, .. } => self.answer(reply, status, body.clone()),
                 Waiting::Duplicate { reply, .. } => self.answer(reply, 200, duplicate.clone()),
-                Waiting::Focus { .. } => unreachable!("focus waiters were kept"),
+                Waiting::Focus { .. } | Waiting::Capture { .. } => {
+                    unreachable!("focus waiters were kept")
+                }
             }
         }
+    }
+
+    /// The `watch-ax` thread read the focused field for `/focus`. A capture
+    /// nobody waits for (its deadline passed) is dropped.
+    fn on_captured(&mut self, id: &str, field: Option<FieldSnapshot>, now: Now) {
+        let (mine, others): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.waiting).into_iter().partition(
+                |waiting| matches!(waiting, Waiting::Capture { id: held, .. } if held == id),
+            );
+        self.waiting = others;
+        for waiting in mine {
+            if let Waiting::Capture { device, reply, .. } = waiting {
+                self.finish_capture(id, &device, field.clone(), reply, now);
+            }
+        }
+    }
+
+    /// Records `field` for `id` (Swift's `store.update(... focus ...)`),
+    /// answers `/focus`, and releases audio that waited for it.
+    fn finish_capture(
+        &mut self,
+        id: &str,
+        device: &str,
+        field: Option<FieldSnapshot>,
+        reply: Reply,
+        now: Now,
+    ) {
+        if let Some(live) = self.records.get(id)
+            && live.record.state != State::AwaitingAudio
+        {
+            let state = live.record.state.name();
+            return self.answer(
+                reply,
+                200,
+                json!({"ok": true, "captured": false, "state": state}),
+            );
+        }
+        let role = field.as_ref().map(|field| field.role.clone());
+        tracing::info!(
+            id,
+            role = role.as_deref().unwrap_or("none"),
+            "the focused field was remembered"
+        );
+        let live = self
+            .records
+            .entry(id.to_owned())
+            .or_insert_with(|| LiveRecord::new(id, device, now));
+        live.field = field;
+        live.touched = now.at;
+        self.answer(
+            reply,
+            200,
+            json!({"ok": true, "captured": role.is_some(), "role": role.unwrap_or_default()}),
+        );
+        self.release_focus_wait(id, now);
     }
 
     /// The read-back's verdict (`recordConfirmation`): a confirmed paste

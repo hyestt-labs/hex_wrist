@@ -10,6 +10,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::desktop::Desktop;
 use super::field::{Expectation, Withheld};
 use super::recording::Verification;
 use super::suspect::SuspectReason;
@@ -74,6 +75,8 @@ pub(crate) struct Job {
     /// The language the watch asked for (`zh`, `en`, `auto`, or empty).
     pub(crate) language: String,
     pub(crate) expectation: Expectation,
+    /// The screen the output worker gates and reads back through.
+    pub(crate) desktop: Desktop,
 }
 
 type Reply = Arc<dyn Fn(DeliveryEvent) + Send + Sync>;
@@ -153,6 +156,7 @@ mod tests {
             id: id.into(),
             language: "en".into(),
             expectation: Expectation::Current,
+            desktop: Desktop::null(),
         }
     }
 

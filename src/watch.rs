@@ -86,10 +86,18 @@ pub(crate) fn start_in_app(
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         timing,
     };
+    let desktop = match desktop::Desktop::start(std::sync::Arc::new(screen::MacScreen)) {
+        Ok(desktop) => desktop,
+        Err(error) => {
+            tracing::warn!(%error, "the Apple Watch service did not start: no accessibility thread");
+            return None;
+        }
+    };
     match WatchService::start(
         config,
         Box::new(ListenerDictation::new(controls)),
         Box::new(pairing::keychain::KeychainSecretStore::new()),
+        desktop,
     ) {
         Ok(service) => {
             install(service.clone());

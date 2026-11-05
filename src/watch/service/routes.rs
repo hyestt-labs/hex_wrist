@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use super::pending::Reply;
-use super::state::{Core, LiveRecord, Now};
+use super::pending::{Reply, Waiting};
+use super::state::{CAPTURE_WAIT, Core, Now};
 use crate::watch::frame::{
     E2EE_PATH, E2EE_QUERY_PATH, RequestHead, Route, Tier, body_refusal, cloud_route,
     plaintext_refusal,
@@ -16,6 +16,7 @@ use crate::watch::pairing::requests::{PairingRequest, PairingResult};
 use crate::watch::pairing::{self, FILE_NAME as PAIRED_FILE};
 use crate::watch::recording::{Caller, Channel, Record, State, refuse_non_owner};
 use crate::watch::refusal::Refusal;
+use crate::watch::service::Message;
 use crate::watch::{
     MINIMUM_PEER_PROTOCOL, PROTOCOL_VERSION, PeerInfo, SENT_AT_HEADER, TOKEN_HEADER, e2ee,
     is_valid_recording_id,
@@ -88,7 +89,7 @@ impl Core {
         let served = match (route.method, route.path) {
             ("GET", "/health") => self.health(),
             ("GET", "/status") => self.status(&head.query, &device, inside, now),
-            ("POST", "/focus") => self.focus(&body, &device, now),
+            ("POST", "/focus") => return self.focus(&body, &device, reply, now),
             ("POST", "/enter") => Ok(not_supported("Enter")),
             ("POST", "/undo") => Ok(not_supported("Undo")),
             ("POST", "/ping") => Ok(ping(&head, now)),
@@ -160,12 +161,17 @@ impl Core {
 
     fn health(&self) -> Result<(u16, Value), Refusal> {
         let model = self.dictation.model();
+        let trusted = self.desktop.trusted();
         Ok((
             200,
             json!({
                 "ok": true,
-                "paste_ready": true,
-                "paste_detail": "",
+                "paste_ready": trusted,
+                "paste_detail": if trusted {
+                    ""
+                } else {
+                    "Accessibility permission is not granted (System Settings › Privacy & Security › Accessibility)"
+                },
                 "model": model.state,
                 "model_id": model.id,
                 "model_name": model.name,
@@ -218,29 +224,44 @@ impl Core {
             .ok_or(Refusal::UnknownId)
     }
 
-    /// `/focus`: the watch started recording `id`. B1 takes no field
-    /// snapshot (`captured: false`); it marks the recording awaiting its
-    /// audio and releases audio that arrived first.
-    fn focus(&mut self, body: &[u8], device: &str, now: Now) -> Result<(u16, Value), Refusal> {
-        let payload = json_body(body).ok_or(Refusal::InvalidJson)?;
-        let id = string_field(&payload, "id").unwrap_or_default();
-        if !is_valid_recording_id(&id) {
-            return Err(Refusal::InvalidId);
-        }
-        refuse_non_owner(self.owner_of(&id, now), Caller::Device(device))?;
+    /// `/focus`: the watch started recording `id`. The `watch-ax` thread
+    /// reads the focused field; the reply waits for it (`Waiting::Capture`)
+    /// and then marks the recording awaiting its audio.
+    fn focus(&mut self, body: &[u8], device: &str, reply: Reply, now: Now) {
+        let checked = (|| {
+            let payload = json_body(body).ok_or(Refusal::InvalidJson)?;
+            let id = string_field(&payload, "id").unwrap_or_default();
+            if !is_valid_recording_id(&id) {
+                return Err(Refusal::InvalidId);
+            }
+            refuse_non_owner(self.owner_of(&id, now), Caller::Device(device))?;
+            Ok(id)
+        })();
+        let id = match checked {
+            Ok(id) => id,
+            Err(refusal) => return self.refuse(reply, refusal),
+        };
         let existing = self.records.get(&id).map(|live| &live.record);
         if let Some(record) = existing
             && record.state != State::AwaitingAudio
         {
-            return Ok((
+            let state = record.state.name();
+            return self.answer(
+                reply,
                 200,
-                json!({"ok": true, "captured": false, "state": record.state.name()}),
-            ));
+                json!({"ok": true, "captured": false, "state": state}),
+            );
         }
-        self.records
-            .insert(id.clone(), LiveRecord::new(&id, device, now));
-        self.release_focus_wait(&id, now);
-        Ok((200, json!({"ok": true, "captured": false, "role": ""})))
+        self.waiting.push(Waiting::Capture {
+            id: id.clone(),
+            device: device.to_owned(),
+            reply,
+            deadline: now.at + CAPTURE_WAIT,
+        });
+        let inbox = self.inbox.clone();
+        self.desktop.capture(move |field| {
+            let _ = inbox.send(Message::Captured { id, field });
+        });
     }
 
     /// `/pairing/request`: only the watch whose code was just typed, within

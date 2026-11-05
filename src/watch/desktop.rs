@@ -62,6 +62,9 @@ enum Runner {
     /// Runs each job on the caller's thread: deterministic tests.
     #[cfg(test)]
     Inline,
+    /// Drops every job unanswered: an application that never responds.
+    #[cfg(test)]
+    Silent,
 }
 
 /// The handle the service, the output worker, and the jobs share. Cloning
@@ -115,6 +118,21 @@ impl Desktop {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn silent(screen: Arc<dyn Screen>) -> Self {
+        Self {
+            screen,
+            exclusive: Arc::new(Mutex::new(())),
+            runner: Arc::new(Runner::Silent),
+        }
+    }
+
+    /// A desktop that sees nothing, for tests that never reach the screen.
+    #[cfg(test)]
+    pub(crate) fn null() -> Self {
+        Self::inline(Arc::new(fake::FakeScreen::default()))
+    }
+
     pub(crate) fn screen(&self) -> &dyn Screen {
         self.screen.as_ref()
     }
@@ -161,6 +179,8 @@ impl Desktop {
             }
             #[cfg(test)]
             Runner::Inline => run(self.screen.as_ref(), &self.exclusive, job),
+            #[cfg(test)]
+            Runner::Silent => drop(job),
         }
     }
 }
