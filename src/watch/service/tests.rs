@@ -665,6 +665,45 @@ fn another_watch_cannot_touch_a_recording() {
     assert_eq!(answer.body["error"], "not-owner");
 }
 
+/// Swift's `isInsideOwnEnvelope`: a token from another watch inside an
+/// envelope counts as plaintext, so it reads no text and passes no ratchet.
+#[test]
+fn an_envelope_only_speaks_for_the_watch_whose_key_opened_it() {
+    let mut h = harness("envelope-binding");
+    let mallory = h.pair("watch-1");
+    let victim = h.pair("watch-2");
+    let mut head = audio_head(&victim, ID, "current", h.now.epoch());
+    head.requires_e2ee = Some(true);
+    assert!(h.send_audio(&victim, &head, M4A).is_none());
+    h.deliver(0, report(DeliveryOutcome::Copied, "the victim's words"));
+    assert!(h.core.paired.requires_e2ee(&victim.device));
+    let impostor = Watch {
+        device: mallory.device.clone(),
+        token: victim.token.clone(),
+        key: mallory.key.clone(),
+    };
+
+    let status = h.query(&impostor, "/status", &[("id", ID)]).unwrap();
+    assert_eq!((status.status, status.sealed), (200, true));
+    assert_eq!(status.body["state"], "copied");
+    assert!(status.body.get("text").is_none(), "{}", status.body);
+
+    let focus = h.query(&impostor, "/focus", &[("id", OTHER_ID)]).unwrap();
+    assert_eq!(
+        (focus.status, focus.body["error"].as_str()),
+        (403, Some("e2ee-required"))
+    );
+    assert!(!h.core.records.contains_key(OTHER_ID));
+
+    let head = audio_head(&impostor, OTHER_ID, "current", h.now.epoch());
+    let audio = h.send_audio(&impostor, &head, M4A).unwrap();
+    assert_eq!(
+        (audio.status, audio.body["error"].as_str()),
+        (403, Some("e2ee-required"))
+    );
+    assert_eq!(h.jobs.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn plaintext_audio_is_always_e2ee_required() {
     let mut h = harness("plaintext-audio");

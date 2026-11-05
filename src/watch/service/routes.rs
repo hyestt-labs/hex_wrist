@@ -28,6 +28,10 @@ const RATCHETED_PATHS: &[&str] = &["/audio", "/focus", "/enter", "/undo"];
 /// The paired watch a device-tier request came from.
 pub(crate) struct Auth {
     pub(crate) device: String,
+    /// The envelope that carried the request was opened with this watch's
+    /// own key (Swift's `isInsideOwnEnvelope`); it has passed the ratchet
+    /// and may read a record's text.
+    pub(crate) inside: bool,
 }
 
 /// Swift's `jsonBody`: an empty body reads as `{}`; anything that is not
@@ -50,34 +54,28 @@ impl Core {
     /// A request the relay forwarded.
     pub(crate) fn on_request(&mut self, head: RequestHead, body: Vec<u8>, now: Now) {
         let reply = Reply::new(&head.id, &head.method, &head.path);
-        self.dispatch(head, body, reply, false, now);
+        self.dispatch(head, body, reply, now);
     }
 
-    /// `inside` is true for the request an envelope carried; it has passed
-    /// the ratchet and may read a record's text.
-    pub(super) fn dispatch(
-        &mut self,
-        head: RequestHead,
-        body: Vec<u8>,
-        reply: Reply,
-        inside: bool,
-        now: Now,
-    ) {
+    /// A request an envelope carried has a sealed `reply`.
+    pub(super) fn dispatch(&mut self, head: RequestHead, body: Vec<u8>, reply: Reply, now: Now) {
         let Some(route) = cloud_route(&head.method, &head.path) else {
             return self.refuse(reply, Refusal::NotFound);
         };
         if let Some(refusal) = body_refusal(route, body.len()) {
             return self.refuse(reply, refusal);
         }
+        let envelope = reply.seal().map(|seal| seal.device_id.as_str());
         let auth = match route.tier {
             Tier::Open => None,
-            Tier::Device => match self.authenticate(&head, route, inside, now) {
+            Tier::Device => match self.authenticate(&head, route, envelope, now) {
                 Ok(auth) => Some(auth),
                 Err(refusal) => return self.refuse(reply, refusal),
             },
             Tier::Master => return self.refuse(reply, Refusal::NotFound),
         };
-        let device = auth.map(|auth| auth.device).unwrap_or_default();
+        let (device, inside) =
+            auth.map_or((String::new(), false), |auth| (auth.device, auth.inside));
         let served = match (route.method, route.path) {
             ("GET", "/health") => self.health(),
             ("GET", "/status") => self.status(&head.query, inside, now),
@@ -100,11 +98,13 @@ impl Core {
 
     /// Swift's `authorize` plus the checks `dispatch` runs for a device
     /// caller: token, ratchet, pairing completion, protocol age, `touch`.
+    /// `envelope` names the watch whose key opened the carrying envelope;
+    /// another watch's token inside it counts as plaintext.
     fn authenticate(
         &mut self,
         head: &RequestHead,
         route: &Route,
-        inside: bool,
+        envelope: Option<&str>,
         now: Now,
     ) -> Result<Auth, Refusal> {
         let token = head.header(TOKEN_HEADER).unwrap_or("");
@@ -121,6 +121,10 @@ impl Core {
                 return Err(Refusal::Forbidden);
             }
         };
+        let inside = envelope == Some(device.as_str());
+        if envelope.is_some() && !inside {
+            tracing::info!(path = %head.path, "an envelope carried another watch's token");
+        }
         if !inside {
             if let Some(refusal) = plaintext_refusal(route) {
                 return Err(refusal);
@@ -140,7 +144,7 @@ impl Core {
             ));
         }
         self.paired.touch(&device, Some(&peer), now.wall);
-        Ok(Auth { device })
+        Ok(Auth { device, inside })
     }
 
     fn health(&self) -> Result<(u16, Value), Refusal> {

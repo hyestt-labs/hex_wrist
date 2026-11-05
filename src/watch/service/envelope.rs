@@ -145,7 +145,7 @@ impl Core {
             headers,
             body_len: audio_bytes.len(),
         };
-        self.dispatch(inner, audio_bytes.to_vec(), reply, true, now);
+        self.dispatch(inner, audio_bytes.to_vec(), reply, now);
     }
 
     pub(super) fn encrypted_query(
@@ -204,7 +204,7 @@ impl Core {
             headers,
             body_len: body.len(),
         };
-        self.dispatch(inner, body, reply, true, now);
+        self.dispatch(inner, body, reply, now);
     }
 
     /// Only a field inside the ciphertext proves the watch wants the
@@ -240,10 +240,6 @@ impl Core {
         reply: Reply,
         now: Now,
     ) {
-        if reply.seal().is_some_and(|seal| seal.device_id != device) {
-            tracing::info!("a recording's token belongs to a watch other than its envelope's");
-            return self.refuse(reply, Refusal::Forbidden);
-        }
         let id = head.header(ID_HEADER).unwrap_or("");
         if !is_valid_recording_id(id) {
             return self.refuse(reply, Refusal::InvalidMetadata);
