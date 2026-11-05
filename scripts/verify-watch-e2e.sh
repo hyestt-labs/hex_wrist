@@ -721,6 +721,9 @@ chk() { [ "$1" = ok ] || FAILS="$FAILS; $2"; }              # chk ok|bad "what f
 is() { if "$@"; then echo ok; else echo bad; fi; }
 breaks() { tr -cd '\r\n' < "$SC_FILE" | wc -c | tr -d ' '; }  # line breaks in the read-back
 count() { grep -o -- "$1" "$SC_FILE" | wc -l | tr -d ' '; }  # occurrences of a string
+# The recorder window echoes ENTER:<line> for each Return. (grep -c, not -q: no SIGPIPE under pipefail.)
+enter_lines() { grep -c '^ENTER:[^[:space:]]' "$SC_FILE"; }          # Returns that carried the pasted text
+empty_enter_lines() { grep -c '^ENTER:[[:space:]]*$' "$SC_FILE"; }  # Returns on an empty line
 
 # finish STAGE SCENARIO LANG PERCENT: records PASS when FAILS is empty.
 finish() {
@@ -829,6 +832,14 @@ scenario_enter_undo() {
     chk "$(is [ "$(rj '.undo.body.ok')" = false ])" "undo in a terminal was not refused: $(rj '.undo|tostring')"
     finish 3 cat-undo en "$SC_PERCENT"
   fi
+  if want recorder-enter; then
+    sim_run recorder en --enter; sim_close recorder
+    judged en
+    chk "$(is [ "$(rj '.enter.body.ok')" = true ])" "enter reply: $(rj '.enter|tostring')"
+    chk "$(is [ "$(enter_lines)" = 1 ])" "$(enter_lines) Return(s) reached the shell with text, want exactly 1"
+    chk "$(is [ "$(empty_enter_lines)" = 0 ])" "$(empty_enter_lines) empty Return(s) reached the shell"
+    finish 3 recorder-enter en "$SC_PERCENT"
+  fi
   if want shell-enter; then
     sim_run shell en --enter; sim_close shell
     judged en
@@ -847,9 +858,12 @@ scenario_double_enter() {
     finish 3 enter-twice-textedit en "$SC_PERCENT"
   fi
   if want enter-twice-shell; then
-    sim_run shell en --enter-twice; sim_close shell
+    # The recorder window prints one ENTER:<line> per Return it receives, so a second Return
+    # (which sends an empty line) shows up as a bare "ENTER:".
+    sim_run recorder en --enter-twice; sim_close recorder
     judged en
-    chk "$(is [ "$(count 'command not found')" = 1 ])" "the shell ran the line $(count 'command not found') times, want 1"
+    chk "$(is [ "$(enter_lines)" = 1 ])" "$(enter_lines) Return(s) reached the shell with text, want exactly 1"
+    chk "$(is [ "$(empty_enter_lines)" = 0 ])" "$(empty_enter_lines) extra empty Return(s): the second Enter was typed too"
     finish 3 enter-twice-shell en "$SC_PERCENT"
   fi
 }
