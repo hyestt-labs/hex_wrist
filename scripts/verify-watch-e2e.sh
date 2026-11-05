@@ -58,8 +58,14 @@ export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 unset HEX_APPLICATION_SUPPORT_DIR HEX_WATCH_RELAY_BASE
 
+# The real watch Swift sources, at pinned commits (never a branch or a working tree, which move).
+# WRISTPER_SRC is a checkout of the Wristper Swift repo; the script reads these two commits out of
+# its git history (git archive) and builds from that export, so uncommitted edits never leak in.
+#   WRISTPER_SRC_COMMIT    the watch app's protocol sources: watch-sim compiles WatchShared and WatchProbe from here
+#   WRISTPER_HOOKS_COMMIT  that commit plus the DEBUG-only E2E hooks (branch test/sim-fixture-audio): stage 2 builds this app
 WRISTPER_SRC=${WRISTPER_SRC:-/Users/glenhsu/orca/workspaces/wristper/coding}
-WRISTPER_HOOKS_SRC=${WRISTPER_HOOKS_SRC:-/Users/glenhsu/orca/workspaces/wristper/sim-hooks}
+WRISTPER_SRC_COMMIT=${WRISTPER_SRC_COMMIT:-426185302ac51f77b07fc59878491bdf9a16ce71}
+WRISTPER_HOOKS_COMMIT=${WRISTPER_HOOKS_COMMIT:-c7dcb971f9ff6175bfc7676a681db77e1fdc0505}
 # Links the Rust test binary on this Mac (Xcode 26: -lswiftCompatibility56). Optional.
 WATCH_E2E_B2_ENV=${WATCH_E2E_B2_ENV:-/Users/glenhsu/orca/workspaces/hex_wrist/migration_to_hex/artifacts/wristper-migration-20261104/b2-test-env/env.sh}
 SIGN_IDENTITY=${SIGN_IDENTITY:-Developer ID Application: WEI CHIEH HSU (VQY3J86U79)}
@@ -350,10 +356,30 @@ build_mac_app() {
   fi
 }
 
+# export_pinned COMMIT NAME [paths...]: the commit's files (or just those paths) under
+# target/watch-e2e/pinned/NAME-COMMIT, made once and never changed. Prints the folder.
+export_pinned() {
+  local commit=$1 name=$2 dest
+  shift 2
+  [[ $commit =~ ^[0-9a-f]{40}$ ]] || die "$name commit must be a full 40-character sha, got '$commit'" 2
+  git -C "$WRISTPER_SRC" cat-file -e "$commit^{commit}" 2>/dev/null \
+    || die "commit $commit is not in $WRISTPER_SRC's git history; fetch it or set WRISTPER_SRC" 2
+  dest="$root/target/watch-e2e/pinned/$name-$commit"
+  if [ ! -f "$dest/.complete" ]; then
+    mkdir -p "$dest"
+    git -C "$WRISTPER_SRC" archive "$commit" "$@" | tar -x -C "$dest" || die "could not export $name at $commit" 2
+    : > "$dest/.complete"
+  fi
+  echo "$dest"
+}
+
 build_watch_sim() {
-  log "building watch-sim from $WRISTPER_SRC"
-  "$root/scripts/watch-sim/build.sh" "$sim" > "$out/build-watch-sim.log" 2>&1 \
+  local src
+  src=$(export_pinned "$WRISTPER_SRC_COMMIT" watch-src WatchProbe WatchShared) || exit $?
+  log "building watch-sim from the watch sources at $WRISTPER_SRC_COMMIT"
+  WRISTPER_SRC="$src" "$root/scripts/watch-sim/build.sh" "$sim" > "$out/build-watch-sim.log" 2>&1 \
     || die "watch-sim build failed; see $out/build-watch-sim.log"
+  echo "$WRISTPER_SRC_COMMIT" > "$(dirname "$sim")/built-from-commit"
 }
 
 # The clipboard backup tool (scripts/pasteboard-tool): saves and restores every type on the pasteboard.
@@ -370,7 +396,9 @@ build_pbtool
 [ -x "$hex" ] || die "$app is missing; run without --skip-build" 2
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "$TEST_BUNDLE" ] \
   || die "$app is not $TEST_BUNDLE" 2
-if { [ "$build" = 1 ] || [ ! -x "$sim" ]; } && { stage_on 1 || stage_on 3; }; then build_watch_sim; fi
+if { [ "$build" = 1 ] || [ ! -x "$sim" ] || [ "$(cat "$(dirname "$sim")/built-from-commit" 2>/dev/null)" != "$WRISTPER_SRC_COMMIT" ]; } &&
+   { stage_on 1 || stage_on 3; }; then build_watch_sim; fi
+log "watch sources pinned: watch-sim $WRISTPER_SRC_COMMIT, stage 2 app $WRISTPER_HOOKS_COMMIT" 
 
 # --- the test app -----------------------------------------------------------
 
@@ -951,19 +979,21 @@ wait_log() { # pattern timeout-seconds start-line -> matching line
 }
 
 stage2() {
-  [ -d "$WRISTPER_HOOKS_SRC/WristperProbe.xcodeproj" ] || die "WRISTPER_HOOKS_SRC=$WRISTPER_HOOKS_SRC has no WristperProbe.xcodeproj" 2
-  grep -q "e2ePair" "$WRISTPER_HOOKS_SRC/WatchProbe/E2EHooks.swift" 2>/dev/null \
-    || die "$WRISTPER_HOOKS_SRC lacks WatchProbe/E2EHooks.swift (branch test/sim-fixture-audio)" 2
+  local hooks_src
+  hooks_src=$(export_pinned "$WRISTPER_HOOKS_COMMIT" watch-app) || exit $?
+  [ -d "$hooks_src/WristperProbe.xcodeproj" ] || die "commit $WRISTPER_HOOKS_COMMIT has no WristperProbe.xcodeproj" 2
+  [[ $(cat "$hooks_src/WatchProbe/E2EHooks.swift" 2>/dev/null) == *e2ePair* ]] \
+    || die "commit $WRISTPER_HOOKS_COMMIT lacks WatchProbe/E2EHooks.swift (branch test/sim-fixture-audio)" 2
   sim_udid=$(sim_device)
   log "stage 2: watchOS Simulator $sim_name ($sim_udid), made for this run"
   xcrun simctl boot "$sim_udid" >/dev/null 2>&1
   xcrun simctl bootstatus "$sim_udid" -b >/dev/null 2>&1 || die "simulator did not boot"
-  local dd="$root/target/watch-e2e/watch-dd" watch_app
+  local dd="$root/target/watch-e2e/watch-dd-$WRISTPER_HOOKS_COMMIT" watch_app
   if [ "$build" = 1 ] || [ ! -d "$dd/Build/Products/Debug-watchsimulator/WristperProbe.app" ]; then
     # Ad hoc signing is required: an unsigned simulator build has no application-identifier,
     # so its Keychain refuses the pairing key ("Could not securely save the encryption key").
-    log "building the watch app (Debug, E2E hooks) from $WRISTPER_HOOKS_SRC"
-    xcodebuild -project "$WRISTPER_HOOKS_SRC/WristperProbe.xcodeproj" -scheme WristperProbe -configuration Debug \
+    log "building the watch app (Debug, E2E hooks) at $WRISTPER_HOOKS_COMMIT"
+    xcodebuild -project "$hooks_src/WristperProbe.xcodeproj" -scheme WristperProbe -configuration Debug \
       -destination "id=$sim_udid" -derivedDataPath "$dd" build \
       CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= > "$out/build-watch.log" 2>&1 \
       || die "watch app build failed; see $out/build-watch.log"

@@ -10,7 +10,7 @@ description: Drive the Wristper Mac app (this Hex fork) end to end on a real Mac
 The script runs four stages:
 
 1. **Protocol watch.** `watch-sim` is a macOS command-line watch compiled from the shipping watch Swift sources (`scripts/watch-sim/build.sh`). It pairs, then sends English and Mandarin into TextEdit and Terminal.
-2. **Real watch app.** A DEBUG build from the `test/sim-fixture-audio` branch runs in a watchOS Simulator named `Wristper E2E`. Launch arguments make it pair and record without taps, with a fixture m4a instead of the microphone. It runs the same cases as stage 1.
+2. **Real watch app.** A DEBUG build from the pinned hooks commit (branch `test/sim-fixture-audio`) runs in a watchOS Simulator that the run creates (`Wristper E2E <run id>`) and deletes. Launch arguments make it pair and record without taps, with a fixture m4a instead of the microphone. It runs the same cases as stage 1.
 3. **Scenarios no unit test covers**, through `watch-sim`:
    - `clipboard-keep-gate-switch`: Labs › Keep dictation on clipboard is on, the clipboard holds a sentinel, and the script switches to Finder after the recording starts and before its audio arrives. The first gate withholds the dictation as `target-changed`, nothing may reach the document, and the clipboard must still hold the sentinel.
    - `clipboard-keep-paste`: the same with no switch. The dictation stays on the clipboard.
@@ -64,8 +64,10 @@ Without a build step the script needs about 15 minutes. The first Mandarin run a
 
 You can set these environment variables:
 
-- `WRISTPER_SRC` is the Wristper checkout that watch-sim compiles from. It is read only. The default is `/Users/glenhsu/orca/workspaces/wristper/coding`.
-- `WRISTPER_HOOKS_SRC` is the watch app with the E2E hooks. The default is `/Users/glenhsu/orca/workspaces/wristper/sim-hooks`, the worktree of branch `test/sim-fixture-audio`.
+- **Pinned watch sources.** The script never builds from a branch or a working tree. It reads two commits out of the Wristper Swift repo's git history with `git archive` and builds from that export (`target/watch-e2e/pinned/<name>-<commit>`, made once and never changed):
+  - `WRISTPER_SRC_COMMIT` = `426185302ac51f77b07fc59878491bdf9a16ce71` (the watch app sources, Wristper PR #288 merge). `watch-sim` compiles `WatchShared` and `WatchProbe` from it.
+  - `WRISTPER_HOOKS_COMMIT` = `c7dcb971f9ff6175bfc7676a681db77e1fdc0505` (that commit plus the DEBUG-only E2E hooks, branch `test/sim-fixture-audio`). Stage 2 builds this app.
+  - Both are constants at the top of `scripts/verify-watch-e2e.sh`, and the run log prints them. An override must be a full 40-character sha. `WRISTPER_SRC` (default `/Users/glenhsu/orca/workspaces/wristper/coding`) is only the checkout whose history holds them. To move a pin, change the constant and this paragraph in the same commit.
 - `WATCH_E2E_B2_ENV` is the file that links the Rust test binary on this Mac (stage 4). The default is `.../migration_to_hex/artifacts/wristper-migration-20261104/b2-test-env/env.sh`.
 - `WATCH_E2E_EN_MODEL` and `WATCH_E2E_ZH_MODEL` set the model for each language. The defaults are `parakeet_unified_en` and `nemotron_3_5_asr`. The watch sends language `auto`, so the Mac transcribes with the selected model and language. The script selects the model before each language with `hex model install <id> --language <lang>`.
 - `WATCH_E2E_EN_PASS` and `WATCH_E2E_ZH_PASS` set the pass thresholds in percent. The defaults are 80 and 60.
