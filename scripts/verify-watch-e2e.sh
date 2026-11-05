@@ -63,7 +63,6 @@ WRISTPER_HOOKS_SRC=${WRISTPER_HOOKS_SRC:-/Users/glenhsu/orca/workspaces/wristper
 # Links the Rust test binary on this Mac (Xcode 26: -lswiftCompatibility56). Optional.
 WATCH_E2E_B2_ENV=${WATCH_E2E_B2_ENV:-/Users/glenhsu/orca/workspaces/hex_wrist/migration_to_hex/artifacts/wristper-migration-20261104/b2-test-env/env.sh}
 SIGN_IDENTITY=${SIGN_IDENTITY:-Developer ID Application: WEI CHIEH HSU (VQY3J86U79)}
-SIM_NAME=${WATCH_E2E_SIM_NAME:-Wristper E2E}
 SIM_TYPE=${WATCH_E2E_SIM_TYPE:-com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11-46mm}
 WATCH_BUNDLE=dev.wristper.watch.watchkitapp
 TEST_BUNDLE=dev.wristper.mac.test
@@ -90,6 +89,10 @@ out="$root/target/watch-e2e/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$out"
 results="$out/results.jsonl"
 : > "$results"
+run_id=$(basename "$out")
+# A simulator is made fresh for this run and deleted at its end. It is never
+# reused, never erased, and no other device is touched.
+sim_name="Wristper E2E $run_id"
 # Secrets live only here: the clipboard backup, the watch's pairing keys, and
 # raw logs that hold pairing codes. Mode 0700, moved to the Trash at exit.
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/wristper-e2e.XXXXXX") || { echo "cannot make a temp folder" >&2; exit 2; }
@@ -181,6 +184,22 @@ quit_if_ours() { # app was-running
   esac
 }
 
+# Shuts down and deletes the simulator this run created, after checking by udid and by its
+# run-specific name that it is that one. Any other device is never shut down or erased.
+delete_sim() {
+  [ -n "$sim_udid" ] || return 0
+  local name
+  name=$(xcrun simctl list devices -j 2>/dev/null | jq -r --arg u "$sim_udid" '[.devices[][] | select(.udid==$u)][0].name // empty')
+  if [ "$name" = "$sim_name" ]; then
+    xcrun simctl shutdown "$sim_udid" >/dev/null 2>&1
+    xcrun simctl delete "$sim_udid" >/dev/null 2>&1
+    log "deleted simulator $sim_name ($sim_udid)"
+  else
+    log "not deleting simulator $sim_udid: its name is '${name:-gone}', not '$sim_name'"
+  fi
+  sim_udid=
+}
+
 # Children of this script (and their children): watch-sim, log streams, hex watch pair. Chrome is
 # started detached and is closed through chrome-handles instead.
 kill_children() {
@@ -207,7 +226,9 @@ cleanup() {
   fi
   if [ "$keep" = 0 ]; then
     stop_wristper_test
-    [ -n "$sim_udid" ] && xcrun simctl shutdown "$sim_udid" >/dev/null 2>&1
+    delete_sim
+  elif [ -n "$sim_udid" ]; then
+    log "--keep-running: simulator $sim_name ($sim_udid) stays; remove it with: xcrun simctl delete $sim_udid"
   fi
   quit_if_ours TextEdit "$was_textedit"
   quit_if_ours Terminal "$was_terminal"
@@ -869,15 +890,15 @@ stage3() {
 
 # --- stage 2: the real watch app in a watchOS Simulator ---------------------
 
+# Always a new device: made here, owned by this run, deleted by cleanup.
 sim_device() {
-  local udid runtime
-  udid=$(xcrun simctl list devices -j | jq -r --arg n "$SIM_NAME" \
-    '[.devices[][] | select(.name==$n and .isAvailable)][0].udid // empty')
-  if [ -z "$udid" ]; then
-    runtime=$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.platform=="watchOS" and .isAvailable)] | last | .identifier')
-    [ -n "$runtime" ] && [ "$runtime" != null ] || die "no watchOS Simulator runtime installed (Xcode > Settings > Components)" 2
-    udid=$(xcrun simctl create "$SIM_NAME" "$SIM_TYPE" "$runtime") || die "simctl create failed"
-  fi
+  local udid runtime type
+  runtime=$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.platform=="watchOS" and .isAvailable)] | last | .identifier')
+  [ -n "$runtime" ] && [ "$runtime" != null ] || die "no watchOS Simulator runtime installed (Xcode > Settings > Components)" 2
+  type=$SIM_TYPE
+  xcrun simctl list devicetypes -j | jq -e --arg t "$type" '.devicetypes[] | select(.identifier==$t)' >/dev/null 2>&1 ||
+    type=$(xcrun simctl list devicetypes -j | jq -r '[.devicetypes[] | select(.productFamily=="Apple Watch")] | last | .identifier')
+  udid=$(xcrun simctl create "$sim_name" "$type" "$runtime") || die "simctl create failed"
   echo "$udid"
 }
 
@@ -896,7 +917,7 @@ stage2() {
   grep -q "e2ePair" "$WRISTPER_HOOKS_SRC/WatchProbe/E2EHooks.swift" 2>/dev/null \
     || die "$WRISTPER_HOOKS_SRC lacks WatchProbe/E2EHooks.swift (branch test/sim-fixture-audio)" 2
   sim_udid=$(sim_device)
-  log "stage 2: watchOS Simulator $SIM_NAME ($sim_udid)"
+  log "stage 2: watchOS Simulator $sim_name ($sim_udid), made for this run"
   xcrun simctl boot "$sim_udid" >/dev/null 2>&1
   xcrun simctl bootstatus "$sim_udid" -b >/dev/null 2>&1 || die "simulator did not boot"
   local dd="$root/target/watch-e2e/watch-dd" watch_app
@@ -910,10 +931,7 @@ stage2() {
       || die "watch app build failed; see $out/build-watch.log"
   fi
   watch_app="$dd/Build/Products/Debug-watchsimulator/WristperProbe.app"
-  # A fresh watch every run: no earlier pairing in the app or the simulator's Keychain.
-  xcrun simctl terminate "$sim_udid" "$WATCH_BUNDLE" >/dev/null 2>&1
-  xcrun simctl uninstall "$sim_udid" "$WATCH_BUNDLE" >/dev/null 2>&1
-  xcrun simctl keychain "$sim_udid" reset >/dev/null 2>&1
+  # The device is new, so its app data and Keychain are empty: nothing to reset or erase.
   xcrun simctl install "$sim_udid" "$watch_app" || die "simctl install failed"
   xcrun simctl privacy "$sim_udid" grant microphone "$WATCH_BUNDLE" >/dev/null 2>&1
 
