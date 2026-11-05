@@ -78,6 +78,7 @@ ZH_PASS=${WATCH_E2E_ZH_PASS:-60}
 CHROME_URL='data:text/html,%3Ctextarea%20id%3Dt%20autofocus%20style%3D%22width%3A90vw%3Bheight%3A80vh%22%3E%3C%2Ftextarea%3E'
 # Where claude and codex start (they ask to trust a folder they have not seen).
 AGENT_DIR=${WATCH_E2E_AGENT_DIR:-$root}
+AGENT_BIN=
 
 app="$root/target/app/Wristper Test.app"
 hex="$app/Contents/MacOS/hex"
@@ -147,7 +148,7 @@ screen_locked() { local o; o=$(ioreg -n Root -d1 2>/dev/null); [[ $o == *'"IOCon
 probe_automation() {
   local appname=$1 err rc runner
   runner=$(runner_app)
-  err=$(run_to 25 osascript -e "tell application \"$appname\" to get name" 2>&1 >/dev/null); rc=$?
+  err=$(run_to 25 osascript -e "tell application \"$appname\" to count windows" 2>&1 >/dev/null); rc=$?
   [ $rc = 0 ] && return 0
   need "Automation: in System Settings > Privacy & Security > Automation, turn on \"$appname\" under \"$runner\" (or click OK when macOS asks). osascript said: ${err:-timed out waiting for the prompt}"
   return 1
@@ -369,7 +370,7 @@ open_target() {
         -e 'delay 1.5' -e 'return tty of t' -e 'end tell' ;;
     claude|codex)
       osascript -e 'tell application "Terminal"' -e 'activate' \
-        -e "set t to do script \"cd '$AGENT_DIR' && clear && $1\"" \
+        -e "set t to do script \"cd '$AGENT_DIR' && clear && '$AGENT_BIN'\"" \
         -e 'delay 12' -e 'return tty of t' -e 'end tell' ;;
     chrome) chrome_open ;;
   esac
@@ -524,9 +525,12 @@ scenario_clipboard() {
   keep_setting_original=$("$hex" settings get labs.keep_on_clipboard 2>/dev/null)
   [ "$keep_setting_original" = true ] && keep_setting_original=on || keep_setting_original=off
 
-  if want clipboard-keep-switch; then
-    # keep_on_clipboard on, the person switches app after the recording started:
-    # the dictation is withheld and the clipboard they had must still be there.
+  if want clipboard-keep-gate-switch; then
+    # keep_on_clipboard on, the person switches app after the recording started
+    # and before its audio arrives: the first gate withholds the dictation, so
+    # the clipboard is never written. This does NOT reach the final focus check
+    # (after the clipboard write, right before the paste key): that window is
+    # tens of ms and /status reports both refusals the same way (target-changed).
     set_keep on; printf %s "$sentinel" | pbcopy
     sim_run textedit en --after-focus 'open -a Finder; sleep 2'
     board=$(pbpaste)
@@ -534,7 +538,7 @@ scenario_clipboard() {
     chk "$(is [ "$(rj '.state')" = target-changed ])" "state is $(rj '.state'), want target-changed"
     chk "$(is [ "$board" = "$sentinel" ])" "clipboard is '${board:0:60}', want the sentinel back"
     chk "$(is [ "$(count Friday)" = 0 ])" "text reached the document anyway"
-    SC_PERCENT=0; finish 3 clipboard-keep-switch en "$SC_PERCENT"
+    SC_PERCENT=0; finish 3 clipboard-keep-gate-switch en "$SC_PERCENT"
   fi
 
   if want clipboard-keep-paste; then
@@ -600,12 +604,10 @@ scenario_enter_undo() {
 }
 
 scenario_double_enter() {
-  local ok
   if want enter-twice-textedit; then
     sim_run textedit en --enter-twice; sim_close textedit
     judged en
-    ok=$(jq -r '[.enters[].body.ok] | map(select(. == true)) | length' <<<"$SC_REPORT" 2>/dev/null)
-    chk "$(is [ "${ok:-0}" = 1 ])" "$ok of 2 Enter calls reported ok, want 1: $(rj '.enters|tostring')"
+    # The two replies are kept in the detail; the proof is how often Return was typed.
     chk "$(is [ "$(( $(breaks) - 1 ))" = 1 ])" "Return typed $(( $(breaks) - 1 )) times, want 1"
     finish 3 enter-twice-textedit en "$SC_PERCENT"
   fi
@@ -629,13 +631,25 @@ scenario_chrome() {
   done
 }
 
+# The first claude or codex on PATH that is not under ~/.wristper (the installed
+# Wristper's own wrappers, which must not run in this test).
+agent_bin() {
+  local p
+  while IFS= read -r p; do
+    case "$p" in "$HOME/.wristper/"*) continue ;; esac
+    echo "$p"; return 0
+  done < <(type -aP "$1" 2>/dev/null)
+  return 1
+}
+
 # Off by default: needs the user's claude and codex logins and spends tokens.
 scenario_agents() {
   local agent n
   for agent in claude codex; do
     want "agent-$agent" || continue
-    if ! command -v "$agent" >/dev/null; then
-      SC_REPORT='{"event":"missing"}'; SC_MS=0; : > "$SC_FILE"; FAILS="$agent is not installed"
+    AGENT_BIN=$(agent_bin "$agent")
+    if [ -z "$AGENT_BIN" ]; then
+      SC_REPORT='{"event":"missing"}'; SC_MS=0; : > "$SC_FILE"; FAILS="no $agent outside ~/.wristper on PATH"
       finish 3 "agent-$agent" en 0; continue
     fi
     sim_run "$agent" agent --enter

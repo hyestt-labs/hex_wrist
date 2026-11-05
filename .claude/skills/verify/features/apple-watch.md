@@ -28,7 +28,7 @@ Preconditions: the baseline in [README.md](./README.md).
 - **Dictate into Terminal.** The `terminal en` and `terminal zh` rows are PASS. Their read-back holds the sentence that `cat` echoed.
 - **Status.** In stage 1 `results.jsonl`, `detail.status` is the decrypted `/status` with `state`, `text`, and `transcribe_ms`.
 - **Enter and Undo.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only 'enter|undo'`. The rows `textedit-enter`, `textedit-undo`, `cat-enter`, `cat-undo`, `shell-enter`, and `enter-twice-*` are PASS. `detail.enter`, `detail.enters`, and `detail.undo` hold the Mac's raw replies. In stage 2, `E2E enter outcome=…` shows the real watch app's result.
-- **Clipboard.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only clipboard`. The three `clipboard-*` rows are PASS. `detail.fails` names the clipboard text that was found when one fails.
+- **Clipboard.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only clipboard`. The three `clipboard-*` rows are PASS (`clipboard-keep-gate-switch` covers the first gate only; see the gap in SKILL.md). `detail.fails` names the clipboard text that was found when one fails.
 - **Chromium.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only chrome`. The `chrome-textarea` rows read the text back from a throwaway incognito page.
 - **Agents (opt in).** Add `--with-agents`. The `agent-claude` and `agent-codex` rows need those tools logged in and the folder trusted.
 - **Live tests (B2).** Run `scripts/verify-watch-e2e.sh --skip-build --stage 4`. One row per `watch_live_*` test.
@@ -39,6 +39,6 @@ Preconditions: the baseline in [README.md](./README.md).
 - Anything that steals focus during a delivery puts the text elsewhere. Examples are a notification, the Wristper Test onboarding window, TextEdit's Open panel on its first launch, or Simulator.app being brought forward. Keep the Mac idle and unlocked while it runs.
 - A locked screen blocks the whole run (exit 3). The script never unlocks it.
 - With B2, audio that beats its `/focus` by more than 2 s, or a `/focus` that read nothing, is withheld as `target-changed`. It is not pasted at the cursor.
-- The clipboard scenarios cover an app switch before the audio arrives. A switch inside the few tens of milliseconds between the clipboard write and ⌘V has only a unit test.
+- The clipboard scenarios cover an app switch before the audio arrives. A switch inside the few tens of milliseconds between the clipboard write and ⌘V is not covered when Keep dictation on clipboard is on (no test at all), and has only a unit test when it is off.
 - Each `/pair/start` uses the relay's per-IP budget, which is 20 per 10 minutes. Do not loop the pairing step.
 - The real-watch flow pairs to the test Mac's own room. It never affects the installed app's pairing.

@@ -12,7 +12,7 @@ The script runs four stages:
 1. **Protocol watch.** `watch-sim` is a macOS command-line watch compiled from the shipping watch Swift sources (`scripts/watch-sim/build.sh`). It pairs, then sends English and Mandarin into TextEdit and Terminal.
 2. **Real watch app.** A DEBUG build from the `test/sim-fixture-audio` branch runs in a watchOS Simulator named `Wristper E2E`. Launch arguments make it pair and record without taps, with a fixture m4a instead of the microphone. It runs the same cases as stage 1.
 3. **Scenarios no unit test covers**, through `watch-sim`:
-   - `clipboard-keep-switch`: Labs › Keep dictation on clipboard is on, the clipboard holds a sentinel, and the script switches to Finder after the recording starts. The dictation must be withheld as `target-changed`, nothing may reach the document, and the clipboard must still hold the sentinel.
+   - `clipboard-keep-gate-switch`: Labs › Keep dictation on clipboard is on, the clipboard holds a sentinel, and the script switches to Finder after the recording starts and before its audio arrives. The first gate withholds the dictation as `target-changed`, nothing may reach the document, and the clipboard must still hold the sentinel.
    - `clipboard-keep-paste`: the same with no switch. The dictation stays on the clipboard.
    - `clipboard-default-restore`: keep is off. The sentinel comes back after the paste.
    - `textedit-enter`, `textedit-undo`: Return is typed once. Undo removes the text.
@@ -23,11 +23,12 @@ The script runs four stages:
    - `agent-claude`, `agent-codex` (only with `--with-agents`): an interactive agent in Terminal receives "Reply with only the word pong." and Return submits it, proven by the agent's reply.
 4. **B2 live tests.** `cargo nextest run --locked --bin hex --run-ignored only -E 'test(watch_live)' -j 1`. They read the focused field through Accessibility in TextEdit, Terminal, and Finder.
 
-The clipboard scenarios prove the observable result with the gate (the app switch happens before the audio). The narrower window, a switch after the clipboard write and before ⌘V, is covered only by the unit test `watch::output::tests::a_switch_during_the_clipboard_write_sends_no_paste`. A script cannot hit a window of tens of milliseconds.
+**Gap.** `clipboard-keep-gate-switch` reaches only the first gate, so the clipboard is never written and the sentinel survives even if the restore code were broken. It does not prove the restore in the final focus check (a switch after the clipboard write, right before ⌘V, with keep on; commit e0e36e16). `/status` reports both refusals as `target-changed`, and a script cannot time a window of tens of milliseconds. That restore has no automated test (report-B2-fixes3 item 3). The keep-off variant has the unit test `watch::output::tests::a_switch_during_the_clipboard_write_sends_no_paste`. To check the keep-on restore by hand, turn on Labs › Keep dictation on clipboard, put text on the clipboard, start a watch recording in TextEdit, and switch app at the moment the audio arrives, many times; the old clipboard must come back whenever the paste was withheld.
 
 ## Safety rules
 
 - Never touch `/Applications/Wristper.app`, `~/Library/Application Support/Wristper`, or its relay room.
+- `--with-agents` skips any `claude` or `codex` under `~/.wristper/` (the installed Wristper's wrappers) and uses the first other one on PATH.
 - Never touch the Keychain items of service `dev.wristper.mac.device*`. The test build uses `dev.wristper.mac.test.device`.
 - Everything runs under `Wristper Test` (bundle `dev.wristper.mac.test`, data folder `~/Library/Application Support/Wristper Test`, its own relay room).
 - The script never tries to grant a permission or to unlock the screen.
@@ -76,8 +77,10 @@ The user must be at the Mac with the screen unlocked, or have run the one-time s
 
 ```sh
 codex exec -m gpt-6.1-terra --sandbox danger-full-access \
-  'cd /Users/glenhsu/orca/workspaces/hex_wrist/verify && export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer && . "$HOME/.cargo/env" && scripts/verify-watch-e2e.sh --all 2>&1 | tee /tmp/watch-e2e.txt; echo "exit=${PIPESTATUS[0]}". Follow .claude/skills/verify/SKILL.md section "For Terra". Report the table, the exit code, and the run folder. Never touch /Applications/Wristper.app or ~/Library/Application Support/Wristper. Delete only with /usr/bin/trash.'
+  'Run this with bash, nothing else, and wait for it to finish: bash -c "cd /Users/glenhsu/orca/workspaces/hex_wrist/verify && export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer && scripts/verify-watch-e2e.sh --all > /tmp/watch-e2e.txt 2>&1; echo exit=\$?; tail -60 /tmp/watch-e2e.txt". Then follow .claude/skills/verify/SKILL.md section "For Terra" and report the table, the exit code, and the run folder. Never touch /Applications/Wristper.app or ~/Library/Application Support/Wristper. Delete only with /usr/bin/trash.'
 ```
+
+The script runs under `bash -c` on purpose: the exit code must come from the script itself, and `PIPESTATUS` does not exist in zsh.
 
 1. If the exit code is `3`, stop and paste the whole `BLOCKED` block to the user. A human must click. Do not try to grant any permission, unlock the screen, or edit TCC.
 2. If the exit code is `1`, open `target/watch-e2e/<run>/results.jsonl`, `run.log`, `stage4-live.log`, and report each FAIL row with its `detail`.
@@ -93,7 +96,7 @@ The listener turns watch audio into pasted text. It starts only after Microphone
 2. Run `"target/app/Wristper Test.app/Contents/MacOS/hex" window show`. In the setup page, click Allow for Microphone.
 3. In System Settings > Privacy & Security > Accessibility, turn on Wristper Test. If it is not listed, add `target/app/Wristper Test.app`. Turn on the app that runs the script too (Terminal, Orca, iTerm) for stage 4.
 4. The first time, macOS asks whether the app that runs the script may control TextEdit, Terminal, System Events, and Google Chrome (Automation). Click OK each time.
-5. In Google Chrome, choose View > Developer > Allow JavaScript from Apple Events.
+5. In Google Chrome, choose View > Developer > Allow JavaScript from Apple Events. This changes the user's real Chrome until they turn it off again.
 6. Run the script again with `--skip-build`.
 
 The grants survive rebuilds only while the Developer ID re-sign succeeds. The script logs a WARNING when it does not.
