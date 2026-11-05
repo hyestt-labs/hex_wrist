@@ -379,6 +379,8 @@ pub(crate) enum EnterRefusal {
     NotPasted,
     Expired,
     TargetChanged,
+    /// A password field or secure keyboard entry has focus.
+    Sensitive,
     /// The key press itself failed: a 500, unlike the others.
     Failed,
 }
@@ -390,6 +392,7 @@ impl EnterRefusal {
             Self::NotPasted => "not-pasted",
             Self::Expired => "expired",
             Self::TargetChanged => "target-changed",
+            Self::Sensitive => "sensitive",
             Self::Failed => "failed",
         }
     }

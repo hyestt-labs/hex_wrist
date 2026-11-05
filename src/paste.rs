@@ -17,6 +17,11 @@ use objc2_foundation::{NSArray, NSData, NSString};
 use crate::keyboard;
 use crate::suppression::InputActivity;
 
+mod deferred;
+
+pub(crate) use deferred::Sent;
+use deferred::{Pasted, Restore, RestoreHandle};
+
 pub struct Paster {
     clipboard: Retained<NSPasteboard>,
     activity: InputActivity,
@@ -100,6 +105,7 @@ const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 const BAD_PASTEBOARD_FLAVOR: i32 = -25133;
 const DUPLICATE_PASTEBOARD_FLAVOR: i32 = -25134;
 const PASTE_SETTLE_DELAY: Duration = Duration::from_millis(100);
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
 // Chromium 155 and 156 on macOS can drop a ⌘V that races its own pasteboard
 // change notification, however long Hex waits first (#136, #212). The bug
 // arrived with Chromium CL 8217390 and is fixed by CL 8503629 in 157.
@@ -222,7 +228,29 @@ impl Paster {
         mode: PasteMode,
         commit: impl FnOnce() -> bool,
     ) -> Result<()> {
-        self.paste_text(text, mode, commit)
+        let restore = Restore::After(CLIPBOARD_RESTORE_DELAY);
+        self.paste_text(text, mode, commit, restore, None)
+            .map(|_| ())
+    }
+
+    /// A paste that leaves the clipboard restore to the caller: a watch
+    /// recording restores once its read-back has looked. `verify` runs once
+    /// the clipboard holds the text, right before ⌘V is sent (or the text is
+    /// typed), after every slow step; `false` sends nothing, puts the
+    /// clipboard back, and answers `None`.
+    pub(crate) fn paste_deferred(
+        &mut self,
+        text: &str,
+        commit: impl FnOnce() -> bool,
+        verify: &dyn Fn() -> bool,
+    ) -> Result<Option<Sent>> {
+        self.paste_text(
+            text,
+            PasteMode::Continue,
+            commit,
+            Restore::Deferred,
+            Some(verify),
+        )
     }
 
     fn paste_text(
@@ -230,9 +258,15 @@ impl Paster {
         text: &str,
         mode: PasteMode,
         commit: impl FnOnce() -> bool,
-    ) -> Result<()> {
+        restore: Restore,
+        verify: Option<&dyn Fn() -> bool>,
+    ) -> Result<Option<Sent>> {
         if matches!(mode, PasteMode::CopyOnly) {
-            return self.copy_only(text, commit);
+            self.copy_only(text, commit)?;
+            return Ok(Some(Sent {
+                inserted: text.to_owned(),
+                restore: None,
+            }));
         }
         let revision = self.activity.revision();
         let continuation = self.continuation.as_ref().filter(|continuation| {
@@ -244,7 +278,7 @@ impl Paster {
             None if crate::labs::smart_spacing() => with_smart_spacing(text),
             None => text.to_string(),
         };
-        if crate::dictation::context::frontmost_bundle_path()
+        let handle = if crate::dictation::context::frontmost_bundle_path()
             .is_some_and(|bundle| has_clipboard_race(&bundle))
         {
             commit_prepared_paste(
@@ -253,6 +287,9 @@ impl Paster {
                 |()| {
                     if matches!(mode, PasteMode::Standalone) {
                         self.continuation = None;
+                    }
+                    if verify.is_some_and(|verify| !verify()) {
+                        return Ok(Pasted::Refused);
                     }
                     tracing::debug!("typing instead of pasting into Chromium 155 or 156");
                     keyboard::type_text(&text)?;
@@ -265,17 +302,23 @@ impl Paster {
                             tracing::warn!(%error, "could not leave the dictation on the clipboard");
                         }
                     }
-                    Ok(())
+                    Ok(Pasted::Sent(None))
                 },
-            )?;
+            )?
         } else {
-            self.paste_through_clipboard(&text, mode, commit)?;
-        }
-        self.continuation = (!matches!(mode, PasteMode::Standalone)).then_some(Continuation {
+            self.paste_through_clipboard(&text, mode, commit, restore, verify)?
+        };
+        let Pasted::Sent(handle) = handle else {
+            return Ok(None);
+        };
+        self.continuation = (!matches!(mode, PasteMode::Standalone)).then(|| Continuation {
             revision,
-            inserted: text,
+            inserted: text.clone(),
         });
-        Ok(())
+        Ok(Some(Sent {
+            inserted: text,
+            restore: handle,
+        }))
     }
 
     /// Leaves `text` on the clipboard for the user to paste: no ⌘V, no typed
@@ -302,7 +345,9 @@ impl Paster {
         text: &str,
         mode: PasteMode,
         commit: impl FnOnce() -> bool,
-    ) -> Result<()> {
+        timing: Restore,
+        verify: Option<&dyn Fn() -> bool>,
+    ) -> Result<Pasted> {
         let generation = commit_prepared_paste(
             || {
                 let restore = self
@@ -347,51 +392,76 @@ impl Paster {
                     return Err(error);
                 }
                 if keep {
+                    // What would come back if the paste is refused before
+                    // ⌘V: the clipboard before this chain of pastes began.
+                    let original = if restore.last_change_count == Some(previous_change_count) {
+                        restore.original.clone()
+                    } else {
+                        Some(previous)
+                    };
                     restore.keep();
-                    return Ok(None);
+                    return Ok((
+                        None,
+                        original.map(|original| (original, self.clipboard.changeCount())),
+                    ));
                 }
                 let inserted_change_count = self.clipboard.changeCount();
-                Ok(Some(restore.register(
-                    previous,
-                    previous_change_count,
-                    inserted_change_count,
-                )))
+                let generation =
+                    restore.register(previous, previous_change_count, inserted_change_count);
+                if matches!(timing, Restore::Deferred) {
+                    // Checked on what would be restored: mid-chain the fresh
+                    // capture is Hex's own transient transcript.
+                    restore.original = restore.original.take().and_then(deferred::restorable);
+                }
+                Ok((Some(generation), None))
             },
         )?;
+        let (generation, kept) = generation;
 
         let clipboard_restore = self.clipboard_restore.clone();
-        complete_paste(
+        let deferred =
+            generation.map(|generation| RestoreHandle::new(clipboard_restore.clone(), generation));
+        let after = match (timing, generation) {
+            (Restore::After(delay), Some(generation)) => Some((generation, delay)),
+            _ => None,
+        };
+        // The last check, after the slow steps (snapshot, clipboard write)
+        // and before ⌘V.
+        if verify.is_some_and(|verify| !verify()) {
+            if let Some(handle) = deferred {
+                handle.restore_after(Duration::ZERO);
+            }
+            // Keep on clipboard leaves the transcript there only for a paste
+            // that happened; with ⌘V never sent there is no reason to, so the
+            // earlier clipboard comes back unless something else changed it.
+            if let Some((original, written)) = kept
+                && self.clipboard.changeCount() == written
+                && let Some(original) = deferred::restorable(original)
+                && let Err(error) = restore_clipboard(&self.clipboard, &original)
+            {
+                tracing::warn!(%error, "could not restore the clipboard after a refused paste");
+            }
+            return Ok(Pasted::Refused);
+        }
+        let posted = complete_paste(
             || keyboard::post_command('v'),
             move || {
-                let Some(generation) = generation else {
-                    return;
-                };
-                thread::spawn(move || {
-                    thread::sleep(Duration::from_millis(500));
-                    let mut restore = clipboard_restore
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    if restore.generation != generation {
-                        return;
-                    }
-                    let clipboard = NSPasteboard::generalPasteboard();
-                    if restore.last_change_count != Some(clipboard.changeCount()) {
-                        restore.original = None;
-                        restore.last_change_count = None;
-                        return;
-                    }
-                    let Some(previous) = restore.original.take() else {
-                        return;
-                    };
-                    let result = restore_clipboard(&clipboard, &previous);
-                    restore.last_change_count = None;
-                    if let Err(error) = result {
-                        tracing::warn!(%error, "could not restore clipboard after paste");
-                    }
-                });
+                if let Some((generation, delay)) = after {
+                    deferred::restore_after(clipboard_restore, generation, delay);
+                }
             },
             thread::sleep,
-        )
+        );
+        match (posted, deferred) {
+            (Ok(()), handle) => Ok(Pasted::Sent(handle)),
+            (Err(error), handle) => {
+                // Nothing was pasted: the clipboard comes back now.
+                if let Some(handle) = handle {
+                    handle.restore_after(Duration::ZERO);
+                }
+                Err(error)
+            }
+        }
     }
 }
 

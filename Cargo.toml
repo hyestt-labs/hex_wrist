@@ -55,6 +55,9 @@ color-eyre = "0.6.5"
 cpal = "0.18.2"
 ctrlc = "3.5.2"
 dirs = "7.0.0"
+# Traditional Chinese (Taiwan wording) for watch transcripts (`watch/zh`):
+# OpenCC's s2twp tables compiled in at build time, pure Rust.
+ferrous-opencc = { version = "0.4.0", default-features = false, features = ["s2t-conversion"] }
 fs2 = "0.4.3"
 getrandom = "0.4.3"
 hkdf = "0.13"

@@ -536,18 +536,19 @@ fn run_output_worker(
     state: &Mutex<WorkerState>,
     events: &mpsc::Sender<WorkerEvent>,
 ) {
-    let mut paster = Paster::new(activity);
+    let paster = std::cell::RefCell::new(Paster::new(activity));
     let mut last_transcript = None;
     let mut ordered = OrderedOutputs::default();
     while let Ok(job) = jobs.recv() {
         if matches!(job, OutputJob::PreparePaste) {
-            paster.prepare();
+            paster.borrow_mut().prepare();
             continue;
         }
         for job in ordered.push(job) {
             let event = finish_output(
                 job,
-                &mut |text, mode, commit| paster.paste(text, mode, commit),
+                &mut |text, mode, commit| paster.borrow_mut().paste(text, mode, commit),
+                &mut crate::watch::output::Shared(&paster),
                 &mut last_transcript,
                 history.as_ref(),
             );
@@ -951,6 +952,7 @@ fn queue_error(error: TrySendError<impl Sized>) -> &'static str {
 fn finish_output(
     job: OutputJob,
     paste: &mut impl FnMut(&str, PasteMode, &dyn Fn() -> bool) -> Result<()>,
+    watch_paste: &mut dyn crate::watch::output::Inserter,
     last_transcript: &mut Option<String>,
     history: Option<&History>,
 ) -> WorkerEvent {
@@ -967,25 +969,65 @@ fn finish_output(
                 .as_ref()
                 .ok()
                 .and_then(|result| result.processing.clone());
-            // What a watch recording reports besides the text.
+            // What a watch recording reports besides the text, and the
+            // read-back that runs once the watch has its answer.
             let mut watch_report: Option<WatchReportDetails> = None;
+            let mut follow_up: Option<crate::watch::output::FollowUp> = None;
             let result = result.and_then(|mut completed| {
                 if control.is_cancelled() {
                     return Err("dictation was cancelled".into());
                 }
                 let paste_started = Instant::now();
-                let mut copied = false;
+                let commit = || control.begin_output();
+                if let TranscriptionTarget::Watch(delivery) = &target {
+                    let delivered = crate::watch::output::deliver(
+                        watch_paste,
+                        delivery,
+                        &crate::watch::output::Request {
+                            text: &completed.text,
+                            raw: &completed.raw,
+                            copy_only: crate::labs::copy_only(),
+                            preferred: &crate::watch::screen::preferred_languages(),
+                        },
+                        &commit,
+                    )?;
+                    completed.raw = delivered
+                        .raw
+                        .clone()
+                        .unwrap_or_else(|| delivered.text.clone());
+                    completed.text = delivered.text.clone();
+                    use crate::watch::delivery::DeliveryOutcome as Outcome;
+                    // Paste last recovers what the field refused; a suspect
+                    // text stays out of everything but the watch's record.
+                    if !matches!(delivered.outcome, Outcome::Suspect(_) | Outcome::Failed(_)) {
+                        *last_transcript = Some(completed.text.clone());
+                    }
+                    if let Some(history) = history
+                        && matches!(delivered.outcome, Outcome::Sent(_) | Outcome::Copied)
+                    {
+                        record_history(history, &target, &mut completed);
+                    }
+                    watch_report = Some(WatchReportDetails {
+                        raw: (completed.raw != completed.text).then(|| completed.raw.clone()),
+                        transcribe_ms: completed.timings.inference_ms as u64,
+                        paste_ms: paste_started.elapsed().as_millis() as u64,
+                        outcome: delivered.outcome.clone(),
+                    });
+                    tracing::info!(
+                        outcome = ?delivered.outcome,
+                        inference_ms = completed.timings.inference_ms,
+                        "watch recording delivered"
+                    );
+                    follow_up = delivered.follow_up;
+                    return Ok(completed.text);
+                }
                 if !completed.text.trim().is_empty() {
-                    let commit = || control.begin_output();
                     match &target {
-                        TranscriptionTarget::Paste
-                        | TranscriptionTarget::RawPaste
-                        | TranscriptionTarget::Watch(_) => {
+                        TranscriptionTarget::Paste | TranscriptionTarget::RawPaste => {
                             // Labs › Copy dictation only, read as the output
                             // commits: dictations go to the clipboard
                             // unpasted; Paste last dictation still pastes.
                             let mode = if crate::labs::copy_only() {
-                                copied = true;
                                 PasteMode::CopyOnly
                             } else {
                                 PasteMode::Continue
@@ -994,16 +1036,15 @@ fn finish_output(
                         }
                         TranscriptionTarget::Service
                         | TranscriptionTarget::Print
-                        | TranscriptionTarget::RawPrint => commit()
+                        | TranscriptionTarget::RawPrint
+                        | TranscriptionTarget::Watch(_) => commit()
                             .then_some(())
                             .ok_or_else(|| eyre!("dictation was cancelled")),
                     }
                     .map_err(|error| error.to_string())?;
                     if matches!(
                         target,
-                        TranscriptionTarget::Paste
-                            | TranscriptionTarget::RawPaste
-                            | TranscriptionTarget::Watch(_)
+                        TranscriptionTarget::Paste | TranscriptionTarget::RawPaste
                     ) {
                         *last_transcript = Some(completed.text.clone());
                     }
@@ -1021,16 +1062,15 @@ fn finish_output(
                     total_ms = completed.timings.total_started.elapsed().as_millis(),
                     "dictation pipeline completed"
                 );
-                watch_report = Some(WatchReportDetails {
-                    raw: (completed.raw != completed.text).then(|| completed.raw.clone()),
-                    transcribe_ms: completed.timings.inference_ms as u64,
-                    paste_ms: paste_ms as u64,
-                    copied,
-                });
                 Ok(completed.text)
             });
             if let TranscriptionTarget::Watch(delivery) = &target {
                 delivery.deliver(watch_delivery_report(&result, watch_report));
+                // After the report: a confirmation refines a report that
+                // already went out.
+                if let Some(follow_up) = follow_up {
+                    follow_up.spawn(delivery.clone());
+                }
             }
             if matches!(
                 target,
@@ -1082,36 +1122,26 @@ struct WatchReportDetails {
     raw: Option<String>,
     transcribe_ms: u64,
     paste_ms: u64,
-    copied: bool,
+    outcome: crate::watch::delivery::DeliveryOutcome,
 }
 
-/// What the watch hears about its recording: `unverified` for a sent paste
-/// (Hex's ⌘V is not a confirmation), `copied` under Copy dictation only,
-/// `suspect` for an empty transcript, else the failure.
+/// What the watch hears about its recording: the outcome the output step
+/// reached (`unverified` or `pasted` for a sent paste, `copied`, a withheld
+/// or suspect result), else the failure.
 fn watch_delivery_report(
     result: &Result<String, String>,
     details: Option<WatchReportDetails>,
 ) -> crate::watch::delivery::DeliveryReport {
-    use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
+    use crate::watch::delivery::DeliveryReport;
     let text = match result {
         Ok(text) => text,
         Err(error) => return DeliveryReport::failed(error.clone()),
     };
-    let details = details.unwrap_or(WatchReportDetails {
-        raw: None,
-        transcribe_ms: 0,
-        paste_ms: 0,
-        copied: false,
-    });
-    let outcome = if text.trim().is_empty() {
-        DeliveryOutcome::Suspect(crate::watch::suspect::SuspectReason::Empty)
-    } else if details.copied {
-        DeliveryOutcome::Copied
-    } else {
-        DeliveryOutcome::Unverified
+    let Some(details) = details else {
+        return DeliveryReport::failed("the output step did not run");
     };
     DeliveryReport {
-        outcome,
+        outcome: details.outcome,
         text: text.clone(),
         raw_text: details.raw,
         transcribe_ms: details.transcribe_ms,
@@ -1858,6 +1888,142 @@ mod tests {
             !text.contains("p p p p") && !text.contains("p-p-p-p"),
             "pathological token repetition: {text}"
         );
+    }
+
+    mod watch_output {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use super::*;
+        use crate::watch::delivery::{DeliveryEvent, DeliveryOutcome, Job, WatchDelivery};
+        use crate::watch::desktop::Desktop;
+        use crate::watch::desktop::fake::{FakeScreen, editable, text_area};
+        use crate::watch::field::{Expectation, Withheld};
+        use crate::watch::output::{Inserted, Inserter};
+        use crate::watch::recording::Verification;
+
+        #[derive(Default)]
+        struct Typed(Vec<String>);
+
+        impl Inserter for Typed {
+            fn insert(
+                &mut self,
+                text: &str,
+                _: &dyn Fn() -> bool,
+                verify: &dyn Fn() -> bool,
+            ) -> Result<Option<Inserted>, String> {
+                if !verify() {
+                    return Ok(None);
+                }
+                self.0.push(text.to_owned());
+                Ok(Some(Inserted {
+                    text: text.to_owned(),
+                    restore: None,
+                }))
+            }
+
+            fn copy(&mut self, _: &str, _: &dyn Fn() -> bool) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        fn run(
+            language: &str,
+            focus_pid: i32,
+            text: &str,
+        ) -> (
+            Vec<String>,
+            Option<String>,
+            mpsc::Receiver<DeliveryEvent>,
+            WorkerEvent,
+        ) {
+            let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(
+                focus_pid,
+            )))));
+            screen.script_values([Some(""), Some("hello there")]);
+            let (sink, events) = mpsc::channel();
+            let delivery = WatchDelivery::new(
+                Job {
+                    id: "6f9619ff-8b86-d011-b42d-00c04fc964ff".into(),
+                    language: language.into(),
+                    expectation: Expectation::Field(text_area(7)),
+                    desktop: Desktop::inline(screen),
+                },
+                move |event| {
+                    let _ = sink.send(event);
+                },
+            );
+            let job = OutputJob::Completed {
+                job_id: DictationJobId(1),
+                control: Arc::new(JobControl::default()),
+                target: TranscriptionTarget::Watch(delivery),
+                result: Box::new(Ok(CompletedTranscript {
+                    text: text.to_owned(),
+                    raw: text.to_owned(),
+                    application: None,
+                    timings: JobTimings {
+                        total_started: Instant::now(),
+                        queue_ms: 0,
+                        audio_ms: 1000,
+                        prepare_ms: 0,
+                        inference_ms: 5,
+                    },
+                    processing: None,
+                    recording: None,
+                })),
+            };
+            let mut typed = Typed::default();
+            let mut last = None;
+            let event = finish_output(
+                job,
+                &mut |_, _, _| panic!("a watch recording never uses the dictation paste"),
+                &mut typed,
+                &mut last,
+                None,
+            );
+            (typed.0, last, events, event)
+        }
+
+        fn reported(events: &mpsc::Receiver<DeliveryEvent>) -> DeliveryOutcome {
+            match events.recv_timeout(Duration::from_secs(2)).unwrap() {
+                DeliveryEvent::Report(report) => report.outcome,
+                other => panic!("the report comes first, not {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_sent_paste_reports_first_and_the_read_back_confirms_after() {
+            let (typed, last, events, event) = run("en", 7, "hello there");
+            assert_eq!(typed, ["hello there"]);
+            assert_eq!(last.as_deref(), Some("hello there"));
+            assert!(matches!(event, WorkerEvent::Completed { .. }));
+            assert_eq!(reported(&events), DeliveryOutcome::Sent(Verification::None));
+            assert!(matches!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                DeliveryEvent::Confirmed { verified: true }
+            ));
+        }
+
+        /// The field refused the text; Paste last must still be able to
+        /// give it back, since History never sees it.
+        #[test]
+        fn a_withheld_text_is_reported_and_stays_recoverable_by_paste_last() {
+            let (typed, last, events, _) = run("en", 8, "hello there");
+            assert!(typed.is_empty());
+            assert_eq!(last.as_deref(), Some("hello there"));
+            assert_eq!(
+                reported(&events),
+                DeliveryOutcome::Withheld(Withheld::TargetChanged)
+            );
+        }
+
+        #[test]
+        fn a_suspect_text_is_never_offered_again() {
+            let (typed, last, events, _) = run("en", 7, "Thank you.");
+            assert!(typed.is_empty());
+            assert_eq!(last, None);
+            assert!(matches!(reported(&events), DeliveryOutcome::Suspect(_)));
+        }
     }
 }
 

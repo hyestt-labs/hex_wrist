@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
+use crate::watch::desktop::Key;
 use crate::watch::e2ee::{self, SharedKey};
 use crate::watch::frame::response_frame_json;
 use crate::watch::refusal::Refusal;
@@ -119,6 +120,11 @@ pub(crate) struct AudioJob {
     pub(crate) id: String,
     pub(crate) language: String,
     pub(crate) audio: Vec<u8>,
+    /// `focus: current`: a resend from the watch's unsent list, pasted
+    /// wherever the cursor is now.
+    pub(crate) at_cursor: bool,
+    /// `focus: requested` and no `/focus` arrived in time: nothing pastes.
+    pub(crate) snapshot_missing: bool,
 }
 
 /// A reply held for something that has not happened yet.
@@ -148,12 +154,48 @@ pub(crate) enum Waiting {
         reply: Reply,
         deadline: Instant,
     },
+    /// `/focus` while the `watch-ax` thread reads the focused field: answered
+    /// when it lands, or `captured: false` at the deadline if the focused
+    /// application does not answer.
+    Capture {
+        id: String,
+        device: String,
+        reply: Reply,
+        deadline: Instant,
+    },
+    /// `/enter` for a recording still being processed: runs when it has a
+    /// verdict, or at the deadline (`ENTER_WAIT_SECONDS`).
+    Settle {
+        id: String,
+        key: Key,
+        /// Who asked, and whether inside their own envelope: a plaintext
+        /// request parked before the watch ratcheted to E2EE-only is
+        /// refused when it is released.
+        device: String,
+        inside: bool,
+        reply: Reply,
+        deadline: Instant,
+    },
+    /// A key handed to the `watch-ax` thread: answered when it reports.
+    Key {
+        id: String,
+        key: Key,
+        /// The operation number its answer carries.
+        op: u64,
+        reply: Reply,
+        deadline: Instant,
+    },
 }
 
 impl Waiting {
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::Transcript { id, .. } | Self::Duplicate { id, .. } | Self::Focus { id, .. } => id,
+            Self::Transcript { id, .. }
+            | Self::Duplicate { id, .. }
+            | Self::Focus { id, .. }
+            | Self::Capture { id, .. }
+            | Self::Settle { id, .. }
+            | Self::Key { id, .. } => id,
         }
     }
 
@@ -161,7 +203,10 @@ impl Waiting {
         match self {
             Self::Transcript { deadline, .. }
             | Self::Duplicate { deadline, .. }
-            | Self::Focus { deadline, .. } => *deadline,
+            | Self::Focus { deadline, .. }
+            | Self::Capture { deadline, .. }
+            | Self::Settle { deadline, .. }
+            | Self::Key { deadline, .. } => *deadline,
         }
     }
 }

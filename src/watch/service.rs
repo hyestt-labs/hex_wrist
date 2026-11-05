@@ -9,9 +9,11 @@
 //! - `envelope`: `/e2ee`, `/e2ee/query`, and the recording path.
 //! - `pending`: replies held for a delivery, a duplicate, or a `/focus`.
 
+mod capsule;
 mod envelope;
 #[cfg(test)]
 mod integration;
+mod keys;
 mod pending;
 mod routes;
 mod state;
@@ -23,11 +25,13 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryReport, WatchDelivery};
+use super::desktop::Desktop;
+use super::field;
 use super::pairing::{self, PairedDevices, SecretStore};
 use super::relay::{NotConnected, Relay, RelayConfig, RelayEvent, RelayTiming};
 #[cfg(target_os = "macos")]
 use crate::recognition::RecognitionControl;
-use state::{Core, Flow, Identity, Now};
+use state::{Core, Flow, Identity, Links, Now};
 
 /// How long a claim may take from `claim`'s call to the relay's
 /// `claim_ok` or `claim_failed`, time in the inbox included.
@@ -192,10 +196,29 @@ pub(crate) enum Message {
     },
     Stop,
     Relay(RelayEvent),
+    /// The `watch-ax` thread read the focused field for `/focus` of `id`.
+    Captured {
+        id: String,
+        field: Option<field::FieldSnapshot>,
+    },
+    /// The `watch-ax` thread pressed `key` for `id`, or says why not.
+    Keyed {
+        id: String,
+        key: super::desktop::Key,
+        /// Which request this answers; an answer to a request already
+        /// given up on frees nothing of a later one's.
+        op: u64,
+        outcome: super::desktop::KeyOutcome,
+    },
     /// The dictation worker finished recording `id`.
     Delivered {
         id: String,
         report: DeliveryReport,
+    },
+    /// The read-back after a paste of `id` found the text, or did not.
+    Confirmed {
+        id: String,
+        verified: bool,
     },
 }
 
@@ -206,6 +229,7 @@ impl WatchService {
         config: WatchConfig,
         dictation: Box<dyn Dictation>,
         store: Box<dyn SecretStore + Send>,
+        desktop: Desktop,
     ) -> std::io::Result<Self> {
         let room = super::relay::read_or_create_room(&config.support_dir)?;
         let mac_id = read_or_create_device_id(&config.support_dir.join(DEVICE_ID_FILE))?;
@@ -253,8 +277,11 @@ impl WatchService {
                     paired,
                     delivered,
                     delivered_path,
-                    Box::new(relay),
-                    dictation,
+                    Links {
+                        outbound: Box::new(relay),
+                        dictation,
+                        desktop,
+                    },
                     core_inbox,
                 );
                 run(core, messages);

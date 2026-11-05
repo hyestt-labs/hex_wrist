@@ -15,13 +15,19 @@ use super::pending::Outbound;
 use super::state::{Core, Identity, MAX_LIVE_RECORDS, Now, TRANSCRIPT_WAIT};
 use super::*;
 use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
+use crate::watch::desktop::Desktop;
+use crate::watch::desktop::fake::FakeScreen;
 use crate::watch::e2ee::{self, Aad, AudioHead, SharedKey};
 use crate::watch::frame::{Inbound, RequestHead};
 use crate::watch::pairing::MemorySecretStore;
-use crate::watch::recording::DUPLICATE_AUDIO_WAIT_SECONDS;
+use crate::watch::recording::{DUPLICATE_AUDIO_WAIT_SECONDS, Verification};
 use crate::watch::relay::{NotConnected, RelayEvent, RelayState};
 use crate::watch::suspect::SuspectReason;
 use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
+
+mod capsule;
+mod field;
+mod keys;
 
 const M4A: &[u8] = include_bytes!("../../../tests/fixtures/watch-audio/tone-440-16k.m4a");
 const ID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
@@ -90,6 +96,7 @@ struct Harness {
     connected: Arc<AtomicBool>,
     jobs: Jobs,
     refuse: Arc<AtomicBool>,
+    screen: Arc<FakeScreen>,
     now: Now,
     next_frame: u64,
     dir: PathBuf,
@@ -114,6 +121,7 @@ fn harness(name: &str) -> Harness {
     let jobs: Jobs = Arc::new(Mutex::new(Vec::new()));
     let refuse = Arc::new(AtomicBool::new(false));
     let (inbox, messages) = mpsc::channel();
+    let screen = Arc::new(FakeScreen::default());
     let paired = PairedDevices::load(
         &dir.join(pairing::FILE_NAME),
         Box::new(MemorySecretStore::default()),
@@ -127,14 +135,17 @@ fn harness(name: &str) -> Harness {
         paired,
         crate::watch::delivered::load(&dir.join(DELIVERED_FILE)),
         dir.join(DELIVERED_FILE),
-        Box::new(Sink {
-            frames: Arc::clone(&frames),
-            connected: Arc::clone(&connected),
-        }),
-        Box::new(FakeDictation {
-            jobs: Arc::clone(&jobs),
-            refuse: Arc::clone(&refuse),
-        }),
+        state::Links {
+            outbound: Box::new(Sink {
+                frames: Arc::clone(&frames),
+                connected: Arc::clone(&connected),
+            }),
+            dictation: Box::new(FakeDictation {
+                jobs: Arc::clone(&jobs),
+                refuse: Arc::clone(&refuse),
+            }),
+            desktop: Desktop::inline(screen.clone()),
+        },
         inbox,
     );
     Harness {
@@ -144,6 +155,7 @@ fn harness(name: &str) -> Harness {
         connected,
         jobs,
         refuse,
+        screen,
         now: Now::current(),
         next_frame: 0,
         dir,
@@ -219,6 +231,18 @@ impl Harness {
         self.pump();
     }
 
+    fn confirm(&mut self, index: usize, verified: bool) {
+        let delivery = self.jobs.lock().unwrap()[index].1.clone();
+        delivery.confirm(verified);
+        self.pump();
+    }
+
+    fn status_of(&mut self, watch: &Watch, id: &str) -> Value {
+        let answer = self.query(watch, "/status", &[("id", id)]).unwrap();
+        assert_eq!((answer.status, answer.sealed), (200, true));
+        answer.body
+    }
+
     fn request(
         &mut self,
         method: &str,
@@ -244,6 +268,8 @@ impl Harness {
             body_len: body.len(),
         };
         self.core.on_request(head, body.to_vec(), self.now);
+        // Captures answer through the inbox, even with the inline desktop.
+        self.pump();
         self.take(&id)
     }
 
@@ -530,7 +556,12 @@ fn health_has_wristpers_shape() {
         .collect()
     );
     assert_eq!(body["ok"], true);
-    assert_eq!(body["paste_ready"], true);
+    assert_eq!(body["paste_ready"], false, "Accessibility is not granted");
+    assert!(
+        body["paste_detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("Accessibility"))
+    );
     assert_eq!(body["model"], "cold");
     assert_eq!(body["model_id"], "parakeet-tdt-0.6b-v3");
     assert_eq!(body["model_name"], "Parakeet v3");
@@ -875,7 +906,10 @@ fn a_recording_is_transcribed_delivered_and_readable_through_status() {
     h.advance(Duration::from_millis(250));
     h.deliver(
         0,
-        report(DeliveryOutcome::Unverified, "hello from the watch"),
+        report(
+            DeliveryOutcome::Sent(Verification::None),
+            "hello from the watch",
+        ),
     );
     let answer = h.open_last_sealed(&watch, &nonce);
     assert_eq!(answer.status, 200);
@@ -1054,7 +1088,7 @@ fn a_duplicate_waits_for_the_first_copy_then_answers_from_it() {
         1,
         "the duplicate starts nothing"
     );
-    h.deliver(0, report(DeliveryOutcome::Unverified, "once"));
+    h.deliver(0, report(DeliveryOutcome::Sent(Verification::None), "once"));
     let duplicate = h.open_last_sealed(&watch, &second_nonce);
     assert_eq!(duplicate.status, 200);
     assert_eq!(
@@ -1103,7 +1137,7 @@ fn waiting_replies_time_out_with_transcribing() {
         transcript.body,
         json!({"ok": true, "state": "transcribing"})
     );
-    h.deliver(0, report(DeliveryOutcome::Unverified, "late"));
+    h.deliver(0, report(DeliveryOutcome::Sent(Verification::None), "late"));
     assert!(
         h.pending_frame_ids().is_empty(),
         "nothing is left to answer"
@@ -1562,20 +1596,17 @@ fn a_background_upload_replayed_a_day_later_reads_duplicate() {
 }
 
 #[test]
-fn stale_actions_and_unsupported_actions_inside_the_envelope() {
+fn stale_actions_and_unknown_recordings_inside_the_envelope() {
     let mut h = harness("query");
     let watch = h.pair("watch-1");
     let enter = h.query(&watch, "/enter", &[("id", ID)]).unwrap();
     assert_eq!(enter.status, 200);
     assert_eq!(
         enter.body,
-        json!({"ok": false, "reason": "not-supported", "error": "Enter from the watch is not supported yet"})
+        json!({"ok": false, "reason": "unknown-id", "error": "unknown-id"})
     );
     let undo = h.query(&watch, "/undo", &[("id", ID)]).unwrap();
-    assert_eq!(
-        undo.body["error"],
-        "Undo from the watch is not supported yet"
-    );
+    assert_eq!(undo.body, json!({"ok": false, "reason": "unknown-id"}));
 
     let nonce = Harness::fresh_nonce();
     let head = e2ee::QueryHead {
@@ -1660,7 +1691,10 @@ fn finished_records_are_pruned_but_the_table_still_answers() {
         let id = format!("{index:08x}-0000-4000-8000-000000000000");
         let head = audio_head(&watch, &id, "current", h.now.epoch());
         assert!(h.send_audio(&watch, &head, M4A).is_none());
-        h.deliver(index, report(DeliveryOutcome::Unverified, "x"));
+        h.deliver(
+            index,
+            report(DeliveryOutcome::Sent(Verification::None), "x"),
+        );
         h.advance(Duration::from_millis(1));
     }
     h.core.tick(h.now);
@@ -1732,11 +1766,19 @@ fn listener_dictation_names_a_full_queue_and_a_gone_listener() {
     let (controls, queue) = mpsc::sync_channel(1);
     let dictation = ListenerDictation::new(controls);
     let (sink, _reports) = mpsc::channel();
-    let delivery = |sink: &mpsc::Sender<DeliveryReport>| {
+    let delivery = |sink: &mpsc::Sender<crate::watch::delivery::DeliveryEvent>| {
         let sink = sink.clone();
-        WatchDelivery::new(ID, move |report| {
-            let _ = sink.send(report);
-        })
+        WatchDelivery::new(
+            crate::watch::delivery::Job {
+                id: ID.to_owned(),
+                language: "en".to_owned(),
+                expectation: crate::watch::field::Expectation::Current,
+                desktop: Desktop::null(),
+            },
+            move |event| {
+                let _ = sink.send(event);
+            },
+        )
     };
     assert_eq!(dictation.transcribe(vec![0.0; 16], delivery(&sink)), Ok(()));
     assert_eq!(
@@ -1748,4 +1790,119 @@ fn listener_dictation_names_a_full_queue_and_a_gone_listener() {
         dictation.transcribe(vec![0.0; 16], delivery(&sink)),
         Err("the listener is not running".to_owned())
     );
+}
+
+#[test]
+fn a_terminal_paste_is_final_and_a_read_back_upgrades_an_unverified_one() {
+    use crate::watch::delivery::DeliveryOutcome::Sent;
+    let mut h = harness("terminal-and-read-back");
+    let watch = h.pair("watch-1");
+    let head = audio_head(&watch, ID, "current", h.now.epoch());
+    h.send_audio(&watch, &head, M4A);
+    h.deliver(0, report(Sent(Verification::Terminal), "ls -la"));
+    let status = h.status_of(&watch, ID);
+    assert_eq!(status["state"], "pasted");
+    assert_eq!(status["verified"], true);
+    assert_eq!(status["verification"], "terminal");
+    // A terminal paste is never read back; a stray confirmation is ignored.
+    h.confirm(0, true);
+    assert_eq!(h.status_of(&watch, ID)["verification"], "terminal");
+
+    let head = audio_head(&watch, OTHER_ID, "current", h.now.epoch());
+    h.send_audio(&watch, &head, M4A);
+    h.deliver(1, report(Sent(Verification::None), "hello"));
+    assert_eq!(h.status_of(&watch, OTHER_ID)["state"], "unverified");
+    h.advance(Duration::from_millis(800));
+    h.confirm(1, true);
+    let status = h.status_of(&watch, OTHER_ID);
+    assert_eq!(status["state"], "pasted");
+    assert_eq!(status["verified"], true);
+    assert_eq!(status["verification"], "read-back");
+    let remembered = h.core.delivered.get(OTHER_ID, h.now.wall).unwrap();
+    assert_eq!(
+        (remembered.state.as_str(), remembered.verified),
+        ("pasted", true)
+    );
+    assert_eq!(remembered.verification, "read-back");
+}
+
+#[test]
+fn a_failed_read_back_leaves_the_paste_unverified() {
+    let mut h = harness("read-back-failed");
+    let watch = h.pair("watch-1");
+    let head = audio_head(&watch, ID, "current", h.now.epoch());
+    h.send_audio(&watch, &head, M4A);
+    h.deliver(
+        0,
+        report(DeliveryOutcome::Sent(Verification::None), "hello"),
+    );
+    h.confirm(0, false);
+    let status = h.status_of(&watch, ID);
+    assert_eq!(status["state"], "unverified");
+    assert_eq!(status["verified"], false);
+    let remembered = h.core.delivered.get(ID, h.now.wall).unwrap();
+    assert_eq!(remembered.state, "unverified");
+}
+
+#[test]
+fn a_withheld_paste_keeps_the_text_and_names_why() {
+    use crate::watch::field::Withheld;
+    let mut h = harness("withheld");
+    let watch = h.pair("watch-1");
+    let cases = [
+        (
+            Withheld::TargetChanged,
+            "target-changed",
+            Value::Null,
+            false,
+        ),
+        (Withheld::NoSnapshot, "target-changed", Value::Null, true),
+        (Withheld::NotEditable, "not-editable", Value::Null, false),
+        (
+            Withheld::SecureInput,
+            "sensitive",
+            json!("secure-input"),
+            false,
+        ),
+        (Withheld::PasswordField, "sensitive", Value::Null, false),
+    ];
+    for (index, (withheld, state, paste_reason, has_reason)) in cases.into_iter().enumerate() {
+        let id = format!("00000000-0000-4000-8000-00000000000{index}");
+        let head = audio_head(&watch, &id, "current", h.now.epoch());
+        let nonce = send_audio_keep_nonce(&mut h, &watch, &head);
+        h.deliver(
+            index,
+            report(DeliveryOutcome::Withheld(withheld), "kept words"),
+        );
+        let answer = h.open_last_sealed(&watch, &nonce);
+        assert_eq!(answer.body["state"], state, "{withheld:?}");
+        assert_eq!(answer.body["ok"], true);
+        assert_eq!(answer.body["text"], "kept words");
+        assert_eq!(
+            answer
+                .body
+                .get("paste_reason")
+                .cloned()
+                .unwrap_or(Value::Null),
+            paste_reason
+        );
+        let status = h.status_of(&watch, &id);
+        assert_eq!(status["state"], state, "{withheld:?}");
+        assert_eq!(status["text"], "kept words");
+        assert_eq!(status["paste_reason"], paste_reason);
+        assert_eq!(status["reason"].is_string(), has_reason, "{withheld:?}");
+        assert_eq!(status["verified"], false);
+    }
+    // Withheld is not delivered: the watch's resend (`focus: current`) is
+    // transcribed again instead of answered `duplicate`.
+    let jobs_before = h.jobs.lock().unwrap().len();
+    let head = audio_head(
+        &watch,
+        "00000000-0000-4000-8000-000000000000",
+        "current",
+        h.now.epoch(),
+    );
+    let answer = h.send_audio(&watch, &head, M4A);
+    assert!(answer.is_none(), "the resend waits for its transcript");
+    assert_eq!(h.jobs.lock().unwrap().len(), jobs_before + 1);
 }

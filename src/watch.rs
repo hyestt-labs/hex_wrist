@@ -8,6 +8,8 @@
 //! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
 //! - `relay`: the relay WebSocket client on its own thread.
 //! - `delivery`: the handle a recording travels with through the dictation worker.
+//! - `output`: gate, paste, read-back, and clipboard restore for a recording's text.
+//! - `desktop`: the focused field and the keys, behind `Screen` and one `watch-ax` thread.
 //! - `service`: the one `watch` thread that owns the state and answers requests.
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
@@ -22,14 +24,23 @@
 pub(crate) mod audio;
 pub(crate) mod delivered;
 pub(crate) mod delivery;
+pub(crate) mod desktop;
 pub(crate) mod e2ee;
+pub(crate) mod field;
 pub(crate) mod frame;
+#[cfg(all(test, target_os = "macos"))]
+mod live_tests;
+pub(crate) mod output;
 pub(crate) mod pairing;
 pub(crate) mod recording;
 pub(crate) mod refusal;
 pub(crate) mod relay;
+#[cfg(target_os = "macos")]
+pub(crate) mod screen;
 pub(crate) mod service;
+pub(crate) mod status;
 pub(crate) mod suspect;
+pub(crate) mod zh;
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -80,10 +91,18 @@ pub(crate) fn start_in_app(
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         timing,
     };
+    let desktop = match desktop::Desktop::start(std::sync::Arc::new(screen::MacScreen)) {
+        Ok(desktop) => desktop,
+        Err(error) => {
+            tracing::warn!(%error, "the Apple Watch service did not start: no accessibility thread");
+            return None;
+        }
+    };
     match WatchService::start(
         config,
         Box::new(ListenerDictation::new(controls)),
         Box::new(pairing::keychain::KeychainSecretStore::new()),
+        desktop,
     ) {
         Ok(service) => {
             install(service.clone());

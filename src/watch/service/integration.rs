@@ -18,6 +18,7 @@ use super::*;
 use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
 use crate::watch::e2ee::{self, Aad, AudioHead, QueryHead, SharedKey};
 use crate::watch::pairing::MemorySecretStore;
+use crate::watch::recording::Verification;
 use crate::watch::relay::RelayState;
 use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
 
@@ -167,7 +168,7 @@ impl Dictation for ScriptedDictation {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
             delivery.deliver(DeliveryReport {
-                outcome: DeliveryOutcome::Unverified,
+                outcome: DeliveryOutcome::Sent(Verification::None),
                 text: "hello from the watch".to_owned(),
                 raw_text: None,
                 transcribe_ms: 120,
@@ -328,6 +329,10 @@ fn a_watch_pairs_records_and_reads_its_status_through_the_relay() {
             samples: Arc::clone(&samples),
         }),
         Box::new(MemorySecretStore::default()),
+        crate::watch::desktop::Desktop::start(Arc::new(
+            crate::watch::desktop::fake::FakeScreen::default(),
+        ))
+        .unwrap(),
     )
     .unwrap();
     let deadline = Instant::now() + WAIT;

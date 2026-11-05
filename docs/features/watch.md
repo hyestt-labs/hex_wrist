@@ -8,10 +8,10 @@ change: the Mac speaks Wristper protocol 4 byte for byte
 with Swift line references). macOS only in this unit; Linux and Windows carry
 `watch` as a pending difference in `rune_ui::platform::DIFFERENCES`.
 
-Status: unit B1 (relay, pairing, delivery, `/status`). Unit B2 adds the
-accessibility field snapshot and read-back, Enter, Undo, the suspect-text
-rules, and the HUD; unit C the Settings pane; unit D licensing and the free
-quota.
+Status: units B1 (relay, pairing, delivery, `/status`) and B2 (field
+snapshot, paste gate, read-back, Enter, Undo, suspect text, Traditional
+Chinese, status capsule). Unit C adds the Settings pane; unit D licensing and
+the free quota.
 
 ## How To Get To It
 
@@ -25,13 +25,31 @@ Apple Watch                               // watch.pair, watch.dictate
 │   │   └── unavailable -> the service did not start (see the log)
 │   └── Watch: POST /pairing/request (P-256 key) -> GET /pairing/result (sealed token)
 ├── Dictate
-│   ├── Watch starts recording -> /e2ee/query {/focus}   -> record awaiting-audio
+│   ├── Watch starts recording -> /e2ee/query {/focus}   -> watch-ax reads the focused field
+│   │   ├── field read   -> captured:true, role          -> record awaiting-audio, capsule "Recording"
+│   │   └── nothing read (no Accessibility, no focus, app silent for 1.5 s) -> captured:false;
+│   │                                                 its recording is withheld as target-changed (Wristper pasted at the cursor)
 │   ├── Watch stops -> /e2ee (AudioHead + m4a)           -> decode -> DictationWorker
-│   │   ├── pasted through the one Paster at the current cursor -> unverified
+│   │   ├── Traditional Chinese (zh or auto)             -> s2tw, watch recordings only
+│   │   ├── suspect text (silence caption, wrong script) -> suspect, not pasted
 │   │   ├── Labs › Copy dictation only on                -> copied
-│   │   ├── empty transcript                             -> suspect
-│   │   └── decode, inference, or paste failed           -> 500 failed
+│   │   ├── gate against the field /focus locked
+│   │   │   ├── secure input or password field           -> sensitive
+│   │   │   ├── another field or app                     -> target-changed
+│   │   │   ├── cannot be edited                         -> not-editable
+│   │   │   ├── audio beat /focus by > 2 s               -> target-changed + reason
+│   │   │   ├── nothing focused, focus: current          -> copied
+│   │   │   └── same field                               -> ⌘V
+│   │   │       ├── terminal app                         -> pasted + terminal (final)
+│   │   │       └── other app -> unverified; ≤ 1 s later -> pasted + read-back, or stays unverified
+│   │   └── no Accessibility / decode / inference failed -> 500 failed
 │   └── Watch 1.5 s later: /e2ee/query {/status}         -> the same fields as Wristper
+├── Enter  (/enter, ≤ 30 s after the paste, pasted or unverified, once)
+│   ├── recording still in progress                      -> waits ≤ 15 s
+│   ├── same app, role, and window still in front        -> Return -> entered
+│   └── else -> {ok:false, reason: not-pasted | expired | target-changed | sensitive | failed}
+├── Undo   (/undo, ≤ 60 s, not after Enter, read-back confirmed, never a terminal)
+│   └── same field in front                              -> ⌘Z -> undone
 └── Resend (watch's unsent list)
     ├── same id while transcribing -> waits ≤ 45 s, else {duplicate, transcribing}
     └── same id after delivery     -> {duplicate, state, verified, verification}
@@ -75,18 +93,58 @@ Apple Watch                               // watch.pair, watch.dictate
   happens when both apps run against one data folder; they share a bundle
   id, so installing Wristper replaces the Swift app. Audio
   marked `focus: requested` that beats its `/focus` waits 2 s, then proceeds
-  (B1 pastes at the current cursor either way; B2 withholds as
-  `target-changed` once snapshots exist).
+  and is withheld as `target-changed` with a reason (nothing is pasted without
+  the field the watch started in).
 - **What the watch reads.** `/status` has Wristper's field set (`ok, id,
   state, language, verified, verification, entered, updated_at, route,
   transcribe_ms, paste_ms, receive_to_paste_ms, reason, reset, paste_reason,
   error, completed_at, completed_age, agent_ms, session_id`, plus `text`,
   `raw_text`, and the `agent_*` nulls inside an envelope). `/health` reports
   `licensing` as licensed and unlimited until unit D.
-- **Not yet (B2).** No accessibility snapshot (`/focus` answers
-  `captured:false`), no read-back (so no `pasted`), `/enter` and `/undo`
-  answer `{"ok":false,"reason":"not-supported"}`, no HUD state, no suspect
-  rules beyond the empty transcript, no Traditional Chinese conversion.
+- **Field snapshot.** `/focus` hands the read to the `watch-ax` thread
+  (`watch::desktop`) and parks its reply; the answer is `captured:false` after
+  1.5 s if the focused application does not answer. Each Accessibility element
+  is bounded at 250 ms and the system-wide element is never used. The snapshot
+  (pid, role, subrole, identifier, title, frame, window, bundle id, app name)
+  lives on the live record, not on the wire. Audio with `focus: requested`
+  that beat its `/focus` waits for the capture, not just the request.
+  Source: `src/watch/desktop.rs`, `src/watch/screen.rs`,
+  `src/accessibility.rs`, `src/watch/field.rs`.
+- **Paste gate.** The output worker (`watch::output`) takes the keyboard lock,
+  reads the focus, and decides with `field::gate`: pid and role must match;
+  identifiers decide when both exist; else titles must not conflict and the
+  frame must be within 48 px. A `focus: current` resend pastes at the cursor.
+  Withheld and suspect texts stay on the watch's record; Paste Last (⌥⇧V)
+  recovers a withheld text, a suspect one is never offered, and neither
+  reaches History.
+- **Read-back and clipboard.** After ⌘V a background thread looks for the
+  text that went in (not the text sent: a continuation join may add a space or
+  change case) in the element that was pasted into for 1 s; a change plus the words confirms
+  (`pasted`, `read-back`). The clipboard comes back at once on confirmation,
+  else after 4 s, through the same generation guard as every Hex paste (a
+  newer paste or an outside change cancels it); an original carrying
+  `ConcealedType` or `TransientType` is not restored. The keyboard lock is held
+  until the read-back ends, so `/enter` waits for it.
+- **Enter and Undo.** `watch::service::keys`: the policy is
+  `recording::check_enter` and `check_undo`; the key goes through `watch-ax`,
+  which compares the focus with the recording's field first (process, role, subrole,
+  window, identifier or names plus an overlapping frame). A request that waited past its 5 s
+  deadline is not pressed late. Return is held 30 ms: Electron terminals
+  ignore an instant press.
+- **Traditional Chinese.** `watch::zh`: `ferrous-opencc` 0.2 `s2tw`
+  (Taiwan characters, no phrase step), only for `zh` or auto recordings, only
+  for the watch. Other dictation is unchanged.
+- **Suspect text.** `watch::suspect` runs on what was heard (before the Output
+  pane's steps) with the system's preferred languages.
+- **Status capsule.** `watch::status` maps the record to a capsule and its
+  lifetime (Recording ≤ 180 s, Transcribing ≤ 60 s, results 1.2–5 s) in
+  Traditional Chinese or English by the system's language order; the `watch`
+  thread pushes each change and schedules the hide and the 1.4 s read-back
+  grace as its own deadlines. `rune_ui::watch_status` draws a click-through
+  pill at the bottom of the primary screen. It shows only after the field was
+  read.
+- **Health.** `/health` `paste_ready` is the Accessibility permission, with a
+  `paste_detail` that names where to grant it.
 
 ## Checks
 
@@ -100,6 +158,17 @@ Apple Watch                               // watch.pair, watch.dictate
   claim, pairing with a real P-256 key, sealed `/focus`, sealed `/e2ee` with a
   real m4a through a fake transcriber, `/status` with the Swift field set,
   duplicate resend, plaintext `/status`, plaintext `/audio` refused).
+- B2: `scripts/check watch` also covers `watch::field` (matching and the
+  gate), `watch::desktop` (keys, lock, deadlines, with a scripted `Screen`),
+  `watch::output` (every gate result, read-back, restore delays, Traditional
+  Chinese, suspect text), `watch::status`, `paste::deferred` (private
+  clipboard items), and the service tests under
+  `watch::service::tests::{field,keys,capsule}`.
+- Live, by hand (they drive TextEdit, Terminal, and Finder, so they are
+  `#[ignore]`): `cargo nextest run --locked --bin hex --run-ignored only -E
+  'test(watch_live)'` from a terminal that has Accessibility and Automation
+  access. They cover snapshot, paste, read-back, Enter, Undo, target change
+  in TextEdit, and a terminal paste with Enter in Terminal.
 - `control::` covers `watch-pair` on the wire and `unsupported` on Linux and
   Windows hosts; `platform::parity_tests` records the `watch` difference.
 - Not verified: no real Apple Watch, no connection to the production relay,
@@ -109,9 +178,63 @@ Apple Watch                               // watch.pair, watch.dictate
 
 ## Gaps And Constraints
 
-- The watch's `captured:false` means the Mac did not lock a field; Wristper
-  pastes anyway and so does B1.
-- `paste_ready` in `/health` is always true in B1; it should follow the
-  Accessibility permission once the Settings pane exists.
+- The live checks above have not been observed to pass in this unit's
+  worktree: no real Apple Watch, no real Accessibility session, no Orca,
+  Ghostty, Warp, or Claude Code and Codex inside a terminal yet. Linux and
+  Windows compile through CI only; the whole feature is macOS.
+- `/enter` and `/undo` need the live record, which Hex keeps 24 h; after a
+  restart a recording reads `unknown-id` for both (the dedupe table keeps its
+  state, not its field). A `focus: current` resend has no snapshot, so Enter
+  for it reads `target-changed`, as in Wristper.
+- The capsule is on the primary screen, not on the one under the pointer, and
+  speaks only Traditional Chinese and English.
+- Field matching is a best effort over what Accessibility exposes, not proof
+  of identity. Paste: same process and role, the identifier when both sides
+  have one (and then the window rectangle must agree too, or the field's frame
+  when a window cannot be read), else titles that do not conflict and a frame
+  within 48 points. Enter and Undo are stricter than Wristper's
+  `sameFieldAfterTyping`: same process, role, subrole, and window rectangle
+  (both readable), the identifier, and without one the title, description,
+  and role description plus a frame that still overlaps the original. Known
+  limits, not excluded: two windows of one app with the same position and size
+  (within 48 points) and the same identifiers or names look identical, as do
+  two tabs of one terminal window, two fields of one window with the same
+  names and overlapping frames, and a window moved by less than the
+  tolerance. A terminal whose prompt frame jumps clear of the original reads
+  `target-changed`. The Terminal, Orca, and Ghostty live check shows how often
+  these happen.
+- Focus is judged more than once, and windows remain. Paste: the gate reads
+  and judges the focus and the field's text; then inside the Paster, after
+  the clipboard snapshot and write (the slow steps, tens of ms, hundreds if
+  the clipboard holds large data), a last comparison reads the focus again
+  and runs immediately before ⌘V. A switch that happened before that read
+  completes sends nothing and the clipboard goes back as it was (also with
+  Labs › Keep dictation on clipboard: with ⌘V never sent, the earlier
+  clipboard returns unless something else changed it meanwhile). Keys
+  (Return, ⌘Z): the focus is read and judged twice, and the deadline and the
+  ticket are settled after both reads, right before the key. Not closed, for
+  paste and keys alike: the time between the last focus read finishing and
+  the key event being posted (the read is not atomic with the post; the
+  user can switch in that gap), and from the event being posted until the
+  target handles it (a few ms, longer if the app is busy); the key then lands
+  in the new app. Accessibility cannot pin the target, so the live check has
+  to size these; they are not excluded.
+- A key's claim is settled atomically: the `watch-ax` thread claims it right
+  before the key event, the service cancels it on timeout, a restart of the
+  recording, or shutdown. If the key already went out when the service gives
+  up waiting for the answer, the record counts it as pressed (Enter
+  `entered`, Undo `undone`) without confirmation and a retry is refused,
+  never pressed a second time.
+- The clipboard restore has a window, as in Wristper's Swift version: it
+  checks the generation and the pasteboard `changeCount`, then writes the old
+  contents back, and a copy the user makes between that check and the write
+  is overwritten by the restored clipboard (no atomic compare-and-write
+  exists on `NSPasteboard`). The paste's own write and the restore both run
+  under the same lock, so only an outside copy in those microseconds loses.
+- The read-back keeps the AX element the paste went into and reads only that
+  element, as Wristper does with its first candidate; it does not also read
+  whatever has focus later. An app that replaces the field object after ⌘V
+  (some Electron apps, possibly Orca) therefore stays `unverified`, which
+  also keeps Undo closed. The live Orca and Slack check will show how often.
 - `/health`'s `model`, `model_id`, and `model_name` follow the saved
   transcription selection, not whether the model is loaded.

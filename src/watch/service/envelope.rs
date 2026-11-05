@@ -9,8 +9,9 @@ use serde_json::json;
 
 use super::pending::{AudioJob, Reply, Seal, Waiting};
 use super::state::{Core, LiveRecord, Now, TRANSCRIPT_WAIT};
-use crate::watch::delivery::WatchDelivery;
+use crate::watch::delivery::{DeliveryEvent, Job, WatchDelivery};
 use crate::watch::e2ee::{self, Aad, QueryShape, SharedKey};
+use crate::watch::field::Expectation;
 use crate::watch::frame::{MAX_AUDIO_BYTES, RequestHead};
 use crate::watch::pairing::tokens_equal;
 use crate::watch::recording::{
@@ -264,6 +265,8 @@ impl Core {
             id: id.to_owned(),
             language: head.header(LANGUAGE_HEADER).unwrap_or("").to_owned(),
             audio: body,
+            at_cursor: !focus_requested,
+            snapshot_missing: false,
         };
         self.accept_audio(job, reply, focus_requested, now);
     }
@@ -345,6 +348,18 @@ impl Core {
             .records
             .entry(job.id.clone())
             .or_insert_with(|| LiveRecord::new(&job.id, &job.device, now));
+        let expectation = if job.at_cursor {
+            Expectation::Current
+        } else if job.snapshot_missing {
+            Expectation::Missing
+        } else {
+            // Wristper pastes at the cursor when `/focus` read nothing. Hex
+            // does not: the user may have left the field while recording, so
+            // only an explicit `focus: current` resend pastes there.
+            live.field
+                .clone()
+                .map_or(Expectation::Missing, Expectation::Field)
+        };
         // A resend of the same id must not keep the previous attempt's text.
         live.record = Record {
             state: State::Transcribing,
@@ -353,13 +368,36 @@ impl Core {
             updated_at: Timestamp::string(now.wall),
             ..LiveRecord::new(&job.id, &job.device, now).record
         };
+        // A key still on its way belongs to the attempt that is starting over.
+        if let Some(ticket) = live.in_flight.take() {
+            ticket.cancel();
+        }
         live.received_at = Some(now.at);
         live.touched = now.at;
+        self.announce(&job.id, now);
         let inbox = self.inbox.clone();
         let id = job.id.clone();
-        let delivery = WatchDelivery::new(&job.id, move |report| {
-            let _ = inbox.send(Message::Delivered { id, report });
-        });
+        let delivery = WatchDelivery::new(
+            Job {
+                id: job.id.clone(),
+                language: job.language.clone(),
+                expectation,
+                desktop: self.desktop.clone(),
+            },
+            move |event| {
+                let message = match event {
+                    DeliveryEvent::Report(report) => Message::Delivered {
+                        id: id.clone(),
+                        report,
+                    },
+                    DeliveryEvent::Confirmed { verified } => Message::Confirmed {
+                        id: id.clone(),
+                        verified,
+                    },
+                };
+                let _ = inbox.send(message);
+            },
+        );
         if let Err(why) = self.dictation.transcribe(samples, delivery) {
             tracing::warn!(
                 id = job.id,
