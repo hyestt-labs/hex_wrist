@@ -15,21 +15,35 @@ struct FakeInserter {
     /// What `insert` reports as the text that went in.
     rewrite: Option<String>,
     fail: bool,
+    /// Runs while the text is being written to the clipboard: the user
+    /// switching apps during the slow part of a paste.
+    during_write: Option<Box<dyn Fn()>>,
     /// The delays the clipboard restore was asked for.
     restores: Arc<Mutex<Vec<Duration>>>,
 }
 
 impl Inserter for FakeInserter {
-    fn insert(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<Inserted, String> {
+    fn insert(
+        &mut self,
+        text: &str,
+        commit: &dyn Fn() -> bool,
+        verify: &dyn Fn() -> bool,
+    ) -> Result<Option<Inserted>, String> {
         if self.fail || !commit() {
             return Err("paste was cancelled".to_owned());
         }
+        if let Some(during_write) = &self.during_write {
+            during_write();
+        }
+        if !verify() {
+            return Ok(None);
+        }
         self.inserted.push(text.to_owned());
         let restores = Arc::clone(&self.restores);
-        Ok(Inserted {
+        Ok(Some(Inserted {
             text: self.rewrite.clone().unwrap_or_else(|| text.to_owned()),
             restore: Some(Box::new(move |delay| restores.lock().unwrap().push(delay))),
-        })
+        }))
     }
 
     fn copy(&mut self, text: &str, _commit: &dyn Fn() -> bool) -> Result<(), String> {
@@ -584,4 +598,26 @@ fn a_read_back_that_cannot_start_still_restores_the_clipboard() {
     assert_eq!(*rig.inserter.restores.lock().unwrap(), [Duration::ZERO]);
     // The keyboard is free again.
     drop(desktop.lock());
+}
+
+/// Catches the user switching apps after the focus reads and before ⌘V:
+/// the clipboard write is slow, so the last comparison belongs right before
+/// the key, after the write, not before it.
+#[test]
+fn a_switch_during_the_clipboard_write_sends_no_paste() {
+    let mut rig = in_field();
+    let screen = rig.screen.clone();
+    rig.inserter.during_write = Some(Box::new(move || {
+        screen.set_focus(Some(editable(text_area(8))));
+    }));
+    let delivered = say(&mut rig, "hello there");
+    assert_eq!(
+        delivered.outcome,
+        DeliveryOutcome::Withheld(Withheld::TargetChanged)
+    );
+    assert!(delivered.follow_up.is_none());
+    assert!(
+        rig.inserter.inserted.is_empty(),
+        "⌘V must not have been sent"
+    );
 }

@@ -1906,12 +1906,20 @@ mod tests {
         struct Typed(Vec<String>);
 
         impl Inserter for Typed {
-            fn insert(&mut self, text: &str, _: &dyn Fn() -> bool) -> Result<Inserted, String> {
+            fn insert(
+                &mut self,
+                text: &str,
+                _: &dyn Fn() -> bool,
+                verify: &dyn Fn() -> bool,
+            ) -> Result<Option<Inserted>, String> {
+                if !verify() {
+                    return Ok(None);
+                }
                 self.0.push(text.to_owned());
-                Ok(Inserted {
+                Ok(Some(Inserted {
                     text: text.to_owned(),
                     restore: None,
-                })
+                }))
             }
 
             fn copy(&mut self, _: &str, _: &dyn Fn() -> bool) -> Result<(), String> {

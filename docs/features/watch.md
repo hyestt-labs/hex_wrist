@@ -195,11 +195,17 @@ Apple Watch                               // watch.pair, watch.dictate
   prompt frame jumps clear of the original, or whose tab switch changes only
   what AX does not expose, reads `target-changed` or goes to the other tab;
   this needs the live Terminal, Orca, and Ghostty check.
-- A small race remains by design: the focus is read and judged twice (the
-  second time right before ⌘V, Return, or ⌘Z), the key's 5 s deadline and
-  cancellation are checked after both reads, but Accessibility cannot pin the
-  target, so a switch of app inside those last microseconds still sends the
-  key to the new app. Needs the live check to size it.
+- Focus is judged more than once, and a window remains. Paste: the gate reads
+  and judges the focus, reads the field's text, then inside the Paster, after
+  the clipboard snapshot and write (the slow steps, tens of ms; hundreds if
+  the clipboard holds large data), a last comparison runs immediately before
+  ⌘V; a switch before it sends nothing and restores the clipboard. Keys
+  (Return, ⌘Z): the focus is read and judged twice and the 5 s deadline and
+  the ticket are checked after both reads, right before the key. What cannot
+  be closed: from the key event being posted until the target app handles it
+  (a few ms, longer if the app is busy), the user can still switch apps, and
+  the key then lands in the new one. Accessibility cannot pin the target, so
+  this needs the live check to size it, and it is not excluded.
 - The read-back keeps the AX element the paste went into and reads only that
   element, as Wristper does with its first candidate; it does not also read
   whatever has focus later. An app that replaces the field object after ⌘V

@@ -19,6 +19,15 @@ pub(super) enum Restore {
     Deferred,
 }
 
+/// How a clipboard paste ended.
+pub(super) enum Pasted {
+    /// ⌘V was sent; the handle, if any, is the restore left to time.
+    Sent(Option<RestoreHandle>),
+    /// The caller's last check refused it right before ⌘V; the clipboard
+    /// is back as it was and nothing was sent.
+    Refused,
+}
+
 /// What a paste inserted, and the restore left to time.
 pub(crate) struct Sent {
     /// The text as it went in, after the continuation join and spacing.

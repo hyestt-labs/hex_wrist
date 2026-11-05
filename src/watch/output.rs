@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryOutcome, WatchDelivery};
 use super::desktop::Held;
-use super::field::{ElementRef, Gate, gate, read_back_confirms};
+use super::field::{ElementRef, Gate, Withheld, gate, read_back_confirms};
 use super::recording::Verification;
 use super::{suspect, zh};
 
@@ -36,7 +36,15 @@ pub(crate) struct Inserted {
 /// The paste seam: `paste::Paster` in the app.
 pub(crate) trait Inserter {
     /// Sends ⌘V with `text`, leaving the clipboard restore to the caller.
-    fn insert(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<Inserted, String>;
+    /// `verify` is the last check: it runs once the clipboard holds the
+    /// text, right before ⌘V, and `false` sends nothing (`Ok(None)`, the
+    /// clipboard back as it was).
+    fn insert(
+        &mut self,
+        text: &str,
+        commit: &dyn Fn() -> bool,
+        verify: &dyn Fn() -> bool,
+    ) -> Result<Option<Inserted>, String>;
     /// Leaves `text` on the clipboard and pastes nothing.
     fn copy(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<(), String>;
 }
@@ -231,32 +239,47 @@ pub(crate) fn deliver(
     let screen = desktop.screen();
     let focused = screen.focused();
     let first = gate(&job.expectation, focused.as_ref(), screen.secure_input());
-    // Reading the field's text and preparing the clipboard take time, and
-    // the user may switch apps meanwhile: the focus is read and judged
-    // again right before ⌘V. A switch inside the last few microseconds is
-    // still possible; AX offers no way to pin the target.
-    let decision = match first {
-        Gate::Paste { .. } => {
-            let again = screen.focused();
-            let second = gate(&job.expectation, again.as_ref(), screen.secure_input());
-            // The read-back follows the element the second gate just
-            // judged, and `before` is that element's text.
-            let element = again.as_ref().and_then(|focused| focused.element.clone());
-            let before = element.as_ref().and_then(|element| element.0.value());
-            (second, element, before)
-        }
-        other => (other, None, None),
-    };
-    match decision {
-        (Gate::Withhold(withheld), ..) => done(DeliveryOutcome::Withheld(withheld), None),
-        (Gate::Copy, ..) => {
+    match first {
+        Gate::Withhold(withheld) => done(DeliveryOutcome::Withheld(withheld), None),
+        Gate::Copy => {
             inserter.copy(&text, commit)?;
             done(DeliveryOutcome::Copied, None)
         }
-        (Gate::Paste { verification, .. }, element, before) => {
+        Gate::Paste {
+            target,
+            verification,
+        } => {
             let terminal = verification == Verification::Terminal;
-            let before = if terminal { None } else { before };
-            let inserted = inserter.insert(&text, commit)?;
+            let element = focused.as_ref().and_then(|focused| focused.element.clone());
+            let before = if terminal {
+                None
+            } else {
+                element.as_ref().and_then(|element| element.0.value())
+            };
+            // The last comparison runs inside the paste, after the slow
+            // steps (the snapshot and the clipboard write) and right before
+            // ⌘V. What stays open is the time from ⌘V being posted to the
+            // target handling it: nothing can pin the target there.
+            let refused = std::cell::Cell::new(None);
+            let verify = || {
+                let now = screen.focused();
+                let verdict = gate(&job.expectation, now.as_ref(), screen.secure_input());
+                match verdict {
+                    Gate::Paste { target: now, .. } if target.matches(&now) => true,
+                    Gate::Withhold(withheld) => {
+                        refused.set(Some(withheld));
+                        false
+                    }
+                    _ => {
+                        refused.set(Some(Withheld::TargetChanged));
+                        false
+                    }
+                }
+            };
+            let Some(inserted) = inserter.insert(&text, commit, &verify)? else {
+                let why = refused.get().unwrap_or(Withheld::TargetChanged);
+                return done(DeliveryOutcome::Withheld(why), None);
+            };
             let follow_up = FollowUp {
                 held,
                 element,
@@ -276,8 +299,13 @@ pub(crate) struct Shared<'a>(pub(crate) &'a std::cell::RefCell<crate::paste::Pas
 
 #[cfg(target_os = "macos")]
 impl Inserter for Shared<'_> {
-    fn insert(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<Inserted, String> {
-        self.0.borrow_mut().insert(text, commit)
+    fn insert(
+        &mut self,
+        text: &str,
+        commit: &dyn Fn() -> bool,
+        verify: &dyn Fn() -> bool,
+    ) -> Result<Option<Inserted>, String> {
+        self.0.borrow_mut().insert(text, commit, verify)
     }
 
     fn copy(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<(), String> {
@@ -287,16 +315,21 @@ impl Inserter for Shared<'_> {
 
 #[cfg(target_os = "macos")]
 impl Inserter for crate::paste::Paster {
-    fn insert(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<Inserted, String> {
+    fn insert(
+        &mut self,
+        text: &str,
+        commit: &dyn Fn() -> bool,
+        verify: &dyn Fn() -> bool,
+    ) -> Result<Option<Inserted>, String> {
         let sent = self
-            .paste_deferred(text, commit)
+            .paste_deferred(text, commit, verify)
             .map_err(|error| error.to_string())?;
-        Ok(Inserted {
+        Ok(sent.map(|sent| Inserted {
             text: sent.inserted,
             restore: sent
                 .restore
                 .map(|handle| Box::new(move |delay| handle.restore_after(delay)) as RestoreFn),
-        })
+        }))
     }
 
     fn copy(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<(), String> {
