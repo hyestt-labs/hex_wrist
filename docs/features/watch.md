@@ -127,8 +127,8 @@ Apple Watch                               // watch.pair, watch.dictate
   until the read-back ends, so `/enter` waits for it.
 - **Enter and Undo.** `watch::service::keys`: the policy is
   `recording::check_enter` and `check_undo`; the key goes through `watch-ax`,
-  which compares the focus with the recording's field first (process, role,
-  identifier, window; never position). A request that waited past its 5 s
+  which compares the focus with the recording's field first (process, role, subrole,
+  window, identifier or names plus an overlapping frame). A request that waited past its 5 s
   deadline is not pressed late. Return is held 30 ms: Electron terminals
   ignore an instant press.
 - **Traditional Chinese.** `watch::zh`: `ferrous-opencc` 0.2 `s2tw`
@@ -188,8 +188,13 @@ Apple Watch                               // watch.pair, watch.dictate
   for it reads `target-changed`, as in Wristper.
 - The capsule is on the primary screen, not on the one under the pointer, and
   speaks only Traditional Chinese and English.
-- `sameFieldAfterTyping` compares the window, which a terminal that opens a
-  new window for each tab changes; Enter then reads `target-changed`.
+- Enter and Undo compare stricter than Wristper's `sameFieldAfterTyping`:
+  same process, role, subrole, and window (both windows must be readable),
+  the identifier, and without one the title, description, and role
+  description plus a frame that still overlaps the original. A terminal whose
+  prompt frame jumps clear of the original, or whose tab switch changes only
+  what AX does not expose, reads `target-changed` or goes to the other tab;
+  this needs the live Terminal, Orca, and Ghostty check.
 - The read-back reads the focused element of the app in front, not the
   original element object Wristper kept; an app that moves focus inside its
   own window right after ⌘V stays `unverified`.

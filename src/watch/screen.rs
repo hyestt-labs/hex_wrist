@@ -50,6 +50,8 @@ impl Screen for MacScreen {
                 subrole: field.subrole,
                 identifier: field.identifier,
                 title: field.title,
+                description: field.description,
+                role_description: field.role_description,
                 frame: field.frame.map(rect).unwrap_or_default(),
                 window: field.window.map(rect),
                 bundle_id,

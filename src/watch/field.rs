@@ -26,6 +26,16 @@ impl Rect {
     }
 }
 
+impl Rect {
+    /// Whether the two share any area.
+    fn overlaps(&self, other: &Rect) -> bool {
+        self.x < other.x + other.width
+            && other.x < self.x + self.width
+            && self.y < other.y + other.height
+            && other.y < self.y + self.height
+    }
+}
+
 /// How far a field (or its window) may move or grow and still be the same
 /// one: a resized sidebar, a window nudged while the watch recorded.
 const SLACK: f64 = 48.0;
@@ -38,6 +48,10 @@ pub(crate) struct FieldSnapshot {
     pub(crate) subrole: String,
     pub(crate) identifier: String,
     pub(crate) title: String,
+    /// `AXDescription` and `AXRoleDescription`: what names a field that has
+    /// no identifier or title.
+    pub(crate) description: String,
+    pub(crate) role_description: String,
     pub(crate) frame: Rect,
     pub(crate) window: Option<Rect>,
     pub(crate) bundle_id: Option<String>,
@@ -61,20 +75,32 @@ impl FieldSnapshot {
         self.frame.near(&other.frame)
     }
 
-    /// For Enter and Undo after the paste: the field's own frame moved with
-    /// the caret (a terminal grows its prompt line), so only the process,
-    /// role, identifier, and window are compared.
+    /// For Enter and Undo after the paste. A terminal's prompt grows as it
+    /// is typed into, so the frame may change, but nothing else may: the
+    /// same process, role, subrole, and window; the identifier when there
+    /// is one; every name the field carries (title, description, role
+    /// description); and a frame that still covers where it was, so a
+    /// second field of the same window is never taken for it. A missing
+    /// window, or a name on one side only, refuses: a wrong Return is worse
+    /// than a refused one.
     pub(crate) fn same_field_after_typing(&self, other: &FieldSnapshot) -> bool {
-        if self.pid != other.pid || self.role != other.role {
+        if self.pid != other.pid || self.role != other.role || self.subrole != other.subrole {
             return false;
         }
-        if !self.identifier.is_empty() && !other.identifier.is_empty() {
-            return self.identifier == other.identifier;
-        }
         match (&self.window, &other.window) {
-            (Some(window), Some(other_window)) => window.near(other_window),
-            _ => self.matches(other),
+            (Some(window), Some(other_window)) if window.near(other_window) => {}
+            _ => return false,
         }
+        if self.identifier != other.identifier {
+            return false;
+        }
+        if !self.identifier.is_empty() {
+            return true;
+        }
+        self.title == other.title
+            && self.description == other.description
+            && self.role_description == other.role_description
+            && self.frame.overlaps(&other.frame)
     }
 
     /// A password field: `AXSecureTextField` as role or subrole.
@@ -348,28 +374,103 @@ mod tests {
         assert!(!expected.matches(&other));
     }
 
+    fn other_window() -> Rect {
+        Rect {
+            x: 900.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        }
+    }
+
+    /// A terminal's prompt grows as it is typed into: the frame changes but
+    /// still covers where it was.
     #[test]
-    fn after_typing_the_field_frame_is_ignored_but_the_window_is_not() {
+    fn after_typing_a_grown_field_is_still_the_field() {
         let expected = text_area();
-        let mut other = text_area();
-        other.frame.y += 400.0;
-        other.frame.height += 200.0;
+        let mut grown = text_area();
+        grown.frame.y -= 150.0;
+        grown.frame.height += 150.0;
         assert!(
-            !expected.matches(&other),
+            !expected.matches(&grown),
             "the paste match would refuse this"
         );
+        assert!(expected.same_field_after_typing(&grown));
+    }
+
+    /// Catches Enter going to a second window that has the same layout and
+    /// the same identifier.
+    #[test]
+    fn an_equal_identifier_in_another_window_is_not_the_field() {
+        let mut expected = text_area();
+        expected.identifier = "prompt".into();
+        let mut other = expected.clone();
         assert!(expected.same_field_after_typing(&other));
-        other.window = Some(Rect {
-            x: 900.0,
-            ..expected.window.unwrap()
-        });
+        other.window = Some(other_window());
         assert!(!expected.same_field_after_typing(&other));
-        // Without a window on either side the paste match applies.
-        let mut windowless = text_area();
+    }
+
+    #[test]
+    fn a_missing_window_on_either_side_is_refused() {
+        let mut expected = text_area();
+        expected.identifier = "prompt".into();
+        let mut windowless = expected.clone();
         windowless.window = None;
-        let mut moved = windowless.clone();
-        moved.frame.y += 400.0;
-        assert!(!windowless.same_field_after_typing(&moved));
+        assert!(!expected.same_field_after_typing(&windowless));
+        assert!(!windowless.same_field_after_typing(&expected));
+        assert!(!windowless.same_field_after_typing(&windowless.clone()));
+    }
+
+    /// Catches Enter going to the other text area in the same window when
+    /// neither has an identifier: position alone said "same window".
+    #[test]
+    fn two_fields_in_one_window_are_told_apart_by_where_they_are() {
+        let expected = text_area();
+        let mut below = text_area();
+        below.frame.y += 300.0;
+        assert!(!expected.same_field_after_typing(&below));
+    }
+
+    #[test]
+    fn titles_descriptions_and_role_descriptions_tell_fields_apart() {
+        let expected = text_area();
+        for edit in [
+            (|f: &mut FieldSnapshot| f.title = "Subject".into()) as fn(&mut FieldSnapshot),
+            |f| f.description = "Message body".into(),
+            |f| f.role_description = "search text field".into(),
+            |f| f.subrole = "AXSearchField".into(),
+        ] {
+            let mut named = expected.clone();
+            edit(&mut named);
+            // One side saying nothing is not a match either: a field that
+            // gained a name is another field.
+            assert!(!expected.same_field_after_typing(&named));
+            assert!(!named.same_field_after_typing(&expected));
+            let mut both = named.clone();
+            assert!(named.same_field_after_typing(&both));
+            both.frame.x += 10.0;
+            assert!(
+                named.same_field_after_typing(&both),
+                "drift inside the window"
+            );
+        }
+        let mut one = text_area();
+        one.title = "To".into();
+        let mut two = text_area();
+        two.title = "Subject".into();
+        assert!(!one.same_field_after_typing(&two));
+    }
+
+    #[test]
+    fn identifiers_decide_between_fields_of_the_same_window() {
+        let mut expected = text_area();
+        expected.identifier = "message".into();
+        let mut other = expected.clone();
+        other.identifier = "subject".into();
+        assert!(!expected.same_field_after_typing(&other));
+        // One side without an identifier is not the same field.
+        other.identifier.clear();
+        assert!(!expected.same_field_after_typing(&other));
     }
 
     #[test]
@@ -476,10 +577,10 @@ mod tests {
 
     #[test]
     fn enter_needs_the_snapshot_and_the_same_field_after_typing() {
-        let mut moved = text_area();
-        moved.frame.y += 300.0;
+        let mut grown = text_area();
+        grown.frame.height += 300.0;
         assert_eq!(
-            key_gate(&Expectation::Field(text_area()), Some(&moved), false),
+            key_gate(&Expectation::Field(text_area()), Some(&grown), false),
             KeyGate::Press
         );
         assert_eq!(

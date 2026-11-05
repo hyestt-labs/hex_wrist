@@ -255,6 +255,8 @@ pub struct FocusedField {
     pub subrole: String,
     pub identifier: String,
     pub title: String,
+    pub description: String,
+    pub role_description: String,
     pub frame: Option<[f64; 4]>,
     pub window: Option<[f64; 4]>,
     /// The value is settable, or the role is a text input.
@@ -284,6 +286,8 @@ pub fn focused_field() -> Option<FocusedField> {
         subrole: copy_string(&element, c"AXSubrole").unwrap_or_default(),
         identifier: copy_string(&element, c"AXIdentifier").unwrap_or_default(),
         title: copy_string(&element, c"AXTitle").unwrap_or_default(),
+        description: copy_string(&element, c"AXDescription").unwrap_or_default(),
+        role_description: copy_string(&element, c"AXRoleDescription").unwrap_or_default(),
         frame: frame_of(&element),
         window,
         editable: is_editable(&element, &role),
