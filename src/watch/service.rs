@@ -285,23 +285,34 @@ impl WatchService {
 
 /// The `watch` thread: one inbox, woken by the nearest deadline.
 fn run(mut core: Core, messages: mpsc::Receiver<Message>) {
+    serve(&mut core, &messages, Now::current);
+    core.shutdown();
+}
+
+/// Handles messages until `Stop` or a closed inbox. A due deadline is
+/// served before the next message, so a busy inbox never holds one back.
+fn serve(core: &mut Core, messages: &mpsc::Receiver<Message>, mut clock: impl FnMut() -> Now) {
+    let mut ticked = clock().at;
     loop {
-        let now = Now::current();
-        let wait = core
+        let now = clock();
+        let due = core
             .next_deadline()
-            .map_or(TICK, |deadline| deadline.saturating_duration_since(now.at))
-            .min(TICK);
-        match messages.recv_timeout(wait) {
+            .map_or(ticked + TICK, |deadline| deadline.min(ticked + TICK));
+        if due <= now.at {
+            core.tick(now);
+            ticked = now.at;
+            continue;
+        }
+        match messages.recv_timeout(due - now.at) {
             Ok(message) => {
-                if let Flow::Exit = core.handle(message, Now::current()) {
-                    break;
+                if let Flow::Exit = core.handle(message, clock()) {
+                    return;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => core.tick(Now::current()),
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
-    core.shutdown();
 }
 
 impl pending::Outbound for Relay {

@@ -1021,6 +1021,56 @@ fn waiting_replies_time_out_with_transcribing() {
     assert_eq!(status.body["state"], "unverified");
 }
 
+/// An inbox that never empties must not hold back a due deadline: the
+/// clock moves 100 ms per reading while a thousand messages queue ahead of
+/// `Stop`, and the `/focus` and duplicate waits still end on time.
+#[test]
+fn deadlines_fire_while_the_inbox_stays_busy() {
+    let mut h = harness("busy-inbox");
+    let watch = h.pair("watch-1");
+    let head = audio_head(&watch, ID, "current", h.now.epoch());
+    send_audio_keep_nonce(&mut h, &watch, &head);
+    let duplicate = send_audio_keep_nonce(&mut h, &watch, &head);
+    let focus = audio_head(&watch, OTHER_ID, "requested", h.now.epoch());
+    assert!(h.send_audio(&watch, &focus, M4A).is_none());
+    assert_eq!(h.jobs.lock().unwrap().len(), 1);
+
+    let inbox = h.core.inbox.clone();
+    for _ in 0..1_000 {
+        let (reply, _) = mpsc::sync_channel(1);
+        inbox.send(Message::Snapshot { reply }).unwrap();
+    }
+    inbox.send(Message::Stop).unwrap();
+    let start = h.now;
+    let mut readings = 0u32;
+    let clock = move || {
+        readings += 1;
+        let by = Duration::from_millis(100) * readings;
+        Now {
+            at: start.at + by,
+            wall: start.wall + by,
+        }
+    };
+    serve(&mut h.core, &h.messages, clock);
+
+    assert_eq!(
+        h.jobs.lock().unwrap().len(),
+        2,
+        "the /focus wait ended and its audio ran"
+    );
+    assert_eq!(
+        h.pending_frame_ids().len(),
+        3,
+        "the duplicate and both transcript waits were answered"
+    );
+    h.frames.lock().unwrap().truncate(1);
+    let answer = h.open_last_sealed(&watch, &duplicate);
+    assert_eq!(
+        answer.body,
+        json!({"ok": true, "duplicate": true, "state": "transcribing"})
+    );
+}
+
 #[test]
 fn audio_that_asked_for_focus_waits_two_seconds_for_it() {
     let mut h = harness("focus-wait");
