@@ -60,6 +60,8 @@ getrandom = "0.4.3"
 hkdf = "0.13"
 hound = "3.5.1"
 libc = "0.2.189"
+# The relay WebSocket's TLS connector (`watch/relay`), over the platform roots.
+native-tls = "0.2"
 oxc_allocator = "0.156.0"
 oxc_ast = "0.156.0"
 oxc_ast_visit = "0.156.0"
