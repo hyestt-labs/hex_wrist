@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>anomaly.hex.scrawl-helper</string>
+  <string>dev.wristper.mac.scrawl-helper</string>
   <key>CFBundleName</key>
   <string>Hex</string>
   <key>NSCameraUsageDescription</key>

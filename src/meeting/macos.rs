@@ -209,7 +209,7 @@ impl ProcessTapSource {
         source.aggregate = create_tap_aggregate(
             &tap_uid,
             "Hex Meeting System Audio",
-            &format!("anomaly.hex.meeting-tap.{}", std::process::id()),
+            &format!("dev.wristper.mac.meeting-tap.{}", std::process::id()),
         )?;
 
         let channels = format.mChannelsPerFrame.max(1) as usize;

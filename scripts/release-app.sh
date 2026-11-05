@@ -37,7 +37,7 @@ fi
 "$root/scripts/set-crate-version.sh" "$root" "$version"
 export HEX_VERSION="$version" HEX_BUILD_NUMBER="$build_number"
 bundle=$("$root/scripts/build-app.sh")
-"$root/scripts/validate-app.sh" "$bundle" Hex.app "$version" "$build_number" >/dev/null
+"$root/scripts/validate-app.sh" "$bundle" Wristper.app "$version" "$build_number" >/dev/null
 mkdir -p "$dist"
 rm -f "$dmg" "$zip"
 "$root/scripts/notarize-app.sh" "$bundle" "$dmg" Hex

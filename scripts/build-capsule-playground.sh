@@ -24,7 +24,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>playground</string>
-  <key>CFBundleIdentifier</key><string>anomaly.hex.playground</string>
+  <key>CFBundleIdentifier</key><string>dev.wristper.mac.playground</string>
   <key>CFBundleName</key><string>Hex Playground</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0</string>

@@ -1198,9 +1198,9 @@ fn open_arguments(
         None => arguments.extend([
             "-b".into(),
             if test_build {
-                "anomaly.hex.test"
+                "dev.wristper.mac.test"
             } else {
-                "anomaly.hex"
+                "dev.wristper.mac"
             }
             .into(),
         ]),
@@ -1371,11 +1371,11 @@ mod tests {
         );
         assert_eq!(
             strings(open_arguments(None, false, vars())),
-            [&env[..], &["-b", "anomaly.hex"]].concat()
+            [&env[..], &["-b", "dev.wristper.mac"]].concat()
         );
         assert_eq!(
             strings(open_arguments(None, true, [])),
-            ["-b", "anomaly.hex.test"]
+            ["-b", "dev.wristper.mac.test"]
         );
     }
 

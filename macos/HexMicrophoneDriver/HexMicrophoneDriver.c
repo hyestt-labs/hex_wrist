@@ -5,9 +5,9 @@
 // Minimal CoreAudio AudioServerPlugIn virtual microphone driver for Hex.
 //
 // Exposes two devices inside coreaudiod:
-//   1. "Hex Microphone" (UID: "anomaly.hex.microphone")
+//   1. "Hex Microphone" (UID: "dev.wristper.mac.microphone")
 //      Visible 48 kHz mono float32 virtual input device for call apps.
-//   2. "Hex Microphone (Internal Sink)" (UID: "anomaly.hex.microphone.sink")
+//   2. "Hex Microphone (Internal Sink)" (UID: "dev.wristper.mac.microphone.sink")
 //      Hidden 48 kHz mono float32 output sink that Hex writes processed capture
 //      audio into.
 
@@ -401,7 +401,7 @@ static OSStatus HexPlugInGetPropertyData(
 
         case kAudioPlugInPropertyBundleID:
             if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-            *((CFStringRef *)outData) = CFSTR("anomaly.hex.microphone.driver");
+            *((CFStringRef *)outData) = CFSTR("dev.wristper.mac.microphone.driver");
             *outDataSize = sizeof(CFStringRef);
             return kAudioHardwareNoError;
 
@@ -429,9 +429,9 @@ static OSStatus HexPlugInGetPropertyData(
             CFStringRef uid = *((const CFStringRef *)inQualifierData);
             AudioObjectID found = kAudioObjectUnknown;
             if (uid != NULL) {
-                if (CFStringCompare(uid, CFSTR("anomaly.hex.microphone"), 0) == kCFCompareEqualTo) {
+                if (CFStringCompare(uid, CFSTR("dev.wristper.mac.microphone"), 0) == kCFCompareEqualTo) {
                     found = kObjectID_MicDevice;
-                } else if (CFStringCompare(uid, CFSTR("anomaly.hex.microphone.sink"), 0) == kCFCompareEqualTo) {
+                } else if (CFStringCompare(uid, CFSTR("dev.wristper.mac.microphone.sink"), 0) == kCFCompareEqualTo) {
                     found = kObjectID_SinkDevice;
                 }
             }
@@ -609,16 +609,16 @@ static OSStatus HexDeviceGetPropertyData(
         case kAudioDevicePropertyDeviceUID:
             if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
             *((CFStringRef *)outData) = isMic
-                ? CFSTR("anomaly.hex.microphone")
-                : CFSTR("anomaly.hex.microphone.sink");
+                ? CFSTR("dev.wristper.mac.microphone")
+                : CFSTR("dev.wristper.mac.microphone.sink");
             *outDataSize = sizeof(CFStringRef);
             return kAudioHardwareNoError;
 
         case kAudioDevicePropertyModelUID:
             if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
             *((CFStringRef *)outData) = isMic
-                ? CFSTR("anomaly.hex.microphone.model")
-                : CFSTR("anomaly.hex.microphone.sink.model");
+                ? CFSTR("dev.wristper.mac.microphone.model")
+                : CFSTR("dev.wristper.mac.microphone.sink.model");
             *outDataSize = sizeof(CFStringRef);
             return kAudioHardwareNoError;
 

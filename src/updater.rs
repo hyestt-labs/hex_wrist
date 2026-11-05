@@ -249,7 +249,13 @@ pub struct Updater {
 impl Updater {
     pub fn start() -> Self {
         let method = platform::method();
-        let disabled = if option_env!("HEX_TEST_BUILD") == Some("1") || updates_off_by_env() {
+        // The Wristper fork has no update source on macOS: people download new
+        // versions from the website, so no request ever leaves for the
+        // upstream release service.
+        let disabled = if option_env!("HEX_TEST_BUILD") == Some("1")
+            || cfg!(target_os = "macos")
+            || updates_off_by_env()
+        {
             Some(DesktopUpdateStatus::Unavailable)
         } else if crate::app_paths::is_local_build() {
             Some(DesktopUpdateStatus::SourceBuild)

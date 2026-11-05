@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>Hex</string>
+  <string>Wristper</string>
   <key>CFBundleExecutable</key>
   <string>hex</string>
   <key>CFBundleIdentifier</key>
-  <string>anomaly.hex</string>
+  <string>dev.wristper.mac</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleIconFile</key>
@@ -15,17 +15,17 @@
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleName</key>
-  <string>Hex</string>
+  <string>Wristper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
       <key>CFBundleURLName</key>
-      <string>anomaly.hex</string>
+      <string>dev.wristper.mac</string>
       <key>CFBundleURLSchemes</key>
       <array>
-        <string>hex</string>
+        <string>wristper</string>
       </array>
     </dict>
   </array>
@@ -50,6 +50,6 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>Hex uses your microphone for private local dictation and does not store the captured audio.</string>
   <key>SUPublicEDKey</key>
-  <string>mIek27lttJe8cIBqVZFhh6reRKjpTx1h9ZY9OKWPtuM=</string>
+  <string>cfl86Wza3TAoki1vKoTyTJD1UOM6kXidF6xxgohW7Yk=</string>
 </dict>
 </plist>

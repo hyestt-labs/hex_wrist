@@ -5,18 +5,18 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export HEX_TEAM_ID=TESTTEAM00
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/hex-app-identity.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
-bundle="$temporary/Hex.app"
+bundle="$temporary/Wristper.app"
 mkdir -p "$bundle/Contents"
 plist="$bundle/Contents/Info.plist"
 cp "$root/app/Info.plist" "$plist"
 
-[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = anomaly.hex ]
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" = dev.wristper.mac ]
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")" = hex ]
-[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist")" = Hex ]
-[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")" = Hex ]
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist")" = Wristper ]
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")" = Wristper ]
 
 expect_rejection() {
-  if output=$(sh "$root/scripts/validate-app.sh" "$bundle" Hex.app 2.1.0 20100 2>&1); then
+  if output=$(sh "$root/scripts/validate-app.sh" "$bundle" Wristper.app 2.1.0 20100 2>&1); then
     echo "Unexpectedly accepted an incompatible app." >&2
     exit 1
   fi
@@ -31,7 +31,7 @@ expect_rejection 'wrong bundle identifier'
 expect_rejection 'wrong bundle identifier'
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.kitlangton.hex2' "$plist"
 expect_rejection 'wrong bundle identifier'
-/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier anomaly.hex' "$plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.wristper.mac' "$plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable hex-watch' "$plist"
 expect_rejection 'wrong executable name'
 /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable hex' "$plist"

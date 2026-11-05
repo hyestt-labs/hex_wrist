@@ -37,10 +37,14 @@ impl StoryLink {
 
 /// The scheme this build registers: a test build's never opens the real Hex.
 pub(crate) fn scheme() -> &'static str {
-    if crate::app_paths::is_macos_test_build() {
-        "hex-test"
-    } else {
-        "hex"
+    match (
+        cfg!(target_os = "macos"),
+        crate::app_paths::is_macos_test_build(),
+    ) {
+        (true, true) => "wristper-test",
+        (true, false) => "wristper",
+        (false, true) => "hex-test",
+        (false, false) => "hex",
     }
 }
 

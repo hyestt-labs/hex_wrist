@@ -22,9 +22,9 @@ pub fn is_macos_test_build() -> bool {
 #[cfg(target_os = "macos")]
 pub fn app_name() -> &'static str {
     if is_macos_test_build() {
-        "Hex Test"
+        "Wristper Test"
     } else {
-        "Hex"
+        "Wristper"
     }
 }
 
@@ -34,10 +34,11 @@ pub fn support_dir() -> Result<PathBuf> {
     }
     let data =
         dirs::data_dir().ok_or_else(|| eyre!("application data directory is unavailable"))?;
-    let folder = if is_macos_test_build() {
-        "hex-test"
-    } else {
-        "hex"
+    let folder = match (cfg!(target_os = "macos"), is_macos_test_build()) {
+        (true, true) => "Wristper Test",
+        (true, false) => "Wristper",
+        (false, true) => "hex-test",
+        (false, false) => "hex",
     };
     Ok(data.join(folder))
 }
