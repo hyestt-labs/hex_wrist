@@ -19,12 +19,13 @@ mod state;
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryReport, WatchDelivery};
 use super::pairing::{self, PairedDevices, SecretStore};
 use super::relay::{NotConnected, Relay, RelayConfig, RelayEvent, RelayTiming};
+#[cfg(target_os = "macos")]
 use crate::recognition::RecognitionControl;
 use state::{Core, Flow, Identity, Now};
 
@@ -72,24 +73,28 @@ pub(crate) trait Dictation: Send {
     fn model(&self) -> ModelInfo;
 }
 
-/// The app's `Dictation`: the listener's control queue.
+/// The app's `Dictation`: the listener's control queue (macOS only, like
+/// the listener itself).
+#[cfg(target_os = "macos")]
 pub(crate) struct ListenerDictation {
     controls: SyncSender<RecognitionControl>,
 }
 
+#[cfg(target_os = "macos")]
 impl ListenerDictation {
     pub(crate) fn new(controls: SyncSender<RecognitionControl>) -> Self {
         Self { controls }
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Dictation for ListenerDictation {
     fn transcribe(&self, samples: Vec<f32>, delivery: WatchDelivery) -> Result<(), String> {
         self.controls
             .try_send(RecognitionControl::WatchTranscribe { samples, delivery })
             .map_err(|error| match error {
-                TrySendError::Full(_) => "the dictation queue is full".to_owned(),
-                TrySendError::Disconnected(_) => "the listener is not running".to_owned(),
+                mpsc::TrySendError::Full(_) => "the dictation queue is full".to_owned(),
+                mpsc::TrySendError::Disconnected(_) => "the listener is not running".to_owned(),
             })
     }
 
