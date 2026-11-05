@@ -154,6 +154,11 @@ pub enum ControlCommand {
         #[serde(default)]
         enabled: Option<bool>,
     },
+    /// Pair an Apple Watch: claim the code it shows through the relay
+    /// (`watch`). Answers `done` once the watch may send its pairing request.
+    WatchPair {
+        code: String,
+    },
     /// The shared vocabulary.
     VocabularyList,
     VocabularyAdd {
@@ -403,6 +408,7 @@ impl ControlCommand {
     pub fn deadline(&self) -> Duration {
         match self {
             Self::Dictation { print: true, .. } => PRINT_WAIT + Duration::from_secs(5),
+            Self::WatchPair { .. } => crate::watch::service::CLAIM_WAIT + Duration::from_secs(5),
             _ => CONTROL_DEADLINE,
         }
     }
@@ -973,6 +979,16 @@ pub fn memory_footprint() -> Option<u64> {
 mod tests {
     use super::*;
 
+    /// The CLI must hear the claim's real outcome, never its own timeout
+    /// while the relay may still accept the code.
+    #[test]
+    fn watch_pair_outwaits_the_claim() {
+        let pair = ControlCommand::WatchPair {
+            code: "123456".into(),
+        };
+        assert!(pair.deadline() > crate::watch::service::CLAIM_WAIT);
+    }
+
     #[test]
     fn a_printing_stop_answers_through_its_reply_channel() {
         let wait = Duration::from_millis(50);
@@ -1107,6 +1123,9 @@ mod tests {
             ControlCommand::CheckForUpdates,
             ControlCommand::LaunchAtLogin {
                 enabled: Some(true),
+            },
+            ControlCommand::WatchPair {
+                code: "217400".into(),
             },
             ControlCommand::VocabularyList,
             ControlCommand::VocabularyAdd {

@@ -47,6 +47,11 @@ Annotate is a normal feature in every build, stable included, on macOS,
 Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 `DEVELOPER_FEATURES_ENABLED`) stay gated to dev builds.
 
+**Wristper fork deviation (2026-11-04).** This fork is Wristper, whose paid
+core is dictating from an Apple Watch. The watch service (`watch`) is not a
+Labs feature: it starts with the macOS app, on by default, with no toggle.
+Everything else in this section still holds for new features.
+
 ## Feature Map
 
 [`docs/features/README.md`](docs/features/README.md) indexes existing user-facing
@@ -369,7 +374,10 @@ substitute for source inspection or a second roadmap.
   computer uses (environment variables everywhere, then Windows' WinHTTP
   settings with PAC/WPAD or macOS' CFNetwork settings), bounded resumable
   ranged downloads, and failures named for a person (`docs/downloads.md`).
-  Use it for any new outbound request; don't shell out to curl.
+  Use it for any new outbound request; don't shell out to curl. One
+  exception: ureq has no WebSocket, so `watch/relay` opens its own
+  tungstenite connection, over the same platform TLS (`native-tls`) and
+  the proxy `net::proxy_for` reports.
 - `updater`: the in-app updater on every OS, a client of the Anomaly release
   service (`docs/plans/release-service.md`). `updater/protocol` is the
   protocol's strict SemVer, lenient manifest parsing, and client rules (the
@@ -588,6 +596,32 @@ substitute for source inspection or a second roadmap.
   under live threads. A restart
   schedules its relaunch first; the new copy waits for the old pid to exit.
 - `feedback`: bounded volume-controlled capture and failure tones.
+- `watch`: the Apple Watch (Wristper) receiver, wire-compatible with the
+  shipping watch app (`docs/features/watch.md`; the contract is
+  `artifacts/wristper-migration-20261104/wristper-protocol.md`). Pure
+  protocol core from unit A: `frame` (relay frames and body assembly, the
+  cloud route table), `e2ee` (P-256 ECDH + HKDF pairing key, AES-256-GCM
+  envelopes, nonce cache), `pairing` (`paired-devices.json` plus Keychain
+  service `dev.wristper.mac.device`, the 120 s single-use claim approval),
+  `delivered` (the 24 h dedupe table), `recording` (a recording's state and
+  its `/status` projection), `refusal` (every error body), `suspect`
+  (Wristper's text rules). Unit B1 adds `relay` (the WebSocket client on
+  thread `watch-relay`: `wss://<base>/m/<room>` with `X-Wristper-Mac-Secret`,
+  a `ping` every 30 s, reconnect after 60 s of silence with 1, 2, 4 … 30 s
+  backoff, 1 MiB messages, platform TLS and the `net` proxy through a
+  CONNECT tunnel), `audio` (symphonia: the watch's 16 kHz AAC `.m4a` to
+  16 kHz mono f32, other rates through `dictation`'s resampler), `delivery`
+  (`WatchDelivery`, the once-only reply handle a recording travels with as
+  `TranscriptionTarget::Watch`), and `service` (thread `watch`, the one
+  owner of paired devices, pairing requests, the dedupe table, nonces, and
+  live records; it answers `/health`, `/status`, `/focus`, `/e2ee`,
+  `/e2ee/query`, `/pairing/request`, `/pairing/result`, refuses plaintext
+  `/audio` with 403 `e2ee-required`, and holds deferred replies as one
+  `Waiting` enum: the transcript (answered `transcribing` at 50 s), a
+  duplicate id (45 s), and audio that beat its `/focus` (2 s)). Room and
+  secret come from `relay-room` and `relay-secret` in the data folder, the
+  Mac id from `device-id`; files Wristper wrote are reused unchanged.
+  `hex watch pair <code>` claims a code through the relay (10 s).
 
 Keep modules deep. Callers should not coordinate
 CoreAudio formats, AppleScript details, or event serialization.
@@ -1175,6 +1209,24 @@ CoreAudio formats, AppleScript details, or event serialization.
   pane never return an expired meeting.
 - Visible state remains `Transcribing` until every accepted transcription or
   paste output has completed, including ordered post-processing and insertion.
+- A watch recording is a dictation: it goes through the one
+  `DictationWorker` and the one Paster as `TranscriptionTarget::Watch`, in
+  submission order with every shortcut dictation, with the Output pane's
+  steps, and into History as a dictation. Its inference is a foreground
+  engine job, so a later shortcut dictation's transcription waits behind
+  it, while capture never does. Hex never loads a second model or
+  starts a second Paster for it, and never transcribes it through
+  `local_api`. ⌘V is not a confirmation, so until the read-back lands the
+  watch reads `unverified`; an empty transcript reads `suspect`; a decode,
+  inference, or paste failure reads 500 `{"state":"failed"}`. The recording
+  id is the idempotency key: a resend while it transcribes waits up to 45 s,
+  a resend after delivery gets `duplicate:true` from the live record or the
+  24 h dedupe table, and nothing is ever pasted twice. The `watch` thread
+  never blocks on anything but its inbox; every wait is a deadline it polls.
+  Pairing without an E2EE key (Wristper's 4-digit codes) is not supported:
+  plaintext `/audio` is always 403 `e2ee-required` and a request without a
+  valid public key is 426. A Keychain that cannot be read answers 503
+  `secrets-unavailable`, never 403.
 - The HUD is observational and click-through. It must not alter capture
   boundaries, steal focus, or block controls in the foreground application.
 - Desktop UI is governed by [`docs/design-system.md`](docs/design-system.md);

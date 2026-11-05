@@ -5,6 +5,10 @@
 //! threads, no UI, no engine. The relay WebSocket client, the HTTP handlers,
 //! and the paste pipeline sit on top in later units.
 //!
+//! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
+//! - `relay`: the relay WebSocket client on its own thread.
+//! - `delivery`: the handle a recording travels with through the dictation worker.
+//! - `service`: the one `watch` thread that owns the state and answers requests.
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
 //! - `pairing`: paired watches, their tokens and keys, and the claim approval.
@@ -15,17 +19,127 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod audio;
 pub(crate) mod delivered;
+pub(crate) mod delivery;
 pub(crate) mod e2ee;
 pub(crate) mod frame;
 pub(crate) mod pairing;
 pub(crate) mod recording;
 pub(crate) mod refusal;
+pub(crate) mod relay;
+pub(crate) mod service;
 pub(crate) mod suspect;
 
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static SERVICE: OnceLock<service::WatchService> = OnceLock::new();
+
+/// Makes the running service reachable from `hex watch pair` and the window.
+pub(crate) fn install(service: service::WatchService) {
+    if SERVICE.set(service).is_err() {
+        tracing::warn!("the watch service was installed twice; keeping the first");
+    }
+}
+
+pub(crate) fn service() -> Option<&'static service::WatchService> {
+    SERVICE.get()
+}
+
+/// Relay override for a local relay in tests; release builds take only
+/// https/wss (`relay::resolve_base`).
+pub(crate) const RELAY_BASE_ENV: &str = "HEX_WATCH_RELAY_BASE";
+
+/// Starts the service for the macOS app and installs it. On by default, no
+/// toggle: this fork is Wristper, and dictating from the watch is its
+/// reason to exist. A failure is logged and the app runs without it.
+#[cfg(target_os = "macos")]
+pub(crate) fn start_in_app(
+    controls: std::sync::mpsc::SyncSender<crate::recognition::RecognitionControl>,
+) -> Option<service::WatchService> {
+    use service::{ListenerDictation, WatchConfig, WatchService};
+    let support_dir = match crate::app_paths::support_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            tracing::warn!(%error, "the Apple Watch service did not start: no data folder");
+            return None;
+        }
+    };
+    let timing = relay::RelayTiming::default();
+    let relay_base = relay::resolve_base(
+        &std::env::var(RELAY_BASE_ENV).unwrap_or_default(),
+        timing.allow_insecure,
+    );
+    let config = WatchConfig {
+        support_dir,
+        relay_base,
+        mac_name: computer_name(),
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        timing,
+    };
+    match WatchService::start(
+        config,
+        Box::new(ListenerDictation::new(controls)),
+        Box::new(pairing::keychain::KeychainSecretStore::new()),
+    ) {
+        Ok(service) => {
+            install(service.clone());
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the Apple Watch service did not start");
+            None
+        }
+    }
+}
+
+/// What the watch shows for this Mac: the computer name from System
+/// Settings (`SCDynamicStoreCopyComputerName` in Wristper), else `Mac`.
+#[cfg(target_os = "macos")]
+fn computer_name() -> String {
+    use objc2_core_foundation::{CFRetained, CFString};
+    use std::ptr::NonNull;
+    #[link(name = "SystemConfiguration", kind = "framework")]
+    unsafe extern "C" {
+        fn SCDynamicStoreCopyComputerName(
+            store: *const std::ffi::c_void,
+            encoding: *mut u32,
+        ) -> *mut CFString;
+    }
+    // SAFETY: a null store and null encoding are documented as allowed; the
+    // returned string follows the Create rule, so `from_raw` takes the +1.
+    let name = unsafe {
+        NonNull::new(SCDynamicStoreCopyComputerName(
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        ))
+        .map(|raw| CFRetained::from_raw(raw))
+    };
+    name.map(|name| name.to_string())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Mac".to_owned())
+}
+
+/// `hex watch pair <code>`.
+pub(crate) fn pair(code: &str) -> crate::control::ControlReply {
+    use crate::control::ControlReply;
+    let Some(service) = service() else {
+        return ControlReply::error(
+            service::ClaimError::Unavailable.wire(),
+            service::ClaimError::Unavailable.message(),
+        );
+    };
+    match service.claim(code.trim()) {
+        Ok(claimed) => ControlReply::done(format!(
+            "Claimed the code for {} ({}); the watch finishes pairing by itself within 2 minutes",
+            claimed.device_name, claimed.device_id
+        )),
+        Err(error) => ControlReply::error(error.wire(), error.message()),
+    }
+}
 
 /// `X-Wristper-Protocol` this receiver speaks.
 pub(crate) const PROTOCOL_VERSION: u32 = 4;

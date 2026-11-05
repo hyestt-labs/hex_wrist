@@ -66,6 +66,13 @@ pub enum RecognitionControl {
     },
     /// `/dictations`, which a local API client owns.
     Dictation(DictationControl),
+    /// A watch recording (`watch`): 16 kHz mono samples transcribed and
+    /// pasted as a dictation, in order with every other one; the outcome
+    /// goes back through `delivery`.
+    WatchTranscribe {
+        samples: Vec<f32>,
+        delivery: crate::watch::delivery::WatchDelivery,
+    },
 }
 
 impl From<DictationControl> for RecognitionControl {
@@ -440,6 +447,15 @@ pub fn listen(
                             None => ControlReply::error("feature-off", "captures are off"),
                         };
                         let _ = reply.send(answer);
+                    }
+                    RecognitionControl::WatchTranscribe { samples, delivery } => {
+                        if let Err(error) = dictation_worker.transcribe(
+                            DictationClip::external(samples),
+                            TranscriptionTarget::Watch(delivery.clone()),
+                            context.clone(),
+                        ) {
+                            delivery.deliver(crate::watch::delivery::DeliveryReport::failed(error));
+                        }
                     }
                     RecognitionControl::CaptureStatus { reply } => {
                         let recording = if programmatic.is_some() {
@@ -1765,7 +1781,8 @@ fn handle_dictation_event(
                 TranscriptionTarget::Print | TranscriptionTarget::RawPrint => {
                     DictationPhase::Printed
                 }
-                TranscriptionTarget::Service => return Ok(()),
+                // The watch thread records and answers its own result.
+                TranscriptionTarget::Service | TranscriptionTarget::Watch(_) => return Ok(()),
             };
             feedback::play(Tone::DictationDone);
             events.processed_dictation(phase, text, processing)?;

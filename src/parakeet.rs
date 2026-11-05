@@ -83,7 +83,7 @@ pub enum PasteKind {
     MeetingDelta,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum TranscriptionTarget {
     Paste,
     /// Dictate without processing: pasted as heard, skipping the Output
@@ -95,6 +95,17 @@ pub enum TranscriptionTarget {
     Print,
     /// A printing stop of a raw dictation: the transcript as heard.
     RawPrint,
+    /// A watch recording: processed and pasted as a dictation, with the
+    /// outcome reported through the delivery instead of a tone or event.
+    Watch(crate::watch::delivery::WatchDelivery),
+}
+
+impl TranscriptionTarget {
+    /// Whether the Output pane's steps (modes, corrections, rewrites,
+    /// transformations) apply before the text is used.
+    fn is_processed(&self) -> bool {
+        matches!(self, Self::Paste | Self::Print | Self::Watch(_))
+    }
 }
 
 struct InferenceJob {
@@ -788,12 +799,7 @@ fn run_inference_worker(
         }
         let target = job.target;
         match result {
-            Ok(text)
-                if matches!(
-                    target,
-                    TranscriptionTarget::Paste | TranscriptionTarget::Print
-                ) && !text.trim().is_empty() =>
-            {
+            Ok(text) if target.is_processed() && !text.trim().is_empty() => {
                 if processor_jobs
                     .send(ProcessorJob {
                         job_id: job.job_id,
@@ -961,19 +967,25 @@ fn finish_output(
                 .as_ref()
                 .ok()
                 .and_then(|result| result.processing.clone());
+            // What a watch recording reports besides the text.
+            let mut watch_report: Option<WatchReportDetails> = None;
             let result = result.and_then(|mut completed| {
                 if control.is_cancelled() {
                     return Err("dictation was cancelled".into());
                 }
                 let paste_started = Instant::now();
+                let mut copied = false;
                 if !completed.text.trim().is_empty() {
                     let commit = || control.begin_output();
-                    match target {
-                        TranscriptionTarget::Paste | TranscriptionTarget::RawPaste => {
+                    match &target {
+                        TranscriptionTarget::Paste
+                        | TranscriptionTarget::RawPaste
+                        | TranscriptionTarget::Watch(_) => {
                             // Labs › Copy dictation only, read as the output
                             // commits: dictations go to the clipboard
                             // unpasted; Paste last dictation still pastes.
                             let mode = if crate::labs::copy_only() {
+                                copied = true;
                                 PasteMode::CopyOnly
                             } else {
                                 PasteMode::Continue
@@ -989,25 +1001,37 @@ fn finish_output(
                     .map_err(|error| error.to_string())?;
                     if matches!(
                         target,
-                        TranscriptionTarget::Paste | TranscriptionTarget::RawPaste
+                        TranscriptionTarget::Paste
+                            | TranscriptionTarget::RawPaste
+                            | TranscriptionTarget::Watch(_)
                     ) {
                         *last_transcript = Some(completed.text.clone());
                     }
                     if let Some(history) = history {
-                        record_history(history, target, &mut completed);
+                        record_history(history, &target, &mut completed);
                     }
                 }
+                let paste_ms = paste_started.elapsed().as_millis();
                 tracing::info!(
                     audio_ms = completed.timings.audio_ms,
                     queue_ms = completed.timings.queue_ms,
                     prepare_ms = completed.timings.prepare_ms,
                     inference_ms = completed.timings.inference_ms,
-                    paste_ms = paste_started.elapsed().as_millis(),
+                    paste_ms,
                     total_ms = completed.timings.total_started.elapsed().as_millis(),
                     "dictation pipeline completed"
                 );
+                watch_report = Some(WatchReportDetails {
+                    raw: (completed.raw != completed.text).then(|| completed.raw.clone()),
+                    transcribe_ms: completed.timings.inference_ms as u64,
+                    paste_ms: paste_ms as u64,
+                    copied,
+                });
                 Ok(completed.text)
             });
+            if let TranscriptionTarget::Watch(delivery) = &target {
+                delivery.deliver(watch_delivery_report(&result, watch_report));
+            }
             if matches!(
                 target,
                 TranscriptionTarget::Print | TranscriptionTarget::RawPrint
@@ -1054,15 +1078,56 @@ fn finish_output(
     }
 }
 
+struct WatchReportDetails {
+    raw: Option<String>,
+    transcribe_ms: u64,
+    paste_ms: u64,
+    copied: bool,
+}
+
+/// What the watch hears about its recording: `unverified` for a sent paste
+/// (Hex's ⌘V is not a confirmation), `copied` under Copy dictation only,
+/// `suspect` for an empty transcript, else the failure.
+fn watch_delivery_report(
+    result: &Result<String, String>,
+    details: Option<WatchReportDetails>,
+) -> crate::watch::delivery::DeliveryReport {
+    use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
+    let text = match result {
+        Ok(text) => text,
+        Err(error) => return DeliveryReport::failed(error.clone()),
+    };
+    let details = details.unwrap_or(WatchReportDetails {
+        raw: None,
+        transcribe_ms: 0,
+        paste_ms: 0,
+        copied: false,
+    });
+    let outcome = if text.trim().is_empty() {
+        DeliveryOutcome::Suspect(crate::watch::suspect::SuspectReason::Empty)
+    } else if details.copied {
+        DeliveryOutcome::Copied
+    } else {
+        DeliveryOutcome::Unverified
+    };
+    DeliveryReport {
+        outcome,
+        text: text.clone(),
+        raw_text: details.raw,
+        transcribe_ms: details.transcribe_ms,
+        paste_ms: details.paste_ms,
+    }
+}
+
 /// Record one successfully pasted result. History failures must never fail
 /// the paste that already happened.
 fn record_history(
     history: &History,
-    target: TranscriptionTarget,
+    target: &TranscriptionTarget,
     completed: &mut CompletedTranscript,
 ) {
     let kind = match target {
-        TranscriptionTarget::Paste => HistoryKind::Dictation,
+        TranscriptionTarget::Paste | TranscriptionTarget::Watch(_) => HistoryKind::Dictation,
         TranscriptionTarget::RawPaste => HistoryKind::Raw,
         TranscriptionTarget::Print | TranscriptionTarget::RawPrint => HistoryKind::Printed,
         TranscriptionTarget::Service => return,

@@ -27,6 +27,10 @@ pub(crate) struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) completed_at: Option<String>,
     pub(crate) recorded_at: String,
+    /// The watch the recording came from. Swift ignores the key and writes
+    /// entries without it; those stay open to any watch, as in Swift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) owner: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -88,11 +92,13 @@ impl DeliveredIds {
             .find(|entry| entry.id == id && entry.recorded_at >= cutoff)
     }
 
-    /// Notes `id`'s final `state` and the marks its paste left. A known id
-    /// keeps its first `recorded_at`.
+    /// Notes `id`'s final `state`, the marks its paste left, and its owner.
+    /// A known id keeps its first `recorded_at`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record(
         &mut self,
         id: &str,
+        owner: Option<&str>,
         state: State,
         paste: PasteMarks,
         truncated: bool,
@@ -109,6 +115,9 @@ impl DeliveredIds {
             entry.truncated = truncated;
             entry.entered = paste.entered;
             entry.completed_at = completed_at;
+            if let Some(owner) = owner {
+                entry.owner = Some(owner.to_owned());
+            }
         } else {
             self.entries.push(Entry {
                 id: id.to_owned(),
@@ -119,6 +128,7 @@ impl DeliveredIds {
                 entered: paste.entered,
                 completed_at,
                 recorded_at: Timestamp::string(now),
+                owner: owner.map(str::to_owned),
             });
         }
         if self.entries.len() > self.capacity {
@@ -185,6 +195,37 @@ mod tests {
     }
 
     #[test]
+    fn the_owner_is_written_for_new_entries_and_absent_from_swift_ones() {
+        let mut table = DeliveredIds::default();
+        table.record(
+            ID_A,
+            Some("watch-1"),
+            State::Pasted,
+            read_back(),
+            false,
+            None,
+            at(0),
+        );
+        table.record(
+            ID_B,
+            None,
+            State::Saved,
+            PasteMarks::default(),
+            false,
+            None,
+            at(0),
+        );
+        let loaded = DeliveredIds::from_json(&table.to_json());
+        assert_eq!(
+            loaded.get(ID_A, at(1)).unwrap().owner.as_deref(),
+            Some("watch-1")
+        );
+        assert_eq!(loaded.get(ID_B, at(1)).unwrap().owner, None);
+        let text = String::from_utf8(table.to_json()).unwrap();
+        assert_eq!(text.matches("\"owner\"").count(), 1, "{text}");
+    }
+
+    #[test]
     fn unreadable_input_reads_as_an_empty_table() {
         assert_eq!(DeliveredIds::from_json(b"not json").len(at(0)), 0);
         assert_eq!(DeliveredIds::from_json(b"{}").len(at(0)), 0);
@@ -195,6 +236,7 @@ mod tests {
         let mut table = DeliveredIds::default();
         table.record(
             ID_A,
+            None,
             State::Saved,
             PasteMarks::default(),
             false,
@@ -209,13 +251,13 @@ mod tests {
     #[test]
     fn an_entry_past_24_hours_is_not_returned_and_is_dropped_on_the_next_record() {
         let mut table = DeliveredIds::default();
-        table.record(ID_A, State::Pasted, read_back(), false, None, at(0));
+        table.record(ID_A, None, State::Pasted, read_back(), false, None, at(0));
         let just_inside = at(86_400);
         assert!(table.get(ID_A, just_inside).is_some());
         let later = at(86_401);
         assert!(table.get(ID_A, later).is_none());
         assert_eq!(table.len(later), 0);
-        table.record(ID_B, State::Pasted, read_back(), false, None, later);
+        table.record(ID_B, None, State::Pasted, read_back(), false, None, later);
         assert_eq!(table.entries.len(), 1);
         assert_eq!(table.entries[0].id, ID_B);
     }
@@ -223,9 +265,9 @@ mod tests {
     #[test]
     fn capacity_trims_the_oldest_first() {
         let mut table = DeliveredIds::new(2);
-        table.record(ID_A, State::Pasted, read_back(), false, None, at(1));
-        table.record(ID_B, State::Pasted, read_back(), false, None, at(2));
-        table.record(ID_C, State::Pasted, read_back(), false, None, at(3));
+        table.record(ID_A, None, State::Pasted, read_back(), false, None, at(1));
+        table.record(ID_B, None, State::Pasted, read_back(), false, None, at(2));
+        table.record(ID_C, None, State::Pasted, read_back(), false, None, at(3));
         let now = at(10);
         assert!(table.get(ID_A, now).is_none());
         assert!(table.get(ID_B, now).is_some());
@@ -237,6 +279,7 @@ mod tests {
         let mut table = DeliveredIds::default();
         table.record(
             ID_A,
+            None,
             State::Unverified,
             PasteMarks::sent(Verification::None, false),
             false,
@@ -246,6 +289,7 @@ mod tests {
         let first_recorded_at = table.entries[0].recorded_at.clone();
         table.record(
             ID_A,
+            None,
             State::Pasted,
             read_back(),
             true,
@@ -265,7 +309,7 @@ mod tests {
     fn the_paste_marks_are_stored_whatever_the_state() {
         let mut table = DeliveredIds::default();
         let marks = PasteMarks::sent(Verification::Terminal, true);
-        table.record(ID_A, State::Undone, marks, false, None, at(0));
+        table.record(ID_A, None, State::Undone, marks, false, None, at(0));
         let entry = table.get(ID_A, at(1)).unwrap();
         assert_eq!(
             (
@@ -290,6 +334,7 @@ mod tests {
         let mut table = DeliveredIds::default();
         table.record(
             ID_A,
+            None,
             State::Pasted,
             read_back(),
             false,

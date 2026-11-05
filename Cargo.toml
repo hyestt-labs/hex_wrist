@@ -60,6 +60,8 @@ getrandom = "0.4.3"
 hkdf = "0.13"
 hound = "3.5.1"
 libc = "0.2.189"
+# The relay WebSocket's TLS connector (`watch/relay`), over the platform roots.
+native-tls = "0.2"
 oxc_allocator = "0.156.0"
 oxc_ast = "0.156.0"
 oxc_ast_visit = "0.156.0"
@@ -75,9 +77,14 @@ serde_json = "1.0.151"
 serde_path_to_error = "0.1"
 sha2 = "0.11.0"
 subtle = "2.6"
+# The watch audio (`watch/audio`): the 16 kHz AAC `.m4a` the watch records.
+symphonia = { version = "0.5.5", default-features = false, features = ["isomp4", "aac"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 transcribe-cpp = "=0.4.1"
+# The relay WebSocket (`watch/relay`); ureq has no WebSocket, so this is the
+# one connection outside `net`, over the same platform TLS and proxy.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
 transcribe-rs = { git = "https://github.com/cjpais/transcribe-rs", rev = "e37c66b6df43af51fde8dec34f98a07aaf09564c", features = ["onnx"], optional = true }
 unicode-general-category = "1.1"
 unicode-normalization = "0.1.25"

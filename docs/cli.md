@@ -74,6 +74,7 @@ hex
 ├── screenshot [--pick]           Labs (macOS): shoot the display under the pointer and print the PNG's path; --pick opens the ⌘⇧4 picker
 ├── labs [on|off <feature>]       list Labs features or turn one on/off; edits settings.json (features/labs.md)
 │   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens that lab's drawer in Hex's Labs page
+├── watch pair <code>              macOS: claim the 6-digit code an Apple Watch shows, through the relay (features/watch.md)
 ├── check-for-updates              check for an update now
 ├── launch-at-login [on|off]       report or change Launch at Login (macOS: installed Hex.app only; Windows Run key; Linux XDG autostart)
 └── logs [--process] [-n N] [-f]   tail live.ndjson (or process.log); no running Hex needed
@@ -230,6 +231,8 @@ transcription and `/streams`, but answer `/control` with
 - Request bodies are JSON up to 64 KiB; replies are at most 1 MiB.
 - The app answers within 10 s (`504 control-timeout` otherwise); the CLI waits
   15 s. `dictation stop --print` gets 65 s, and the CLI waits 70 s.
+  `watch pair` gets 16 s, longer than the relay claim's own 11 s, so it
+  reports the claim's real outcome; the CLI waits 21 s.
 - Every answer the app gives is `200` with a `ControlResponse`, refusals
   included. Transport-level failures use HTTP status codes:
   `400 invalid-control-command` (malformed or unknown command),
@@ -260,6 +263,7 @@ model-list | model-use {model, language?} | model-install {model, language?} | m
 window-show {pane?} | window-hide | window-story {story, variant?, play}
 onboarding-reset
 history-clear | check-for-updates | launch-at-login {enabled?}
+watch-pair {code}                                macOS; elsewhere `unsupported`
 vocabulary-list | vocabulary-add {term, sounds_like} | vocabulary-remove {term}
 scrawl-capture {action}                          action: start | stop | cancel | status; `capture` experiment
 scrawl-capture-list {limit?} | scrawl-capture-show {capture}

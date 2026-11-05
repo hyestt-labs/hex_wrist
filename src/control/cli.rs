@@ -126,6 +126,11 @@ pub enum ControlCli {
         #[command(flatten)]
         output: Output,
     },
+    /// Pair an Apple Watch running Wristper.
+    Watch {
+        #[command(subcommand)]
+        command: WatchCommand,
+    },
     /// List, add, and remove vocabulary terms.
     Vocabulary {
         #[command(subcommand)]
@@ -373,6 +378,18 @@ pub enum VocabularyCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum WatchCommand {
+    /// Claim the 6-digit code the watch shows, through the relay. Waits up
+    /// to 10 s for the relay's answer; the watch then finishes pairing by
+    /// itself.
+    Pair {
+        code: String,
+        #[command(flatten)]
+        output: Output,
+    },
+}
+
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum Toggle {
     On,
@@ -503,6 +520,9 @@ pub fn run(command: ControlCli) -> u8 {
             },
             output,
         ),
+        ControlCli::Watch {
+            command: WatchCommand::Pair { code, output },
+        } => send(ControlCommand::WatchPair { code }, output),
         ControlCli::Vocabulary { command } => match command {
             VocabularyCommand::List { output } => send(ControlCommand::VocabularyList, output),
             VocabularyCommand::Add {
