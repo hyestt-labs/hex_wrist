@@ -7,7 +7,8 @@
 1. **`src/rune_ui` 不能完全不碰。** `facts.rs:231-254` 的 `blurb` 是窮舉 match，新 ID 不加分支就編不過。每個新 `tr()` 字串都要有全部翻譯（`i18n.rs:1726` 的測試；表在 `i18n.rs` 與 `i18n/{russian,portuguese,french}.rs`）。建議：只加 5 個 blurb 分支與翻譯，其他不動。
 2. **Goldens 會變。** `picker-custom-models` 場景畫出全部模型（`scenes.rs:150-154`）。Golden 只在 Linux 跑（AGENTS.md）。fork `hyestt-labs/hex_wrist` 能不能 dispatch `check-linux.yml` 還不知道。建議：能跑就取 `golden-actual`，不能就在 PR 標明「goldens 待補」。
 3. **非 macOS 的速度標籤。** 建議 Linux／Windows 先顯示「—」，理由見第 4 節。
-4. **不放 Labs。** 使用者已決定。AGENTS.md 要求新功能進 Labs，但 catalog 模型有先例：只有 Ultra 與匯入模型受 Labs 控制（`models.rs:100-102`），NB-Whisper、Granite、GigaAM 都沒有。建議在 AGENTS.md 的 fork 偏離段落補一句。
+4. **Linux／Windows 編譯檢查。** 本機不能交叉編譯 `transcribe-cpp-sys`，`compile.yml` 要 push 或 PR 才會跑。需要協調者 push 或 dispatch。
+5. **不放 Labs。** 使用者已決定。AGENTS.md 要求新功能進 Labs，但 catalog 模型有先例：只有 Ultra 與匯入模型受 Labs 控制（`models.rs:100-102`），NB-Whisper、Granite、GigaAM 都沒有。建議在 AGENTS.md 的 fork 偏離段落補一句。
 
 ## 1. 範圍
 
@@ -45,7 +46,7 @@ GGUF 檔頭（`artifacts.rs` 的 `architecture`／`variant` 照抄這裡，不�
 | Qwen 1.7B | qwen3_asr | qwen3-asr-1.7b | 365 F32、344 Q8_0 | 30，等於 `QWEN_LANGUAGES` | true |
 
 和比對檔的差異：
-- 比對檔的 Metal「14.8–23.9x」只來自 M4 Max。catalog 在 Hex 固定的 transcribe.cpp `2778ae4`（`Cargo.toml:45`）還有 base M4（`db678a03`，2026-10-22），慢約 2.3 倍。例如 large-v3 在 M4 只有 6.6–8.3x。
+- 比對檔的 Metal「14.8–23.9x」只來自 M4 Max。catalog 在 Hex 固定的 transcribe.cpp `2778ae4`（`Cargo.toml:45`）還有 base M4（`db678a03`，2026-10-22），慢 2.2–3.4 倍（dots 樣本）。例如 large-v3 在 M4 只有 6.6–8.3x。
 - 準確度紀錄是 `legacy-published`，`engine_sha` 與 `measured_on` 都是 null。L40S／CUDA 是 profile 的設定，不是這些紀錄的事實，所以 `hardware` 填 None。
 - variant 字串會撞名：`whisper-medium` 等於 NB-Whisper（`artifacts.rs:190`），`qwen3-asr-1.7b` 等於 QwenCleo（`artifacts.rs:74`）。不影響：載入只比對自己的 artifact（`gguf_session.rs:63-68`），HF 快取比對用 sha 或 repo＋檔名（`found_models.rs:286-303`）。
 - 上游 HEAD 與 catalog 記錄的 `upstream_commit` 一致，授權都是 apache-2.0（HF API `cardData.license`）。
@@ -55,7 +56,7 @@ GGUF 檔頭（`artifacts.rs` 的 `architecture`／`variant` 照抄這裡，不�
 - 家族由 `GgufArtifact.architecture` 決定，不另加欄位。`vocabulary_use` 依家族給 `Prompt`（`models.rs:345-357`），詞彙上限 whisper 500、qwen 1,000（`vocabulary.rs:251-252`）。
 - large-v3／medium／small：`languages: &["*"]`、hint 開、偵測開，和 Turbo 相同（`models.rs:435-445`）。
 - **缺陷 1：粵語。** Settings 列了 `yue`，`"*"` 會讓 medium／small 提供它。引擎遇到不支援的語言會報錯（transcribe.cpp `src/arch/whisper/model.cpp:1447`）。修法：`supports_language` 對 `WhisperMedium | WhisperSmall` 排除 `yue`，寫法同 `runtime_language` 的 id 分支。
-- **缺陷 2：菲律賓語。** Settings 用 `fil`，Whisper 檔只有 `tl`。`fil→tl` 現在只對 Turbo 生效（`models.rs:272`）。修法：改成所有 `"*"` 的 whisper 模型都對應。
+- **缺陷 2：菲律賓語。** Settings 用 `fil`，Whisper 檔只有 `tl`。`fil→tl` 現在只對 Turbo 生效（`models.rs:272`）。修法：改成依 whisper 家族對應。這也修好 whisper 匯入模型（它們的檔也沒有 `fil`），是刻意的。
 - Breeze：`languages: &["zh", "en"]`（catalog `breeze-asr-25.json`）、hint 開、偵測開。檔案宣告支援偵測。偵測關掉的話，選 Auto 的人換到 Breeze 會退回 `en`（`models.rs:306-312`）。
 - Qwen 1.7B：`QWEN_LANGUAGES`、hint 開、偵測開，同 0.6B（`models.rs:446-456`）。長音訊策略是 `hard-cap`，和 0.6B 走同一條分段路徑。
 - ID 與存檔名：`WhisperLargeV3`／`whisper_large_v3`、`WhisperMedium`／`whisper_medium`、`WhisperSmall`／`whisper_small`、`BreezeAsr25`／`breeze_asr_25`、`Qwen3Asr17B`／`qwen3_asr_1_7b`。
@@ -84,7 +85,7 @@ pub struct ModelSource { author, license_spdx, license_url, upstream_repo, upstr
 pub fn source(id: TranscriptionModelId) -> Option<&'static ModelSource>;
 ```
 
-- `BenchmarkRecord`（`model_benchmarks.rs:29-47`）加 `quantization: Option<&str>` 與 `ci95: Option<(f64, f64)>`。既有常數用 `..` 展開或 `unrecorded()`，`rune_ui/picker.rs` 的測試也用展開，所以都能編譯。
+- `BenchmarkRecord`（`model_benchmarks.rs:29-47`）加 `quantization: Option<&str>` 與 `ci95: Option<(f64, f64)>`。五個完整寫出的常數（`model_benchmarks.rs:90, 118, 136, 152, 168`）要補 `quantization: None, ci95: None`，數值不改；其他常數用 `..` 或 `unrecorded()`，`rune_ui/picker.rs` 的測試也用展開。
 - 新模型的準確度：transcribe.cpp catalog `2778ae4` 的 FLEURS test、Q8_0、batch 8、不要時間戳。`source` 填「transcribe.cpp catalog, legacy-published」，`source_revision` 填 `2778ae4`，`hardware` 填 None。只收 Settings `LANGUAGES` 裡、模型也支援的語言。Breeze 的 `zh` 有兩筆（batch 8 與 batch 1，後者沒有 ci95），取 batch 8，才能和其他模型比。錯誤率 ≥100% 的列（例如 am 128.3%）照存；UI 單元再決定怎麼顯示。
 - 這兩張表用腳本 `scripts/models/catalog-records.py` 從固定的 catalog 產生，輸出到 `src/transcription/model_benchmarks/catalog.rs`，檔頭寫明 rev。不放成第三個 `model_*.rs`（會觸發 code-shape 的前綴規則）。
 
@@ -151,7 +152,7 @@ macOS 的 `realtime` 標籤：large-v3 `~8x`、medium `~15x`、small `~40x`、Br
 3. 修 `yue` 排除與 `fil→tl`。檢查：兩個測試先紅後綠。
 4. 寫 `scripts/models/catalog-records.py`，產生 `model_benchmarks/catalog.rs`；加 `Backend`、`SpeedRecord`、`speed()`、`accuracy*()`、`benchmark()` 分支、依 OS 的 `realtime`。檢查：第 8 節其餘測試綠。
 5. SDK `MODEL_IDS`（`sdk/typescript/src/types.ts:1-18`）、changeset（先例 `sdk/.changeset/nb-whisper-medium.md`）、`docs/specs/local-transcription-service.md:186`、功能地圖 `docs/features/README.md:318`、`dictation.md:822`、AGENTS.md 偏離說明。檢查：`cd sdk/typescript && bun run check && bun run test`。
-6. 全部檢查：`cargo fmt --all --check`、`cargo clippy --locked --bin hex --all-targets -- -D warnings`、`cargo nextest run --locked --bin hex`、`python3 scripts/code-shape.py`。Linux 與 Windows 的 clippy 交給 `compile.yml`，或在 PR 註明沒跑。
+6. 全部檢查：`cargo fmt --all --check`、`cargo clippy --locked --bin hex --all-targets -- -D warnings`、`cargo nextest run --locked --bin hex`、`python3 scripts/code-shape.py`。Linux 與 Windows 的 clippy 只能靠 `compile.yml`，但它要 push 或 PR 才會跑：需要協調者決定。
 7. 用 `--snap --scene picker-custom-models` 在 Mac 畫改前／改後各一張並比較；goldens 依第 0 節第 2 點處理。
 8. 實跑（第 10 節）。
 
@@ -165,7 +166,7 @@ macOS 的 `realtime` 標籤：large-v3 `~8x`、medium `~15x`、small `~40x`、Br
 - 轉錄：`POST /transcriptions?model=<id>&language=<lang>`，body 是 16 kHz 單聲道 WAV。
 - 音檔：`say -v Samantha` 英文約 10 秒與約 30 秒各一段；`say -v Meijia`（zh_TW）中文約 10 秒一段。用 `afconvert -f WAVE -d LEI16@16000 -c 1` 轉檔。
 - 模型：Whisper small（en、zh）與 Breeze ASR 25（zh、en）。Breeze 是唯一只支援中英的新模型，可以順便檢查「直接輸出繁體」與「沒有標點」。Qwen 1.7B 和 QwenCleo 同架構，Hex 已經在跑。
-- 記錄：逐字稿、音檔秒數、轉錄秒數、RTF（含與不含載入）、機器 M5 Pro、backend Metal、任何錯誤原文。
+- 記錄：逐字稿、音檔秒數、轉錄秒數、RTF（含載入；不含載入的取同一段送第二次的時間）、機器 M5 Pro、backend Metal、任何錯誤原文。
 - 收尾：用確切 PID 停 `hex service`；暫存資料夾用 `/usr/bin/trash` 移除。不碰 `~/Library/Application Support/hex`。
 
 ## 11. 風險與待決問題
