@@ -1,7 +1,8 @@
 name: Compile
 
 # What a pull request runs, besides hex-agent-policy: a fast compile of the app
-# on Linux, macOS, and Windows x64 (cargo clippy, warnings as errors). Pull
+# on Linux, macOS, and Windows x64 (cargo clippy, warnings as errors), and on
+# Linux the Apple Watch tests. Pull
 # requests merge without waiting for it, and a breakage on dev goes to the CI
 # failure pipeline. The full suites (check-linux.yml, check-macos.yml,
 # check-windows.yml) run in Release's check and stable channels, and by hand.
@@ -82,6 +83,13 @@ jobs:
             libfontconfig1-dev libfreetype-dev libxcursor-dev libxi-dev \
             libxrandr-dev libopenblas-dev libvulkan-dev glslc libshaderc-dev
       - run: cargo clippy --locked --bin hex -- -D warnings
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
+        with:
+          tool: cargo-nextest
+      # The Apple Watch protocol core is pure and cross-platform, so every
+      # pull request runs its tests here; the full suites stay in check-*.yml.
+      # Windows takes longer than this whole job, so it adds no wall time.
+      - run: "cargo nextest run --locked --profile ci --bin hex watch::"
 
   macos:
     name: macOS
