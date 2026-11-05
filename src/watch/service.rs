@@ -30,6 +30,9 @@ use state::{Core, Flow, Identity, Now};
 
 /// How long `claim` waits for the relay's `claim_ok` or `claim_failed`.
 pub(crate) const CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `claim` waits for the `watch` thread, which answers
+/// `CLAIM_TIMEOUT` after the claim at the latest.
+pub(crate) const CLAIM_WAIT: Duration = CLAIM_TIMEOUT.saturating_add(Duration::from_secs(1));
 /// The loop wakes at least this often, so bookkeeping never waits on a frame.
 const TICK: Duration = Duration::from_secs(1);
 const DEVICE_ID_FILE: &str = "device-id";
@@ -268,7 +271,7 @@ impl WatchService {
             return Err(ClaimError::Unavailable);
         }
         answer
-            .recv_timeout(CLAIM_TIMEOUT + Duration::from_secs(1))
+            .recv_timeout(CLAIM_WAIT)
             .unwrap_or(Err(ClaimError::Timeout))
     }
 

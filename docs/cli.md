@@ -231,6 +231,8 @@ transcription and `/streams`, but answer `/control` with
 - Request bodies are JSON up to 64 KiB; replies are at most 1 MiB.
 - The app answers within 10 s (`504 control-timeout` otherwise); the CLI waits
   15 s. `dictation stop --print` gets 65 s, and the CLI waits 70 s.
+  `watch pair` gets 16 s, longer than the relay claim's own 11 s, so it
+  reports the claim's real outcome; the CLI waits 21 s.
 - Every answer the app gives is `200` with a `ControlResponse`, refusals
   included. Transport-level failures use HTTP status codes:
   `400 invalid-control-command` (malformed or unknown command),
