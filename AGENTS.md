@@ -50,6 +50,7 @@ Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 **Wristper fork deviation (2026-11-04).** This fork is Wristper, whose paid
 core is dictating from an Apple Watch. The watch service (`watch`) is not a
 Labs feature: it starts with the macOS app, on by default, with no toggle.
+Watch-only setup asks for no Microphone (user decision 2026-11-04).
 Everything else in this section still holds for new features.
 
 ## Feature Map
@@ -647,10 +648,14 @@ CoreAudio formats, AppleScript details, or event serialization.
   Keep saved values readable by older builds: an unchosen
   `meetings.retention` is omitted, not `null`. Do not omit optional fields
   whose absence restores a nonempty default, such as `paste_last_hotkey`.
-- On a new Mac, release dictation starts only after Microphone, Accessibility,
-  and the selected dictation model are ready. Hex never asks for Input
-  Monitoring: Accessibility also grants the listen-event access its shortcut
-  taps need (measured on macOS 26 and 27).
+- The listener starts once Accessibility and the selected model are ready, so
+  watch recordings transcribe and paste without the Microphone. Until the
+  Microphone is granted, `DictationAudio` never opens it: a dictation start
+  (shortcut, `hex dictation`, `/dictations`) records nothing and asks: macOS's
+  prompt the first time, the Settings window once refused. A window no longer
+  opens at launch only because the Microphone is missing. Hex never asks for
+  Input Monitoring: Accessibility also grants the listen-event access its
+  shortcut taps need (measured on macOS 26 and 27).
 - The dictation shortcut defaults to Option but supports modifier-only,
   modifier-plus-key, standalone Globe/Fn, and standalone function-key bindings.
   Capturing a new binding suspends global matching.

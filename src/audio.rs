@@ -33,6 +33,13 @@ static INPUT_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static STREAM_GLITCHED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static AVOID_BLUETOOTH_MICROPHONE: AtomicBool = AtomicBool::new(true);
 
+/// The one line every successful stream open leaves, for checks that the
+/// microphone stayed closed (Apple Watch only setup grep the log for it). The
+/// device is a field, never part of the message.
+fn note_stream_opened(device: &str) {
+    tracing::info!(device, "microphone stream opened");
+}
+
 /// Whether `HEX_AUDIO_FIXTURE` names a WAV file that stands in for every
 /// microphone (benchmarks and tests; see `audio/fixture.rs`).
 pub fn uses_fixture() -> bool {
@@ -442,6 +449,8 @@ impl MicrophoneRecovery {
 impl AudioInput {
     #[cfg(test)]
     pub fn channel_for_test() -> (Self, Sender<(Vec<f32>, CaptureInstant)>) {
+        // A fake input stands for an opened stream, so it leaves the same line.
+        note_stream_opened("Test microphone");
         let (sender, chunks) = mpsc::channel();
         let (_, stream_errors) = mpsc::channel();
         (
@@ -518,9 +527,7 @@ impl AudioInput {
             &device_name,
             follows_default.then(|| device_name.clone()),
         )?;
-        // The one line every real stream open leaves, for checks that the
-        // microphone stayed closed (Apple Watch only setup).
-        tracing::info!(device = %device_name, "microphone stream opened");
+        note_stream_opened(&device_name);
 
         Ok(Self {
             _stream: Some(started.stream),

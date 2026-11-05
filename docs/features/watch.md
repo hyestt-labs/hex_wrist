@@ -57,6 +57,22 @@ Apple Watch                               // watch.pair, watch.dictate
 
 ## Behavior
 
+- **No Microphone needed (C1).** The listener starts once Accessibility and
+  the model are ready (`SetupStatus::listener_ready`), so a Mac that never
+  granted the Microphone still transcribes and pastes a watch recording. Until
+  the model and Accessibility are ready, `ListenerDictation::transcribe`
+  refuses a recording at once with the reason (`watch::listener_ready`), and
+  the watch reads the existing 500 `failed`. The Mac microphone stays closed
+  (`dictation::microphone_access`, held by the `DictationAudio` owner): the
+  first shortcut, `hex dictation`, or `/dictations` start asks macOS once (or
+  plays the error tone and opens Settings once, when the permission was
+  already refused or waits for a restart), then every later refused start is
+  silent. A granted permission restores the saved Release-while-idle policy
+  after the first capture, which opens cold like a released microphone. A
+  Mac-only user whose microphone was revoked after setup now meets this at the
+  shortcut instead of a window at launch. Every real stream open logs
+  `microphone stream opened`. Onboarding still asks for the Microphone until
+  unit C2 wires `SetupStatus::ready_with_watch` to the Apple Watch page.
 - **Service.** `watch::service::WatchService` starts with the macOS app
   (`macos_rune::run`), on by default, no toggle. It reads or creates
   `relay-room`, `relay-secret`, and `device-id` in the data folder
@@ -171,6 +187,15 @@ Apple Watch                               // watch.pair, watch.dictate
   in TextEdit, and a terminal paste with Enter in Terminal.
 - `control::` covers `watch-pair` on the wire and `unsupported` on Linux and
   Windows hosts; `platform::parity_tests` records the `watch` difference.
+- C1: `dictation::microphone_access` covers the gate (a refused start
+  records nothing and opens nothing; the first press asks once, later presses
+  are silent; a grant restores the saved policy; a revoke closes the warm
+  input) and `no_open_path_opens_the_microphone_without_permission` drives
+  startup, settings reloads, route and device changes, selection changes,
+  retry time, and every kind of start with a stream counter at zero.
+  `dictation::audio` adds the interrupted-stream path and the one stated
+  exception, Annotate's capture sink. `desktop::onboarding` and `macos_rune`
+  pin the Mac-only behavior (`a_mac_only_*`) and the watch-only launch.
 - Not verified: no real Apple Watch, no connection to the production relay,
   no TLS or proxy path (tests use `ws://127.0.0.1`), no end-to-end paste on a
   real Mac with the model loaded. A fixture recorded from a development watch

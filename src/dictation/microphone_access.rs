@@ -95,10 +95,19 @@ impl MicrophoneAccess {
             }
             state => {
                 if !std::mem::replace(&mut self.spoke, true) {
+                    tracing::info!(
+                        ?state,
+                        "dictation start refused: the microphone is not allowed"
+                    );
                     match state {
                         PermissionState::NeedsRequest => self.permission.ask(),
                         _ => self.permission.tell(),
                     }
+                } else {
+                    tracing::debug!(
+                        ?state,
+                        "dictation start ignored: the microphone is not allowed"
+                    );
                 }
                 false
             }
@@ -212,6 +221,7 @@ pub(crate) mod fakes {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use super::fakes::{Fake, Opens};
@@ -479,6 +489,66 @@ mod tests {
                 assert_eq!(opens.count(), 0, "starts: {label}");
                 assert!(!audio.is_recovering(), "{label}");
             }
+        }
+    }
+    /// A log line collector for one test thread.
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Lines {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
+        type Writer = Lines;
+
+        fn make_writer(&'a self) -> Lines {
+            self.clone()
+        }
+    }
+
+    /// Lines logged on this thread while `work` runs.
+    fn logged(work: impl FnOnce()) -> String {
+        let lines = Lines::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(lines.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, work);
+        let bytes = lines.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// The live check greps the process log for this exact message to tell
+    /// whether the Mac opened a microphone stream.
+    #[test]
+    fn an_opened_stream_logs_one_line_and_a_refused_microphone_logs_none() {
+        const LINE: &str = "microphone stream opened";
+        let opened = |state| {
+            let opens = Opens::default();
+            let log = logged(|| {
+                // Wanted warm, so a granted permission opens at startup on this
+                // thread; refused ones must not.
+                let audio = open_audio(&Fake::new(state), &opens, false);
+                let _ = audio.start(at());
+                settle(&audio);
+            });
+            (log.matches(LINE).count(), opens.count())
+        };
+        assert_eq!(opened(PermissionState::Ready), (1, 1), "one open, one line");
+        for state in REFUSED {
+            assert_eq!(
+                opened(state),
+                (0, 0),
+                "{state:?}: nothing opened, nothing logged"
+            );
         }
     }
 }
