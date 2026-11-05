@@ -102,6 +102,11 @@ Apple Watch                               // watch.pair, watch.dictate
   duplicate resend, plaintext `/status`, plaintext `/audio` refused).
 - `control::` covers `watch-pair` on the wire and `unsupported` on Linux and
   Windows hosts; `platform::parity_tests` records the `watch` difference.
+- `scripts/verify-watch-e2e.sh` (`.claude/skills/verify/`) runs the real
+  path on a Mac: `Wristper Test.app` over the production relay, a watch
+  (the shipping watch Swift compiled as `watch-sim`, then the real watch
+  app in a watchOS Simulator), and the text read back from TextEdit and
+  Terminal. It needs Microphone and Accessibility granted once.
 - Not verified: no real Apple Watch, no connection to the production relay,
   no TLS or proxy path (tests use `ws://127.0.0.1`), no end-to-end paste on a
   real Mac with the model loaded. A fixture recorded from a development watch
