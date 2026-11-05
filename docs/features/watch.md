@@ -171,15 +171,19 @@ Apple Watch                               // watch.pair, watch.dictate
   in TextEdit, and a terminal paste with Enter in Terminal.
 - `control::` covers `watch-pair` on the wire and `unsupported` on Linux and
   Windows hosts; `platform::parity_tests` records the `watch` difference.
-- `scripts/verify-watch-e2e.sh --all` (`.claude/skills/verify/`) runs the real
-  path on a Mac in one command and ends with one PASS/FAIL table:
+- `scripts/verify-watch-e2e.sh` (`.claude/skills/verify/`) runs the real path on
+  a Mac and ends with one PASS/FAIL table. `--all` covers stages 1 to 3:
   `Wristper Test.app` over the production relay, a watch (the shipping watch
   Swift compiled as `watch-sim`, then the real watch app in a watchOS
   Simulator), the text read back from TextEdit, Terminal, and a Chrome
   textarea, Enter, Undo, a double Enter, `keep_on_clipboard` with an app
-  switch, optional claude and codex in Terminal (`--with-agents`), and the
-  `watch_live` tests above. It needs Microphone and Accessibility granted once,
-  and lists every missing click with exit status 3.
+  switch, and optional claude and codex in Terminal (`--with-agents`). The
+  `watch_live` tests above are stage 4, opt in with `--with-live` (they close
+  the front document and window). It acts only on windows, processes, paths,
+  and the simulator it registered itself, checks the front app before any audio
+  or key goes out, and lists every missing step with exit status 3. The first
+  real run is `--stage 1 --targets textedit --langs en`; `--selftest` checks
+  the ownership rules without an app or window.
 - Not verified: no real Apple Watch, no connection to the production relay,
   no TLS or proxy path (tests use `ws://127.0.0.1`), no end-to-end paste on a
   real Mac with the model loaded. A fixture recorded from a development watch

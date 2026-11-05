@@ -6,7 +6,8 @@ import Foundation
 /// the verify script can use the clipboard as a test sentinel without losing
 /// what the person had on it.
 ///
-///   pasteboard-tool save <dir>     exit 0 saved, 3 the clipboard holds a concealed item (nothing written)
+///   pasteboard-tool save <dir>     exit 0 saved; 3 a concealed item is on the clipboard; 4 some type could not be read.
+///                                  On 3 and 4 nothing is written: there is never a partial backup.
 ///   pasteboard-tool restore <dir>  put the saved items back
 ///   pasteboard-tool verify <dir>   exit 0 when every saved type is on the clipboard with the same bytes
 ///   pasteboard-tool set <text>     put one plain string on the clipboard
@@ -36,18 +37,25 @@ case "save":
     let dir = URL(fileURLWithPath: args[1])
     var saved = Saved(items: [])
     var pending: [(URL, Data)] = []
+    var unreadable: [String] = []
     for (i, item) in (board.pasteboardItems ?? []).enumerated() {
         if item.types.contains(where: { concealed.contains($0.rawValue) }) {
             fail("the clipboard holds a concealed or transient item (a password manager?); nothing was saved", 3)
         }
         var types: [SavedType] = []
         for (j, type) in item.types.enumerated() {
-            guard let data = item.data(forType: type) else { continue }
+            guard let data = item.data(forType: type) else {
+                unreadable.append("item \(i): \(type.rawValue)")   // counted and reported, never skipped silently
+                continue
+            }
             let file = "\(i)-\(j).bin"
             pending.append((dir.appendingPathComponent(file), data))
             types.append(SavedType(type: type.rawValue, file: file, sha256: sha(data)))
         }
         saved.items.append(types)
+    }
+    if !unreadable.isEmpty {
+        fail("\(unreadable.count) clipboard type(s) could not be read, so no backup was made: " + unreadable.joined(separator: "; "), 4)
     }
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions: 0o700])
