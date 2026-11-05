@@ -154,6 +154,11 @@ pub enum ControlCommand {
         #[serde(default)]
         enabled: Option<bool>,
     },
+    /// Pair an Apple Watch: claim the code it shows through the relay
+    /// (`watch`). Answers `done` once the watch may send its pairing request.
+    WatchPair {
+        code: String,
+    },
     /// The shared vocabulary.
     VocabularyList,
     VocabularyAdd {
@@ -1107,6 +1112,9 @@ mod tests {
             ControlCommand::CheckForUpdates,
             ControlCommand::LaunchAtLogin {
                 enabled: Some(true),
+            },
+            ControlCommand::WatchPair {
+                code: "217400".into(),
             },
             ControlCommand::VocabularyList,
             ControlCommand::VocabularyAdd {

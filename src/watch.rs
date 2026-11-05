@@ -8,6 +8,7 @@
 //! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
 //! - `relay`: the relay WebSocket client on its own thread.
 //! - `delivery`: the handle a recording travels with through the dictation worker.
+//! - `service`: the one `watch` thread that owns the state and answers requests.
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
 //! - `pairing`: paired watches, their tokens and keys, and the claim approval.
@@ -27,11 +28,44 @@ pub(crate) mod pairing;
 pub(crate) mod recording;
 pub(crate) mod refusal;
 pub(crate) mod relay;
+pub(crate) mod service;
 pub(crate) mod suspect;
 
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static SERVICE: OnceLock<service::WatchService> = OnceLock::new();
+
+/// Makes the running service reachable from `hex watch pair` and the window.
+pub(crate) fn install(service: service::WatchService) {
+    if SERVICE.set(service).is_err() {
+        tracing::warn!("the watch service was installed twice; keeping the first");
+    }
+}
+
+pub(crate) fn service() -> Option<&'static service::WatchService> {
+    SERVICE.get()
+}
+
+/// `hex watch pair <code>`.
+pub(crate) fn pair(code: &str) -> crate::control::ControlReply {
+    use crate::control::ControlReply;
+    let Some(service) = service() else {
+        return ControlReply::error(
+            service::ClaimError::Unavailable.wire(),
+            service::ClaimError::Unavailable.message(),
+        );
+    };
+    match service.claim(code.trim()) {
+        Ok(claimed) => ControlReply::done(format!(
+            "Claimed the code for {} ({}); the watch finishes pairing by itself within 2 minutes",
+            claimed.device_name, claimed.device_id
+        )),
+        Err(error) => ControlReply::error(error.wire(), error.message()),
+    }
+}
 
 /// `X-Wristper-Protocol` this receiver speaks.
 pub(crate) const PROTOCOL_VERSION: u32 = 4;

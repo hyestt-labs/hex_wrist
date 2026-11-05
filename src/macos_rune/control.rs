@@ -289,6 +289,10 @@ impl Pump {
                 background(reply, move || launch_at_login(enabled));
                 None
             }
+            ControlCommand::WatchPair { code } => {
+                background(reply, move || Ok(crate::watch::pair(&code)));
+                None
+            }
             ControlCommand::CheckForUpdates => Some(match crate::macos_rune::update_status() {
                 DesktopUpdateStatus::Managed => {
                     ControlReply::error("unsupported", "updates are managed by your organization")

@@ -62,6 +62,9 @@ pub(super) struct Capabilities {
     /// Input-source changes can operate the installed-model picker (macOS,
     /// Windows, and Linux on X11; Wayland has no general layout protocol).
     pub(super) keyboard_model_switching: bool,
+    /// The Apple Watch service (`watch`): the relay connection, pairing, and
+    /// recordings pasted as dictations. Only the macOS app starts it so far.
+    pub(super) watch: bool,
 }
 
 impl Capabilities {
@@ -80,6 +83,7 @@ impl Capabilities {
         fun: true,
         modifier_sides: false,
         keyboard_model_switching: true,
+        watch: false,
     };
 
     pub(super) const MACOS: Self = Self {
@@ -97,6 +101,7 @@ impl Capabilities {
         fun: true,
         modifier_sides: true,
         keyboard_model_switching: true,
+        watch: true,
     };
 
     pub(super) const WINDOWS: Self = Self {
@@ -114,6 +119,7 @@ impl Capabilities {
         fun: false,
         modifier_sides: true,
         keyboard_model_switching: true,
+        watch: false,
     };
 
     /// This OS's capabilities, with the rows its window host decides.
@@ -844,12 +850,19 @@ const DIFFERENCES: &[(&str, Difference)] = &[
         "modifier_sides",
         Difference::Impossible("X11 grabs and the Wayland portal see no sides"),
     ),
+    (
+        "watch",
+        Difference::Pending(
+            "the relay, pairing, and delivery are cross-platform; only `macos_rune` starts the \
+             service, and the field snapshot, Enter, and Undo have only a macOS adapter planned",
+        ),
+    ),
 ];
 
 impl Capabilities {
     /// Every capability by name. Destructuring makes a new capability a
     /// compile error here until it is named.
-    pub(super) fn fields(self) -> [(&'static str, bool); 13] {
+    pub(super) fn fields(self) -> [(&'static str, bool); 14] {
         let Self {
             os: _,
             meetings,
@@ -865,6 +878,7 @@ impl Capabilities {
             fun,
             modifier_sides,
             keyboard_model_switching,
+            watch,
         } = self;
         [
             ("meetings", meetings),
@@ -880,6 +894,7 @@ impl Capabilities {
             ("fun", fun),
             ("modifier_sides", modifier_sides),
             ("keyboard_model_switching", keyboard_model_switching),
+            ("watch", watch),
         ]
     }
 }

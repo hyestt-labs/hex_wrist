@@ -221,6 +221,9 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
             }
         })),
         ControlCommand::LaunchAtLogin { enabled } => launch_at_login(host, enabled),
+        ControlCommand::WatchPair { .. } => reply(Ok(unsupported(
+            "the Apple Watch service runs only in the macOS app so far",
+        ))),
         ControlCommand::VocabularyList => reply(load().map(|settings| ControlReply::Vocabulary {
             entries: settings.vocabulary,
         })),
@@ -755,6 +758,9 @@ mod tests {
         let host = FakeHost::default();
         for command in [
             ControlCommand::LaunchAtLogin { enabled: None },
+            ControlCommand::WatchPair {
+                code: "217400".into(),
+            },
             ControlCommand::ScrawlCaptureUndo,
             ControlCommand::WindowStory {
                 story: "HUD".into(),
