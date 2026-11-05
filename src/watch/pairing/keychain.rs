@@ -28,6 +28,17 @@ use super::{DeviceSecret, SecretStore};
 const ITEM_NOT_FOUND: i32 = -25300;
 
 pub(crate) const DEFAULT_SERVICE: &str = "dev.wristper.mac.device";
+/// `Wristper Test.app` keeps its own items, as it keeps its own data folder:
+/// its pairings and migration marker never reach the installed app's.
+const TEST_BUILD_SERVICE: &str = "dev.wristper.mac.test.device";
+
+fn service_for(test_build: bool) -> &'static str {
+    if test_build {
+        TEST_BUILD_SERVICE
+    } else {
+        DEFAULT_SERVICE
+    }
+}
 const MIGRATION_ACCOUNT: &str = "migration";
 const MIGRATION_DONE: &[u8] = b"done";
 
@@ -38,7 +49,7 @@ pub(crate) struct KeychainSecretStore {
 
 impl KeychainSecretStore {
     pub(crate) fn new() -> Self {
-        Self::with_service(DEFAULT_SERVICE)
+        Self::with_service(service_for(crate::app_paths::is_macos_test_build()))
     }
 
     pub(crate) fn with_service(service: &str) -> Self {
@@ -100,5 +111,20 @@ impl SecretStore for KeychainSecretStore {
             Err(error) if error.code() == ITEM_NOT_FOUND => Ok(()),
             Err(error) => Err(describe("delete", &error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::service_for;
+
+    #[test]
+    fn a_test_build_never_shares_the_installed_apps_keychain_items() {
+        assert_eq!(service_for(false), "dev.wristper.mac.device");
+        assert_eq!(service_for(true), "dev.wristper.mac.test.device");
+        assert_ne!(
+            format!("{}.state", service_for(true)),
+            format!("{}.state", service_for(false))
+        );
     }
 }
