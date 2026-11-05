@@ -50,7 +50,11 @@ Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 **Wristper fork deviation (2026-11-04).** This fork is Wristper, whose paid
 core is dictating from an Apple Watch. The watch service (`watch`) is not a
 Labs feature: it starts with the macOS app, on by default, with no toggle.
-Everything else in this section still holds for new features.
+Catalog speech models added by this fork (Whisper large-v3, medium, and
+small, Breeze ASR 25, Qwen3-ASR 1.7B) are not in Labs either: like NB-Whisper,
+Granite, and GigaAM they are plain catalog entries, never recommended, and
+only Parakeet Ultra and imports sit behind Labs. Everything else in this
+section still holds for new features.
 
 ## Feature Map
 
