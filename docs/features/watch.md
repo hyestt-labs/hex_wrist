@@ -42,8 +42,8 @@ Apple Watch                               // watch.pair, watch.dictate
 - **Service.** `watch::service::WatchService` starts with the macOS app
   (`macos_rune::run`), on by default, no toggle. It reads or creates
   `relay-room`, `relay-secret`, and `device-id` in the data folder
-  (`~/Library/Application Support/Wristper`), and reads `paired-devices.json`
-  with the device secrets in Keychain service `dev.wristper.mac.device`; files
+  (`~/Library/Application Support/Wristper`; `Wristper Test` for a test build), and reads `paired-devices.json`
+  with the device secrets in Keychain service `dev.wristper.mac.device` (`dev.wristper.mac.test.device` for a test build, so its pairings and migration marker never reach the installed app); files
   Wristper wrote are reused, so existing pairings keep working. Source:
   `src/watch/service.rs`, `src/watch/relay.rs`.
 - **Relay.** One WebSocket to `wss://relay.wristper.dev/m/<room>` with the
