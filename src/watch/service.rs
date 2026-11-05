@@ -19,7 +19,7 @@ mod state;
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryReport, WatchDelivery};
@@ -77,12 +77,12 @@ pub(crate) trait Dictation: Send {
 /// the listener itself).
 #[cfg(target_os = "macos")]
 pub(crate) struct ListenerDictation {
-    controls: SyncSender<RecognitionControl>,
+    controls: mpsc::SyncSender<RecognitionControl>,
 }
 
 #[cfg(target_os = "macos")]
 impl ListenerDictation {
-    pub(crate) fn new(controls: SyncSender<RecognitionControl>) -> Self {
+    pub(crate) fn new(controls: mpsc::SyncSender<RecognitionControl>) -> Self {
         Self { controls }
     }
 }
