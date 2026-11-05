@@ -394,13 +394,14 @@ pass_for() { [ "$1" = zh ] && echo "$ZH_PASS" || echo "$EN_PASS"; }
 
 # --- targets ----------------------------------------------------------------
 # textedit: a new document. terminal: a Terminal window running cat.
-# shell: a Terminal window at a plain zsh prompt. chrome: a throwaway page.
+# shell: a Terminal window at a plain zsh prompt. recorder: a Terminal window
+# that echoes ENTER:<line> for each Return. chrome: a throwaway page.
 # claude, codex: a Terminal window running that agent.
 
 kind_of() {
   case "$1" in
     textedit) echo textedit ;;
-    terminal|shell|claude|codex) echo terminal ;;
+    terminal|shell|recorder|claude|codex) echo terminal ;;
     chrome) echo chrome ;;
   esac
 }
@@ -450,22 +451,52 @@ chrome_close() {
   case "$dir" in */wristper-e2e-chrome.*) /usr/bin/trash "$dir" "$dir.log" >/dev/null 2>&1 ;; esac
 }
 
+# Handles. Everything below acts only on what this script created, found again
+# by the id it got at creation and re-verified before every use. Nothing ever
+# relies on the front window or front document.
+#   textedit  "<window id>|<document name>"
+#   terminal  "<window id>|<tty>"            (terminal, shell, recorder, claude, codex)
+#   chrome    "<pid>:<port>:<profile dir>"
+
+# TextEdit: a new document, found by its window's id.
+te_open() {
+  osascript -e 'tell application "TextEdit"' -e 'activate' -e 'set d to make new document' \
+    -e 'set w to first window whose document is d' -e 'return ((id of w) as text) & "|" & (name of d)' -e 'end tell'
+}
+# te_verify HANDLE: true when that window still exists and holds the document we made.
+te_verify() {
+  local id=${1%%|*} name=${1#*|} got
+  got=$(osascript -e 'tell application "TextEdit"' -e "if not (exists window id $id) then return \"\"" \
+    -e "return name of document of window id $id" -e 'end tell' 2>/dev/null)
+  [ -n "$got" ] && [ "$got" = "$name" ]
+}
+
+# Terminal: a new window, found by its id and its tty.
+term_open() { # shell-command-to-run delay-seconds
+  local cmd=${1//\\/\\\\}
+  cmd=${cmd//\"/\\\"}   # the command goes inside an AppleScript string
+  osascript -e 'tell application "Terminal"' -e 'activate' -e "set t to do script \"$cmd\"" -e "delay $2" \
+    -e 'set theTTY to tty of t' \
+    -e 'repeat with w in windows' -e 'try' -e 'if (tty of selected tab of w) is theTTY then return ((id of w) as text) & "|" & theTTY' \
+    -e 'end try' -e 'end repeat' -e 'end tell'
+}
+# term_verify HANDLE: true when that window still exists and still runs on the tty we got.
+term_verify() {
+  local id=${1%%|*} tty=${1#*|} got
+  got=$(osascript -e 'tell application "Terminal"' -e "if not (exists window id $id) then return \"\"" \
+    -e "return tty of selected tab of window id $id" -e 'end tell' 2>/dev/null)
+  [ -n "$got" ] && [ "$got" = "$tty" ]
+}
+
 # Prints a handle for the opened target.
 open_target() {
   case "$1" in
-    textedit)
-      osascript -e 'tell application "TextEdit"' -e 'activate' -e 'set d to make new document' \
-        -e 'return name of d' -e 'end tell' ;;
-    terminal)
-      osascript -e 'tell application "Terminal"' -e 'activate' -e 'set t to do script "clear; cat"' \
-        -e 'delay 1' -e 'return tty of t' -e 'end tell' ;;
-    shell)
-      osascript -e 'tell application "Terminal"' -e 'activate' -e 'set t to do script "clear"' \
-        -e 'delay 1.5' -e 'return tty of t' -e 'end tell' ;;
-    claude|codex)
-      osascript -e 'tell application "Terminal"' -e 'activate' \
-        -e "set t to do script \"cd '$AGENT_DIR' && clear && '$AGENT_BIN'\"" \
-        -e 'delay 12' -e 'return tty of t' -e 'end tell' ;;
+    textedit) te_open ;;
+    terminal) term_open 'clear; cat' 1 ;;
+    shell) term_open 'clear' 1.5 ;;
+    # Prints one ENTER:<line> for every Return it receives, so an extra, empty Return shows as "ENTER:".
+    recorder) term_open 'clear; while IFS= read -r l; do echo "ENTER:$l"; done' 1.5 ;;
+    claude|codex) term_open "cd '$AGENT_DIR' && clear && '$AGENT_BIN'" 12 ;;
     chrome) chrome_open ;;
   esac
 }
@@ -473,11 +504,11 @@ open_target() {
 focus_target() {
   case "$(kind_of "$1")" in
     textedit)
-      osascript -e "tell application \"TextEdit\"" -e "activate" \
-        -e "set index of (first window whose name is \"$2\") to 1" -e "end tell" >/dev/null ;;
+      te_verify "$2" || return 1
+      osascript -e 'tell application "TextEdit"' -e 'activate' -e "set index of window id ${2%%|*} to 1" -e 'end tell' >/dev/null ;;
     terminal)
-      osascript -e 'tell application "Terminal"' -e 'activate' -e 'repeat with w in windows' \
-        -e "if tty of selected tab of w is \"$2\" then set index of w to 1" -e 'end repeat' -e 'end tell' >/dev/null ;;
+      term_verify "$2" || return 1
+      osascript -e 'tell application "Terminal"' -e 'activate' -e "set index of window id ${2%%|*} to 1" -e 'end tell' >/dev/null ;;
     chrome)
       # Bring this Chrome process (by its pid) to the front; it is not the one the user may have open.
       osascript -e 'tell application "System Events"' \
@@ -488,24 +519,35 @@ focus_target() {
 
 read_target() {
   case "$(kind_of "$1")" in
-    textedit) osascript -e "tell application \"TextEdit\" to return text of document \"$2\"" ;;
+    textedit)
+      te_verify "$2" || return 1
+      osascript -e "tell application \"TextEdit\" to return text of document of window id ${2%%|*}" ;;
     terminal)
-      osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' \
-        -e "if tty of selected tab of w is \"$2\" then return contents of selected tab of w" \
-        -e 'end repeat' -e 'end tell' ;;
+      term_verify "$2" || return 1
+      osascript -e "tell application \"Terminal\" to return contents of selected tab of window id ${2%%|*}" ;;
     chrome) chrome_page "$(cut -d: -f2 <<<"$2")" ;;
   esac
 }
 
 close_target() {
+  local id path tty pids
   case "$(kind_of "$1")" in
-    textedit) osascript -e "tell application \"TextEdit\" to close document \"$2\" saving no" >/dev/null 2>&1 ;;
+    textedit)
+      te_verify "$2" || { log "not closing TextEdit window ${2%%|*}: it is not the document this run made"; return 0; }
+      id=${2%%|*}
+      # A document we made is untitled and has no file. If it somehow has one, that file is ours: Trash it first.
+      path=$(osascript -e "tell application \"TextEdit\" to return POSIX path of (path of document of window id $id as alias)" 2>/dev/null)
+      [ -n "$path" ] && [ -e "$path" ] && /usr/bin/trash "$path" >/dev/null 2>&1
+      osascript -e "tell application \"TextEdit\" to close window id $id saving no" >/dev/null 2>&1 ;;
     terminal)
-      # Only processes on this window's own tty; never by name across the system.
-      pkill -t "${2#/dev/}" -f 'cat|claude|codex' 2>/dev/null
-      osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' \
-        -e "if tty of selected tab of w is \"$2\" then do script \"exit\" in selected tab of w" \
-        -e 'end repeat' -e 'end tell' >/dev/null 2>&1 ;;
+      term_verify "$2" || { log "not closing Terminal window ${2%%|*}: it is not the window this run made"; return 0; }
+      id=${2%%|*}; tty=${2#*|}
+      # Hang up exactly the processes on this window's own tty (what closing a terminal does), then close it.
+      pids=$(ps -t "${tty#/dev/}" -o pid= 2>/dev/null)
+      # shellcheck disable=SC2086
+      [ -z "$pids" ] || kill -HUP $pids 2>/dev/null
+      sleep 1
+      osascript -e "tell application \"Terminal\" to close window id $id" >/dev/null 2>&1 ;;
     chrome) chrome_close "$2" ;;
   esac
 }
