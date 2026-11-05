@@ -214,6 +214,12 @@ Apple Watch                               // watch.pair, watch.dictate
   (a few ms, longer if the app is busy), the user can still switch apps, and
   the key then lands in the new one. Accessibility cannot pin the target, so
   this needs the live check to size it, and it is not excluded.
+- The clipboard restore has a window, as in Wristper's Swift version: it
+  checks the generation and the pasteboard `changeCount`, then writes the old
+  contents back, and a copy the user makes between that check and the write
+  is overwritten by the restored clipboard (no atomic compare-and-write
+  exists on `NSPasteboard`). The paste's own write and the restore both run
+  under the same lock, so only an outside copy in those microseconds loses.
 - The read-back keeps the AX element the paste went into and reads only that
   element, as Wristper does with its first candidate; it does not also read
   whatever has focus later. An app that replaces the field object after ⌘V
