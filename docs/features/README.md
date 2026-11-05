@@ -15,7 +15,7 @@ locators unless an executed result is explicitly recorded, as in the
 ```ts
 Hex                                      // macOS release
 ├── Get ready                            // install, permissions, local model
-├── Dictate                              // hold OR double-tap lock
+├── Dictate                              // hold OR double-tap lock, or from an Apple Watch
 ├── Use the result                       // paste, paste-last, History
 ├── Adjust behavior                      // shortcut, microphone, recording preferences
 ├── Process text                         // Output tab + context-selected Modes
@@ -50,6 +50,8 @@ The [vocabulary](vocabulary.md) biases transcription toward names you list.
 models another app already downloaded.
 [Annotate](capture.md) (macOS, Linux,
 and Windows) records the screen while you draw and talk and sends it to an agent.
+[Apple Watch](watch.md) (macOS, Wristper fork) pairs the Wristper watch app
+through the relay and pastes what you dictated on the watch.
 [Screenshots](labs.md) (Labs, macOS) takes CleanShot-style ⌘⇧4 area and
 window screenshots.
 The other capabilities stay here until they need their own verification recipe.
