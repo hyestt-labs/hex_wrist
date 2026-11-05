@@ -621,7 +621,17 @@ substitute for source inspection or a second roadmap.
   duplicate id (45 s), and audio that beat its `/focus` (2 s)). Room and
   secret come from `relay-room` and `relay-secret` in the data folder, the
   Mac id from `device-id`; files Wristper wrote are reused unchanged.
-  `hex watch pair <code>` claims a code through the relay (10 s).
+  `hex watch pair <code>` claims a code through the relay (10 s). Unit B2
+  adds `desktop` (`Screen`, the seam for the focused field and the keys, a
+  `Desktop` with the `watch-ax` thread that reads `/focus` snapshots and
+  presses `/enter` and `/undo` keys, and the keyboard lock a paste and its
+  read-back hold), `screen` (the macOS `Screen` over `accessibility` and
+  `keyboard`), `field` (the snapshot, its 48 px matching, the paste gate),
+  `output` (what the output worker does with the text: `zh`, `suspect`,
+  the gate, ⌘V through `paste::Paster::paste_deferred`, the read-back, and
+  the restore it times), `zh` (`ferrous-opencc` `s2tw`, watch recordings
+  only), and `status` with `rune_ui::watch_status` (the click-through status
+  capsule, pushed from the `watch` thread, never polled).
 
 Keep modules deep. Callers should not coordinate
 CoreAudio formats, AppleScript details, or event serialization.
@@ -1217,12 +1227,26 @@ CoreAudio formats, AppleScript details, or event serialization.
   it, while capture never does. Hex never loads a second model or
   starts a second Paster for it, and never transcribes it through
   `local_api`. ⌘V is not a confirmation, so until the read-back lands the
-  watch reads `unverified`; an empty transcript reads `suspect`; a decode,
-  inference, or paste failure reads 500 `{"state":"failed"}`. The recording
+  watch reads `unverified` (a terminal app reads `pasted` at once: it cannot
+  be read back). The text pastes only into the field `/focus` locked: another
+  field or app is `target-changed`, a password field or secure input
+  `sensitive`, an uneditable field `not-editable`, and none of them touches the
+  clipboard or History (Paste Last still has the text). A suspect text (silence caption, wrong
+  script) or an empty transcript reads `suspect` and is not pasted; a decode,
+  inference, or paste failure (including no Accessibility) reads 500
+  `{"state":"failed"}`. Chinese is converted to Traditional (`s2tw`) for the
+  watch only. `/enter` (30 s) and `/undo` (60 s, read-back confirmed, never a
+  terminal) press their key only in the same app, role, and window, hold the
+  keyboard lock with every paste and read-back, and never press after their
+  reply was given up. The clipboard comes back at once on a confirmed
+  read-back, else after 4 s, unless a newer paste or an outside change
+  intervened; private items (`ConcealedType`, `TransientType`) are not
+  restored. The recording
   id is the idempotency key: a resend while it transcribes waits up to 45 s,
   a resend after delivery gets `duplicate:true` from the live record or the
   24 h dedupe table, and nothing is ever pasted twice. The `watch` thread
-  never blocks on anything but its inbox; every wait is a deadline it polls.
+  never blocks on anything but its inbox, and never calls Accessibility or
+  presses a key itself; every wait is a deadline it polls.
   Pairing without an E2EE key (Wristper's 4-digit codes) is not supported:
   plaintext `/audio` is always 403 `e2ee-required` and a request without a
   valid public key is 426. A Keychain that cannot be read answers 503
