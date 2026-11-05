@@ -278,6 +278,10 @@ impl ModelDefinition {
             // Their files list no Cantonese token, and the engine fails a
             // run in a language it can't tag.
             false
+        } else if language == "fil" && self.is_whisper() && self.languages.contains(&"tl") {
+            // A Whisper file lists Tagalog as `tl` and has no `fil`;
+            // Settings says Filipino (`runtime_language` sends `tl`).
+            true
         } else {
             self.languages.contains(&"*") || self.languages.contains(&language)
         }

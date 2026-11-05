@@ -33,7 +33,12 @@ Picker header -> "Add model file…" -> native dialog (GGUF, All files)   // set
 │   against its receipt instead of downloading). General's Language menu
 │   lists every language the file declares: Hex's usual list first, then the
 │   rest of Whisper's codes by English name (Norwegian `no`, Norwegian
-│   Nynorsk `nn`, …; #1148)
+│   Nynorsk `nn`, …; #1148). A Whisper file lists Tagalog as `tl` and never
+│   `fil`: its menu still offers Filipino (`fil`), which runs as `tl`
+│   (`a_real_whisper_import_accepts_filipino_and_runs_it_as_tl`)
+├── Disk -> an import is copied into models/custom/, apart from the catalog's
+│   models/ folder, so a Whisper medium or Qwen3-ASR 1.7B you import that is
+│   also a catalog model takes space twice and shows as two cards
 ├── Remove -> Hex's copy, receipt, and manifest only; not the active model
 ├── Changed (a copy replaced by a link or hard link to the same file reads as
 │   changed: its file ID and mtime moved) -> "Check again" rehashes the file:

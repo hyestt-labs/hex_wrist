@@ -1233,32 +1233,57 @@ mod tests {
         assert!(!takes_language_hint("parakeet"));
     }
 
-    /// A Whisper import that declares `fil` runs with Whisper's `tl`, as
-    /// the catalog's Whisper models do (a behaviour change of Unit F: it
-    /// used to send `fil`, which the engine rejects).
+    /// A real Whisper file lists Tagalog as `tl` and has no `fil`; Settings
+    /// offers Filipino as `fil`. Imported through the whole flow (header,
+    /// copy, manifest, definition), choosing Filipino is accepted and runs
+    /// with `tl`. Qwen3-ASR names Filipino `fil` itself and keeps it.
     #[test]
-    fn a_whisper_import_maps_filipino_to_tl() {
-        let manifest = |architecture: &str, sha256: String| Manifest {
-            name: "Imported".into(),
-            metadata_name: "Imported".into(),
-            architecture: architecture.into(),
-            variant: "whisper-small".into(),
-            languages: vec!["en".into(), "fil".into()],
-            detects_language: true,
-            bytes: 1,
-            sha256,
-            source: "file".into(),
-            license: None,
-            repository: None,
-            imported_at: 0,
-            path: None,
-            origin: None,
+    fn a_real_whisper_import_accepts_filipino_and_runs_it_as_tl() {
+        let models = temporary_models_dir();
+        let header = |architecture: &str, variant: &str, languages: &[&str]| {
+            gguf(
+                &[
+                    ("general.architecture", architecture),
+                    ("general.name", variant),
+                    ("stt.variant", variant),
+                ],
+                &[("general.languages", languages)],
+                &[("stt.capability.lang_detect", true)],
+                &[("encoder.weight", 8, 64), ("norm", 0, 16)],
+            )
         };
-        let whisper = manifest("whisper", "2b".repeat(32));
-        let whisper = build(CustomModelId::from_sha256(&whisper.sha256), &whisper);
-        assert_eq!(whisper.runtime_language("fil"), "tl");
-        let qwen = manifest("qwen3_asr", "3c".repeat(32));
-        let qwen = build(CustomModelId::from_sha256(&qwen.sha256), &qwen);
+        // Whisper small's own list: `tl`, no `fil`, no `yue`.
+        let whisper = models.join("whisper-small-Q8_0.gguf");
+        fs::write(
+            &whisper,
+            header("whisper", "whisper-small", &["en", "zh", "de", "tl", "ja"]),
+        )
+        .unwrap();
+        let id = import(&whisper, None, &AtomicBool::new(false)).unwrap();
+        let definition = definition(id);
+        assert!(definition.languages.contains(&"tl"));
+        assert!(
+            !definition.languages.contains(&"fil"),
+            "the file never says fil"
+        );
+        assert!(definition.supports_language("fil"));
+        assert!(definition.language_choices().contains(&"fil"));
+        assert_eq!(definition.runtime_language("fil"), "tl");
+        assert_eq!(definition.runtime_language_hint("fil"), Some("tl"));
+        let selection = TranscriptionSelection {
+            model: TranscriptionModelId::Custom(id),
+            language: "fil".into(),
+        };
+        assert!(super::super::models::validate(&selection).is_ok());
+        // What the file does not list stays refused.
+        assert!(!definition.supports_language("yue"));
+        assert!(!definition.supports_language("ko"));
+        assert_eq!(definition.runtime_language("de"), "de");
+
+        let qwen = models.join("qwen-Q8_0.gguf");
+        fs::write(&qwen, header("qwen3_asr", "qwen3-asr-1.7b", &["en", "fil"])).unwrap();
+        let qwen = super::definition(import(&qwen, None, &AtomicBool::new(false)).unwrap());
+        assert!(qwen.supports_language("fil"));
         assert_eq!(qwen.runtime_language("fil"), "fil");
     }
 

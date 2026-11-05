@@ -831,9 +831,18 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   Whisper fine-tune, Mandarin and English only), and Qwen3-ASR 1.7B follow
   │   without a badge (Wristper unit F; they are catalog models, not Labs
   │   ones). Medium and small never offer Cantonese (their files have no `yue`
-  │   token); every Whisper takes Filipino as `tl`. Their speed is the catalog's
+  │   token); Settings says Filipino `fil` and a Whisper file lists `tl`, so every
+  │   Whisper (catalog, or an import whose file lists `tl`) accepts `fil` and
+  │   runs it as `tl`. Their speed is the catalog's
   │   base M4 Metal figure on a Mac and "—" elsewhere, until measured; their
   │   error rates are the catalog's FLEURS test figures, not Hex runs
+  ├── Known risks (Wristper unit F): a Hex build older than these models
+  │   can't read their saved IDs, so it runs the default model for that
+  │   session (`app_settings/persistence.rs`), and a later save from that build
+  │   can replace the saved choice. A Whisper medium or Qwen3-ASR 1.7B file
+  │   imported with "Add model file…" is stored apart from the catalog copy
+  │   (`models/custom/` against `models/`), so the same file can take disk
+  │   space twice; nothing links the two
   └── Every other available model follows without a badge, selectable and
       deletable; never auto-switched or auto-downloaded (setup.language-select)
 ```
