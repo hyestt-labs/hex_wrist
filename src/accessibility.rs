@@ -212,6 +212,130 @@ fn copy_elements(element: &CfObject, name: &CStr) -> Vec<CfObject> {
         .collect()
 }
 
+/// `kAXValueTypeCGPoint` and `kAXValueTypeCGSize`.
+const AX_VALUE_CG_POINT: u32 = 1;
+const AX_VALUE_CG_SIZE: u32 = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CgPair(f64, f64);
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    safe fn AXIsProcessTrusted() -> bool;
+    fn AXUIElementGetPid(element: AxUiElementRef, pid: *mut i32) -> i32;
+    fn AXUIElementIsAttributeSettable(
+        element: AxUiElementRef,
+        attribute: CfStringRef,
+        settable: *mut bool,
+    ) -> i32;
+}
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    safe fn IsSecureEventInputEnabled() -> bool;
+}
+
+/// Whether Hex may use Accessibility. Asks without prompting.
+pub fn is_trusted() -> bool {
+    AXIsProcessTrusted()
+}
+
+/// Secure keyboard entry is on (a password prompt, or a terminal's Secure
+/// Keyboard Entry): synthetic keys reach no app.
+pub fn secure_input_enabled() -> bool {
+    IsSecureEventInputEnabled()
+}
+
+/// The element with keyboard focus, as a paste needs to know it. Frames are
+/// `[x, y, width, height]` in points.
+pub struct FocusedField {
+    pub pid: i32,
+    pub role: String,
+    pub subrole: String,
+    pub identifier: String,
+    pub title: String,
+    pub frame: Option<[f64; 4]>,
+    pub window: Option<[f64; 4]>,
+    /// The value is settable, or the role is a text input.
+    pub editable: bool,
+}
+
+/// The frontmost application's focused element. Every element is bounded
+/// by the messaging timeout, and the system-wide element is never used: its
+/// timeout is the process-wide default, and a hung app would stall every
+/// other Accessibility read with it.
+pub fn focused_field() -> Option<FocusedField> {
+    let pid = crate::dictation::context::frontmost_pid()?;
+    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
+    let application = bounded_element(unsafe { AXUIElementCreateApplication(pid) })?;
+    let element = copy_element(&application, c"AXFocusedUIElement")?;
+    let mut owner = 0;
+    // SAFETY: A live element and an out parameter.
+    if unsafe { AXUIElementGetPid(element.0, &mut owner) } != 0 {
+        owner = pid;
+    }
+    // A role that cannot be read means the app is not answering: stop here
+    // rather than spend a timeout on each remaining attribute.
+    let role = copy_string(&element, c"AXRole")?;
+    let window = copy_element(&element, c"AXWindow").and_then(|window| frame_of(&window));
+    Some(FocusedField {
+        pid: owner,
+        subrole: copy_string(&element, c"AXSubrole").unwrap_or_default(),
+        identifier: copy_string(&element, c"AXIdentifier").unwrap_or_default(),
+        title: copy_string(&element, c"AXTitle").unwrap_or_default(),
+        frame: frame_of(&element),
+        window,
+        editable: is_editable(&element, &role),
+        role,
+    })
+}
+
+/// The text value of the focused element when it belongs to `pid`.
+pub fn focused_value(pid: i32) -> Option<String> {
+    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
+    let application = bounded_element(unsafe { AXUIElementCreateApplication(pid) })?;
+    let element = copy_element(&application, c"AXFocusedUIElement")?;
+    copy_string(&element, c"AXValue")
+}
+
+fn is_editable(element: &CfObject, role: &str) -> bool {
+    const INPUT_ROLES: [&str; 5] = [
+        "AXTextField",
+        "AXTextArea",
+        "AXComboBox",
+        "AXSearchField",
+        "AXCell",
+    ];
+    if INPUT_ROLES.contains(&role) {
+        return true;
+    }
+    let Some(attribute) = cf_string_literal(c"AXValue").map(CfObject) else {
+        return false;
+    };
+    let mut settable = false;
+    // SAFETY: A live element, a CFString name, and an out parameter.
+    let status = unsafe { AXUIElementIsAttributeSettable(element.0, attribute.0, &mut settable) };
+    status == 0 && settable
+}
+
+fn frame_of(element: &CfObject) -> Option<[f64; 4]> {
+    let position = copy_pair(element, c"AXPosition", AX_VALUE_CG_POINT)?;
+    let size = copy_pair(element, c"AXSize", AX_VALUE_CG_SIZE)?;
+    Some([position.0, position.1, size.0, size.1])
+}
+
+fn copy_pair(element: &CfObject, name: &CStr, value_type: u32) -> Option<CgPair> {
+    let value = copy_attribute(element, name)?;
+    if unsafe { CFGetTypeID(value.0) } != unsafe { AXValueGetTypeID() } {
+        return None;
+    }
+    let mut pair = CgPair::default();
+    // SAFETY: `value` is an AXValue of this type; CGPoint and CGSize are two doubles.
+    unsafe { AXValueGetValue(value.0, value_type, (&mut pair as *mut CgPair).cast()) }
+        .then_some(pair)
+}
+
 /// The character just before the insertion point of the application's
 /// focused text element, for Labs › Smart spacing. `None` when text is
 /// selected, the cursor is at the start, or the app doesn't say.

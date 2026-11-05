@@ -25,6 +25,7 @@ const FLAGS_CHANGED_EVENT: u32 = 12;
 /// (Microsoft's Windows App, #1048) track modifiers from their own events and
 /// can read a burst posted in one instant as the bare key, typing "v".
 const SHORTCUT_EVENT_GAP: std::time::Duration = std::time::Duration::from_millis(15);
+const RETURN_HOLD: std::time::Duration = std::time::Duration::from_millis(30);
 /// Quartz keeps at most 20 UTF-16 units of a keyboard event's Unicode string.
 const MAX_UNICODE_UNITS: usize = 20;
 const EVENT_SOURCE_USER_DATA: u32 = 42;
@@ -288,6 +289,17 @@ fn collect_key_codes(entries: impl IntoIterator<Item = (char, u16)>) -> HashMap<
 pub fn post_command(character: char) -> Result<()> {
     let key_code = resolve_key_code(character, true)?;
     post_key_code(key_code, &[(COMMAND_FLAG, COMMAND_KEY_CODE)], 1)
+}
+
+/// One Return press, held for `RETURN_HOLD`: Electron terminals (Orca)
+/// ignore a Return whose down and up arrive in the same instant.
+pub fn post_return() -> Result<()> {
+    let down = KeyboardEvent::new((RETURN_KEY_CODE, true, 0))?;
+    let up = KeyboardEvent::new((RETURN_KEY_CODE, false, 0))?;
+    down.post();
+    std::thread::sleep(RETURN_HOLD);
+    up.post();
+    Ok(())
 }
 
 /// Types `text` as synthesized key events, never touching the clipboard. Line

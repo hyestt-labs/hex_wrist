@@ -8,6 +8,7 @@
 //! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
 //! - `relay`: the relay WebSocket client on its own thread.
 //! - `delivery`: the handle a recording travels with through the dictation worker.
+//! - `desktop`: the focused field and the keys, behind `Screen` and one `watch-ax` thread.
 //! - `service`: the one `watch` thread that owns the state and answers requests.
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
@@ -22,6 +23,7 @@
 pub(crate) mod audio;
 pub(crate) mod delivered;
 pub(crate) mod delivery;
+pub(crate) mod desktop;
 pub(crate) mod e2ee;
 pub(crate) mod field;
 pub(crate) mod frame;
@@ -29,6 +31,8 @@ pub(crate) mod pairing;
 pub(crate) mod recording;
 pub(crate) mod refusal;
 pub(crate) mod relay;
+#[cfg(target_os = "macos")]
+pub(crate) mod screen;
 pub(crate) mod service;
 pub(crate) mod suspect;
 pub(crate) mod zh;
