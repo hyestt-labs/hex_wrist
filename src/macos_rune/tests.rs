@@ -62,14 +62,12 @@ fn a_mac_only_launch_decision_follows_setup_status() {
                 transcription_model,
             };
             let expected_ready = accessibility == PermissionState::Ready && transcription_model;
+            assert_eq!(status.listener_ready(), expected_ready);
+            assert_eq!(status.ready(), expected_ready);
             for onboarding_completed in [false, true] {
                 for show_dock_icon in [false, true] {
-                    let launch = LaunchWindow::decide(
-                        show_dock_icon,
-                        status.ready(),
-                        onboarding_completed,
-                        true,
-                    );
+                    let launch =
+                        LaunchWindow::for_setup(show_dock_icon, status, onboarding_completed, true);
                     let expected = if !expected_ready || !onboarding_completed {
                         LaunchWindow::Open
                     } else if show_dock_icon {
@@ -80,6 +78,56 @@ fn a_mac_only_launch_decision_follows_setup_status() {
                     assert_eq!(launch, expected, "{status:?} dock {show_dock_icon}");
                 }
             }
+        }
+    }
+}
+
+/// A Mac that finished onboarding and lost only the microphone (watch-only,
+/// or revoked later) starts quietly; the window opens at launch only when the
+/// listener cannot start or the tour is unfinished.
+#[test]
+fn a_watch_only_setup_launches_quietly() {
+    use crate::desktop::onboarding::{PermissionState, SetupStatus};
+    for microphone in [
+        PermissionState::NeedsRequest,
+        PermissionState::NeedsSettings,
+        PermissionState::NeedsRestart,
+    ] {
+        let status = SetupStatus {
+            microphone,
+            accessibility: PermissionState::Ready,
+            transcription_model: true,
+        };
+        assert!(!status.ready());
+        assert_eq!(
+            LaunchWindow::for_setup(false, status, true, true),
+            LaunchWindow::Quiet,
+            "{microphone:?}"
+        );
+        assert_eq!(
+            LaunchWindow::for_setup(true, status, true, true),
+            LaunchWindow::OpenUnlessLoginItem
+        );
+        assert_eq!(
+            LaunchWindow::for_setup(false, status, false, true),
+            LaunchWindow::Open,
+            "an unfinished tour still opens"
+        );
+        for broken in [
+            SetupStatus {
+                accessibility: PermissionState::NeedsSettings,
+                ..status
+            },
+            SetupStatus {
+                transcription_model: false,
+                ..status
+            },
+        ] {
+            assert_eq!(
+                LaunchWindow::for_setup(false, broken, true, true),
+                LaunchWindow::Open,
+                "a listener that cannot start still opens the window"
+            );
         }
     }
 }
