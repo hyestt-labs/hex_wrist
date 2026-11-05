@@ -8,13 +8,24 @@ name: Test builds
 on:
   push:
     branches: [dev]
+    # A docs- or site-only change builds nothing. Markdown the build reads
+    # comes back in: src/ (include_str!) and the notices the app bundles.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!site/**"
+      - "!**/*.md"
+      - "src/**"
+      - "THIRD_PARTY_NOTICES.md"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Every dev commit gets its complete build; a newer push never cancels it.
+# A run dispatched on another branch yields to that branch's next run.
 concurrency:
-  group: test-builds-${{ github.ref }}
+  group: test-builds-${{ github.ref }}-${{ github.ref == 'refs/heads/dev' && github.run_id || 'latest' }}
   cancel-in-progress: true
 
 jobs:

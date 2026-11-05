@@ -1662,16 +1662,13 @@ mod tests {
             settings.meetings.recording_indicator_corner,
             MeetingIndicatorCorner::TopRight
         );
-        assert!(
-            settings
-                .meetings
-                .resolved_output_folder()
-                .ends_with(if cfg!(target_os = "macos") {
-                    "Wristper Meetings"
-                } else {
-                    "Hex Meetings"
-                })
-        );
+        assert!(settings.meetings.resolved_output_folder().ends_with(
+            if cfg!(target_os = "macos") {
+                "Wristper Meetings"
+            } else {
+                "Hex Meetings"
+            }
+        ));
         assert!(settings.text_replacements.is_empty());
     }
 
