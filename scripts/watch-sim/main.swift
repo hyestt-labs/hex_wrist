@@ -13,8 +13,9 @@ struct WatchSim {
             case "pair": try await pair(timeout: Double(option(args, "--timeout") ?? "180") ?? 180)
             case "deliver": try await deliver(args)
             case "health": try await health()
+            case "match": match(expected: option(args, "--expected") ?? "", actual: option(args, "--actual") ?? "")
             default:
-                emit(["event": "usage", "usage": "watch-sim pair [--timeout s] | deliver --audio <m4a> [--language auto] [--enter] [--timeout s] | health"])
+                emit(["event": "usage", "usage": "watch-sim pair [--timeout s] | deliver --audio <m4a> [--language auto] [--enter] [--timeout s] | health | match --expected <text> --actual <text>"])
                 exit(2)
             }
         } catch {
@@ -56,6 +57,37 @@ struct WatchSim {
                                      requestId: requestId, approval: approval) else { throw PairingError.cannotSave }
         emit(["event": "paired", "ok": true, "room": claimed.room, "mac_name": claimed.name,
               "mac_device_id": macDeviceId, "encrypted": true, "ms": ms(since: started)])
+    }
+
+    /// How much of the expected sentence the read-back holds, ignoring case,
+    /// punctuation, spacing, and Traditional versus Simplified characters.
+    /// Words for Latin text; characters, in order, for CJK.
+    static func match(expected: String, actual: String) {
+        func fold(_ text: String) -> String {
+            let simplified = text.applyingTransform(StringTransform("Hant-Hans"), reverse: false) ?? text
+            return simplified.lowercased().unicodeScalars
+                .map { CharacterSet.letters.union(.decimalDigits).contains($0) ? String($0) : " " }.joined()
+        }
+        let want = fold(expected), got = fold(actual)
+        let cjk = want.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
+        let score: Double
+        if cjk {
+            let a = Array(want.filter { !$0.isWhitespace }), b = Array(got.filter { !$0.isWhitespace })
+            var row = [Int](repeating: 0, count: b.count + 1)
+            for x in a {
+                var previous = 0
+                for (j, y) in b.enumerated() {
+                    let saved = row[j + 1]
+                    row[j + 1] = x == y ? previous + 1 : max(row[j + 1], row[j])
+                    previous = saved
+                }
+            }
+            score = a.isEmpty ? 0 : Double(row[b.count]) / Double(a.count)
+        } else {
+            let words = want.split(separator: " "), present = Set(got.split(separator: " "))
+            score = words.isEmpty ? 0 : Double(words.filter(present.contains).count) / Double(words.count)
+        }
+        emit(["event": "match", "percent": Int((score * 100).rounded()), "mode": cjk ? "cjk-chars" : "words"])
     }
 
     static func health() async throws {
