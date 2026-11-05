@@ -8,6 +8,7 @@
 //! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
 //! - `relay`: the relay WebSocket client on its own thread.
 //! - `delivery`: the handle a recording travels with through the dictation worker.
+//! - `output`: gate, paste, read-back, and clipboard restore for a recording's text.
 //! - `desktop`: the focused field and the keys, behind `Screen` and one `watch-ax` thread.
 //! - `service`: the one `watch` thread that owns the state and answers requests.
 //! - `frame`: the relay's request/response frames and the body assembler.
@@ -27,6 +28,7 @@ pub(crate) mod desktop;
 pub(crate) mod e2ee;
 pub(crate) mod field;
 pub(crate) mod frame;
+pub(crate) mod output;
 pub(crate) mod pairing;
 pub(crate) mod recording;
 pub(crate) mod refusal;

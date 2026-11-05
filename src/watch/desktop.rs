@@ -10,7 +10,7 @@
 //! deadline instead of the protocol its clock.
 
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 
 use super::field::{Expectation, FieldSnapshot, Focused, KeyGate, key_gate};
 
@@ -48,6 +48,43 @@ pub(crate) enum KeyOutcome {
 
 type Done<T> = Box<dyn FnOnce(T) + Send>;
 
+/// The keyboard lock. Owned, so a read-back thread can keep holding it after
+/// the paste that took it returns.
+#[derive(Default)]
+struct Exclusive {
+    held: Mutex<bool>,
+    freed: Condvar,
+}
+
+impl Exclusive {
+    fn acquire(self: &Arc<Self>) -> Held {
+        let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
+        while *held {
+            held = self
+                .freed
+                .wait(held)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        *held = true;
+        Held(Arc::clone(self))
+    }
+}
+
+/// Proof that no other watch action is on the keyboard; released on drop.
+pub(crate) struct Held(Arc<Exclusive>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut held = self
+            .0
+            .held
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *held = false;
+        self.0.freed.notify_one();
+    }
+}
+
 enum Job {
     Capture(Done<Option<FieldSnapshot>>),
     Press {
@@ -72,7 +109,7 @@ enum Runner {
 #[derive(Clone)]
 pub(crate) struct Desktop {
     screen: Arc<dyn Screen>,
-    exclusive: Arc<Mutex<()>>,
+    exclusive: Arc<Exclusive>,
     runner: Arc<Runner>,
 }
 
@@ -92,7 +129,7 @@ impl Desktop {
     /// Starts the `watch-ax` thread. It ends when the last clone drops.
     pub(crate) fn start(screen: Arc<dyn Screen>) -> std::io::Result<Self> {
         let (jobs, inbox) = mpsc::channel::<Job>();
-        let exclusive = Arc::new(Mutex::new(()));
+        let exclusive = Arc::new(Exclusive::default());
         let worker_screen = Arc::clone(&screen);
         let worker_lock = Arc::clone(&exclusive);
         std::thread::Builder::new()
@@ -113,7 +150,7 @@ impl Desktop {
     pub(crate) fn inline(screen: Arc<dyn Screen>) -> Self {
         Self {
             screen,
-            exclusive: Arc::new(Mutex::new(())),
+            exclusive: Arc::new(Exclusive::default()),
             runner: Arc::new(Runner::Inline),
         }
     }
@@ -122,7 +159,7 @@ impl Desktop {
     pub(crate) fn silent(screen: Arc<dyn Screen>) -> Self {
         Self {
             screen,
-            exclusive: Arc::new(Mutex::new(())),
+            exclusive: Arc::new(Exclusive::default()),
             runner: Arc::new(Runner::Silent),
         }
     }
@@ -143,10 +180,8 @@ impl Desktop {
 
     /// Held while a paste is sent and read back, and while a key is
     /// pressed: one action at a time on the keyboard.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, ()> {
-        self.exclusive
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+    pub(crate) fn lock(&self) -> Held {
+        self.exclusive.acquire()
     }
 
     /// Reads the focused field for `/focus`; `None` when nothing is focused
@@ -185,7 +220,7 @@ impl Desktop {
     }
 }
 
-fn run(screen: &dyn Screen, exclusive: &Mutex<()>, job: Job) {
+fn run(screen: &dyn Screen, exclusive: &Arc<Exclusive>, job: Job) {
     match job {
         Job::Capture(done) => {
             let snapshot = if screen.trusted() {
@@ -207,7 +242,7 @@ fn run(screen: &dyn Screen, exclusive: &Mutex<()>, job: Job) {
 /// lock, and only then compare the focus with the recording's field.
 fn press(
     screen: &dyn Screen,
-    exclusive: &Mutex<()>,
+    exclusive: &Arc<Exclusive>,
     key: Key,
     expected: &FieldSnapshot,
 ) -> KeyOutcome {
@@ -217,7 +252,7 @@ fn press(
     if !screen.trusted() {
         return KeyOutcome::Failed("Accessibility permission is not granted".to_owned());
     }
-    let _exclusive = exclusive.lock().unwrap_or_else(|error| error.into_inner());
+    let _exclusive = exclusive.acquire();
     let focused = screen.focused();
     let gate = key_gate(
         &Expectation::Field(expected.clone()),
