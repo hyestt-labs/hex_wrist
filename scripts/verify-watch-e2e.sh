@@ -112,6 +112,17 @@ fi
 # installed app's folder.
 [ "$TEST_DATA" != "$OLD_DATA" ] || die "test data root equals the installed app's" 2
 
+# --- what was already running -------------------------------------------------
+# Recorded before any probe (a probe launches TextEdit or Terminal). At exit,
+# an app this run started is quit; an app that was already running stays open
+# and only the windows this run made are closed. Chrome is never driven: the
+# Chromium scenario starts its own separate process.
+app_running() { [ "$(osascript -e "application \"$1\" is running" 2>/dev/null)" = true ]; }
+was_textedit=false; app_running TextEdit && was_textedit=true
+was_terminal=false; app_running Terminal && was_terminal=true
+was_chrome=false; app_running "Google Chrome" && was_chrome=true
+log "already running before this run: TextEdit=$was_textedit Terminal=$was_terminal Chrome=$was_chrome (those stay open)"
+
 # --- the person's clipboard -------------------------------------------------
 # Every scenario that needs a sentinel, and every paste, changes the clipboard.
 # Back up the whole pasteboard (all items, all types) before the first one and
@@ -142,10 +153,50 @@ clip_restore() {
   log "clipboard restore: $CLIP_STATE ($CLIP_DETAIL)"
 }
 
+# Pids of processes whose whole command line starts with PATH (exact executable, never a name match).
+exe_pids() { ps -axo pid=,command= | while read -r pid cmd; do [[ $cmd == "$1"* ]] && echo "$pid"; done; }
+
+# Quits Wristper Test through its own command, then, if it is still there, stops
+# exactly the processes that run its executable.
+stop_wristper_test() {
+  local i p
+  [ -x "$hex" ] || return 0
+  "$hex" quit >/dev/null 2>&1
+  for i in $(seq 1 20); do [ -z "$(exe_pids "$hex")" ] && return 0; sleep 0.5; done
+  for p in $(exe_pids "$hex"); do kill "$p" 2>/dev/null; done
+}
+
+# Quits an app this run started (never one that was already running), and only when nothing is left open in it.
+quit_if_ours() { # app was-running
+  [ "$2" = true ] && return 0
+  app_running "$1" || return 0
+  case "$1" in
+    TextEdit)
+      [ "$(osascript -e 'tell application "TextEdit" to count documents' 2>/dev/null)" = 0 ] &&
+        osascript -e 'tell application "TextEdit" to quit' >/dev/null 2>&1 ;;
+    Terminal)
+      # No tab may be busy: a running job is not ours to end.
+      [[ $(osascript -e 'tell application "Terminal" to return busy of every tab of every window' 2>/dev/null) != *true* ]] &&
+        osascript -e 'tell application "Terminal" to quit' >/dev/null 2>&1 ;;
+  esac
+}
+
+# Children of this script (and their children): watch-sim, log streams, hex watch pair. Chrome is
+# started detached and is closed through chrome-handles instead.
+kill_children() {
+  local p c
+  for p in $(pgrep -P $$ 2>/dev/null); do
+    for c in $(pgrep -P "$p" 2>/dev/null); do kill "$c" 2>/dev/null; done
+    kill "$p" 2>/dev/null
+  done
+}
+
 log_pid=
 sim_udid=
 keep_setting_original=
 cleanup() {
+  trap - EXIT
+  kill_children
   clip_restore
   [ -n "$log_pid" ] && kill "$log_pid" 2>/dev/null
   if [ -s "$out/chrome-handles" ]; then
@@ -155,12 +206,17 @@ cleanup() {
     "$hex" settings set labs.keep_on_clipboard "$keep_setting_original" >/dev/null 2>&1
   fi
   if [ "$keep" = 0 ]; then
-    [ -x "$hex" ] && "$hex" quit >/dev/null 2>&1
+    stop_wristper_test
     [ -n "$sim_udid" ] && xcrun simctl shutdown "$sim_udid" >/dev/null 2>&1
   fi
+  quit_if_ours TextEdit "$was_textedit"
+  quit_if_ours Terminal "$was_terminal"
   case "$tmp" in */wristper-e2e.*) /usr/bin/trash "$tmp" >/dev/null 2>&1 ;; esac
 }
 trap cleanup EXIT
+# A signal must still run the cleanup above (it stops what this run started).
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 
 # --- preflight --------------------------------------------------------------
 # Everything that needs a human is collected here and reported once, as a
@@ -233,9 +289,8 @@ print_blocked() {
     echo "BLOCKED: ${#blocked[@]} thing(s) need a human on this Mac before the run can continue."
     echo "The script never grants permissions itself. Do each step once, then run again with --skip-build:"
     for line in "${blocked[@]}"; do echo "  $i. $line"; i=$((i + 1)); done
-    echo "Wristper Test is left running so you can grant its permissions."
+    echo "Wristper Test was stopped on the way out. To click its Microphone Allow, start it first: open -g \"$app\""
   } | tee -a "$out/run.log"
-  keep=1
   exit 3
 }
 
@@ -344,7 +399,7 @@ check_permissions() {
   mic=$(jq -r .permissions.microphone <<<"$s")
   ax=$(jq -r .permissions.accessibility <<<"$s")
   if [ "$mic" != ready ]; then
-    need "Microphone for Wristper Test.app ($mic): run \"$hex\" window show, then click Allow for Microphone in the setup page."
+    need "Microphone for Wristper Test.app ($mic): run open -g \"$app\", then \"$hex\" window show, and click Allow for Microphone in the setup page."
   fi
   if [ "$ax" != ready ]; then
     need "Accessibility for Wristper Test.app ($ax): System Settings > Privacy & Security > Accessibility, turn on \"Wristper Test\"; if it is not listed click + and add $app. Then run \"$hex\" restart if the status stays needs-restart."
