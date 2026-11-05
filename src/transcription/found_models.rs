@@ -592,6 +592,39 @@ mod tests {
         }
     }
 
+    /// After Unit F a cached Whisper medium or Qwen3-ASR 1.7B resolves to the
+    /// new model by its pin, and the models that already carried those
+    /// variant names still resolve to themselves.
+    #[test]
+    fn each_pinned_file_resolves_to_its_own_model() {
+        for id in [
+            TranscriptionModelId::WhisperLargeV3,
+            TranscriptionModelId::WhisperMedium,
+            TranscriptionModelId::WhisperSmall,
+            TranscriptionModelId::BreezeAsr25,
+            TranscriptionModelId::Qwen3Asr17B,
+            TranscriptionModelId::NbWhisperMedium,
+            TranscriptionModelId::QwenCleoAsr17B,
+        ] {
+            let artifact = pin(id);
+            assert_eq!(
+                catalog_match(
+                    Some(artifact.sha256),
+                    "any/repo",
+                    "any.gguf",
+                    artifact.bytes
+                ),
+                Some(id),
+                "{id:?} by blob"
+            );
+            assert_eq!(
+                catalog_match(None, artifact.repository, artifact.filename, artifact.bytes),
+                Some(id),
+                "{id:?} by name"
+            );
+        }
+    }
+
     fn temporary(name: &str) -> PathBuf {
         let directory =
             std::env::temp_dir().join(format!("hex-found-{name}-{}", std::process::id()));

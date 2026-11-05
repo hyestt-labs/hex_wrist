@@ -13,13 +13,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::artifacts::{
-    COHERE_ARTIFACT, COHERE_LANGUAGES, GIGAAM_V3_E2E_RNNT_ARTIFACT, GRANITE_SPEECH_5_ARTIFACT,
-    GRANITE_SPEECH_5_LANGUAGES, IVRIT_WHISPER_ARTIFACT, NB_WHISPER_MEDIUM_ARTIFACT,
-    NEMOTRON_3_5_ASR_ARTIFACT, NEMOTRON_3_5_LANGUAGES, NEMOTRON_3_5_LOCALES,
-    PARAKEET_ULTRA_ARTIFACT, PARAKEET_UNIFIED_ENGLISH_ARTIFACT, PARAKEET_V2_ARTIFACT,
-    PARAKEET_V3_ARTIFACT, PARAKEET_V3_LANGUAGES, QWEN_ARTIFACT, QWEN_LANGUAGES, QWENCLEO_ARTIFACT,
-    SENSEVOICE_ARTIFACT, UNDERDOG_BARK_3_CLEAN_ARTIFACT, UNDERDOG_BARK_3_PRO_ARTIFACT,
-    WHISPER_ARTIFACT,
+    BREEZE_ASR_25_ARTIFACT, COHERE_ARTIFACT, COHERE_LANGUAGES, GIGAAM_V3_E2E_RNNT_ARTIFACT,
+    GRANITE_SPEECH_5_ARTIFACT, GRANITE_SPEECH_5_LANGUAGES, IVRIT_WHISPER_ARTIFACT,
+    NB_WHISPER_MEDIUM_ARTIFACT, NEMOTRON_3_5_ASR_ARTIFACT, NEMOTRON_3_5_LANGUAGES,
+    NEMOTRON_3_5_LOCALES, PARAKEET_ULTRA_ARTIFACT, PARAKEET_UNIFIED_ENGLISH_ARTIFACT,
+    PARAKEET_V2_ARTIFACT, PARAKEET_V3_ARTIFACT, PARAKEET_V3_LANGUAGES, QWEN_1_7B_ARTIFACT,
+    QWEN_ARTIFACT, QWEN_LANGUAGES, QWENCLEO_ARTIFACT, SENSEVOICE_ARTIFACT,
+    UNDERDOG_BARK_3_CLEAN_ARTIFACT, UNDERDOG_BARK_3_PRO_ARTIFACT, WHISPER_ARTIFACT,
+    WHISPER_LARGE_V3_ARTIFACT, WHISPER_MEDIUM_ARTIFACT, WHISPER_SMALL_ARTIFACT,
 };
 pub use super::custom_models::CustomModelId;
 pub use super::languages::{LANGUAGES, language_name};
@@ -49,6 +50,11 @@ pub enum TranscriptionModelId {
     GigaAmV3,
     NbWhisperMedium,
     GraniteSpeech5,
+    WhisperLargeV3,
+    WhisperMedium,
+    WhisperSmall,
+    BreezeAsr25,
+    Qwen3Asr17B,
     AppleSpeech,
     Custom(CustomModelId),
 }
@@ -85,6 +91,11 @@ impl TranscriptionModelId {
             Self::GigaAmV3 => "gigaam_v3",
             Self::NbWhisperMedium => "nb_whisper_medium",
             Self::GraniteSpeech5 => "granite_speech_5",
+            Self::WhisperLargeV3 => "whisper_large_v3",
+            Self::WhisperMedium => "whisper_medium",
+            Self::WhisperSmall => "whisper_small",
+            Self::BreezeAsr25 => "breeze_asr_25",
+            Self::Qwen3Asr17B => "qwen3_asr_1_7b",
             Self::AppleSpeech => "apple_speech",
             Self::Custom(id) => id.as_str(),
         }
@@ -123,6 +134,11 @@ impl FromStr for TranscriptionModelId {
             "gigaam_v3" => Ok(Self::GigaAmV3),
             "nb_whisper_medium" => Ok(Self::NbWhisperMedium),
             "granite_speech_5" => Ok(Self::GraniteSpeech5),
+            "whisper_large_v3" => Ok(Self::WhisperLargeV3),
+            "whisper_medium" => Ok(Self::WhisperMedium),
+            "whisper_small" => Ok(Self::WhisperSmall),
+            "breeze_asr_25" => Ok(Self::BreezeAsr25),
+            "qwen3_asr_1_7b" => Ok(Self::Qwen3Asr17B),
             "apple_speech" => Ok(Self::AppleSpeech),
             _ => CustomModelId::parse(value)
                 .map(Self::Custom)
@@ -611,6 +627,86 @@ pub const MODELS: &[ModelDefinition] = &[
         // its seven languages it hears.
         accepts_language_hint: false,
         supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperLargeV3,
+        name: "Whisper large-v3",
+        // transcribe.cpp's catalog, FLEURS and the 35 s "dots" clip on the base
+        // M4 (`model_benchmarks`); other systems show no figure until measured.
+        realtime: if cfg!(target_os = "macos") {
+            "~8x"
+        } else {
+            "Unknown"
+        },
+        // FLEURS English test (Q8_0), the catalog's own run (`model_benchmarks`).
+        word_error_rate: Some(4.03),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_LARGE_V3_ARTIFACT),
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperMedium,
+        name: "Whisper medium",
+        realtime: if cfg!(target_os = "macos") {
+            "~15x"
+        } else {
+            "Unknown"
+        },
+        word_error_rate: Some(4.64),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_MEDIUM_ARTIFACT),
+        // Its file has no Cantonese token (`supports_language`).
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperSmall,
+        name: "Whisper small",
+        realtime: if cfg!(target_os = "macos") {
+            "~40x"
+        } else {
+            "Unknown"
+        },
+        word_error_rate: Some(6.51),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_SMALL_ARTIFACT),
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::BreezeAsr25,
+        name: "Breeze ASR 25",
+        realtime: if cfg!(target_os = "macos") {
+            "~8x"
+        } else {
+            "Unknown"
+        },
+        // FLEURS Mandarin test, character error rate (`model_benchmarks`).
+        word_error_rate: Some(8.10),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&BREEZE_ASR_25_ARTIFACT),
+        languages: &["zh", "en"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::Qwen3Asr17B,
+        name: "Qwen3-ASR 1.7B",
+        realtime: if cfg!(target_os = "macos") {
+            "~11x"
+        } else {
+            "Unknown"
+        },
+        word_error_rate: Some(7.14),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&QWEN_1_7B_ARTIFACT),
+        languages: QWEN_LANGUAGES,
+        accepts_language_hint: true,
+        supports_language_detection: true,
     },
     ModelDefinition {
         id: TranscriptionModelId::AppleSpeech,
@@ -1815,6 +1911,12 @@ mod tests {
             (TranscriptionModelId::Nemotron35Asr, "nemotron_3_5_asr"),
             (TranscriptionModelId::GigaAmV3, "gigaam_v3"),
             (TranscriptionModelId::NbWhisperMedium, "nb_whisper_medium"),
+            (TranscriptionModelId::GraniteSpeech5, "granite_speech_5"),
+            (TranscriptionModelId::WhisperLargeV3, "whisper_large_v3"),
+            (TranscriptionModelId::WhisperMedium, "whisper_medium"),
+            (TranscriptionModelId::WhisperSmall, "whisper_small"),
+            (TranscriptionModelId::BreezeAsr25, "breeze_asr_25"),
+            (TranscriptionModelId::Qwen3Asr17B, "qwen3_asr_1_7b"),
             (TranscriptionModelId::AppleSpeech, "apple_speech"),
         ] {
             assert_eq!(id.as_str(), name);
@@ -1822,6 +1924,187 @@ mod tests {
             assert_eq!(serde_json::to_value(id).unwrap(), name);
         }
         assert!("unknown".parse::<TranscriptionModelId>().is_err());
+    }
+
+    #[test]
+    fn every_model_id_round_trips() {
+        for model in MODELS {
+            let name = model.id.as_str();
+            assert_eq!(name.parse::<TranscriptionModelId>().unwrap(), model.id);
+            assert_eq!(serde_json::to_value(model.id).unwrap(), name);
+            assert_eq!(definition(model.id).id, model.id);
+        }
+    }
+
+    /// The five files Unit F added, typed out again here from the Hub's own
+    /// records (tree `lfs.oid` and size, `x-linked-etag`, and the GGUF
+    /// header), so a typo in a pin fails rather than 404s on a user's Mac.
+    #[test]
+    fn new_pins_are_the_verified_files() {
+        use TranscriptionModelId::*;
+        let verified = [
+            (
+                WhisperLargeV3,
+                "handy-computer/whisper-large-v3-gguf",
+                "e3e29bee6389c7da4a141406f07bb80ddac5337c",
+                "whisper-large-v3-Q8_0.gguf",
+                1_668_741_440,
+                "2fa1a5f179f8a511a53e2108db270aa4af3ce08cd976af4180e2854666bb4ba3",
+                "whisper",
+                "whisper-large-v3",
+            ),
+            (
+                WhisperMedium,
+                "handy-computer/whisper-medium-gguf",
+                "ec78f06fded51aa82cde751678b78f76f78c8b7f",
+                "whisper-medium-Q8_0.gguf",
+                831_538_144,
+                "09e6a65e7de377aa5b10bae24608bc6f8ca2ed04b3993ef10d4a02bcd9a82adf",
+                "whisper",
+                "whisper-medium",
+            ),
+            (
+                WhisperSmall,
+                "handy-computer/whisper-small-gguf",
+                "c0214bd34be9296695486f838e0142f900803159",
+                "whisper-small-Q8_0.gguf",
+                269_751_136,
+                "9b9c8811bbcc82a7766f0fb0925614bdacb0923b2cc630daeac17108b655b860",
+                "whisper",
+                "whisper-small",
+            ),
+            (
+                BreezeAsr25,
+                "handy-computer/Breeze-ASR-25-gguf",
+                "1e5e8d7295110e1e14e305e9cf7411d82711beaa",
+                "Breeze-ASR-25-Q8_0.gguf",
+                1_667_964_224,
+                "1650c163cd1623d13b585368ffd87d7e669c5ff23014511e0fa91bb4ce994756",
+                "whisper",
+                "breeze-asr-25",
+            ),
+            (
+                Qwen3Asr17B,
+                "handy-computer/Qwen3-ASR-1.7B-gguf",
+                "92282af1610a2db19d66f2bef1e260f5deca782d",
+                "Qwen3-ASR-1.7B-Q8_0.gguf",
+                2_185_030_624,
+                "9a0d81792dfea2d5f278b8a63deb3ea6e02139ce42c2301f32ea19c4f77526b7",
+                "qwen3_asr",
+                "qwen3-asr-1.7b",
+            ),
+        ];
+        let lower_hex = |text: &str, length: usize| {
+            text.len() == length
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        for (id, repository, revision, filename, bytes, sha256, architecture, variant) in verified {
+            let ModelRuntime::Gguf(artifact) = definition(id).runtime else {
+                panic!("{id:?} is a GGUF model");
+            };
+            assert_eq!(artifact.repository, repository, "{id:?}");
+            assert_eq!(artifact.revision, revision, "{id:?}");
+            assert_eq!(artifact.filename, filename, "{id:?}");
+            assert_eq!(artifact.bytes, bytes, "{id:?}");
+            assert_eq!(artifact.sha256, sha256, "{id:?}");
+            assert_eq!(artifact.architecture, architecture, "{id:?}");
+            assert_eq!(artifact.variant, variant, "{id:?}");
+            assert!(
+                lower_hex(artifact.revision, 40),
+                "{id:?} revision is a commit"
+            );
+            assert!(lower_hex(artifact.sha256, 64), "{id:?}");
+            assert!(artifact.filename.ends_with("-Q8_0.gguf"), "{id:?}");
+        }
+    }
+
+    /// A pin pasted onto the wrong model (QwenCleo's onto Qwen3-ASR 1.7B,
+    /// which share a variant name and a size to the byte) would verify the
+    /// wrong file, so no two models share a file.
+    #[test]
+    fn catalog_files_are_unique() {
+        let mut files = std::collections::HashSet::new();
+        let mut digests = std::collections::HashSet::new();
+        for model in MODELS {
+            let ModelRuntime::Gguf(artifact) = model.runtime else {
+                continue;
+            };
+            assert!(
+                files.insert((artifact.repository, artifact.filename)),
+                "{:?} repeats {}/{}",
+                model.id,
+                artifact.repository,
+                artifact.filename
+            );
+            assert!(
+                digests.insert(artifact.sha256),
+                "{:?} repeats a SHA-256",
+                model.id
+            );
+        }
+    }
+
+    #[test]
+    fn new_models_read_the_vocabulary_as_a_prompt() {
+        use TranscriptionModelId::*;
+        for id in [
+            WhisperLargeV3,
+            WhisperMedium,
+            WhisperSmall,
+            BreezeAsr25,
+            Qwen3Asr17B,
+        ] {
+            let model = definition(id);
+            assert_eq!(model.vocabulary_use(), VocabularyUse::Prompt, "{id:?}");
+            assert!(model.accepts_language_hint, "{id:?}");
+            assert!(model.supports_language_detection, "{id:?}");
+            assert!(
+                !id.is_labs_gated(),
+                "{id:?} is a catalog model, not a Labs one"
+            );
+            assert!(model.available(), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn new_models_have_a_source_but_no_details() {
+        use TranscriptionModelId::*;
+        for id in [
+            WhisperLargeV3,
+            WhisperMedium,
+            WhisperSmall,
+            BreezeAsr25,
+            Qwen3Asr17B,
+        ] {
+            let source = super::super::artifacts::source(id).expect("a source");
+            assert_eq!(source.license_spdx, "Apache-2.0", "{id:?}");
+            assert!(source.license_url.starts_with("https://"), "{id:?}");
+            assert!(!source.author.is_empty() && !source.upstream_revision.is_empty());
+            assert!(source.upstream_repo.contains('/'), "{id:?}");
+            assert!(source.converted_by.contains("transcribe.cpp"), "{id:?}");
+            // The details panel prints every figure as a Linux-measured WER.
+            assert!(super::super::model_details::details(id).is_none(), "{id:?}");
+        }
+        assert!(super::super::artifacts::source(ParakeetV3).is_none());
+    }
+
+    #[test]
+    fn new_models_are_not_recommended_anywhere() {
+        use TranscriptionModelId::*;
+        let new = [
+            WhisperLargeV3,
+            WhisperMedium,
+            WhisperSmall,
+            BreezeAsr25,
+            Qwen3Asr17B,
+        ];
+        for (language, _) in LANGUAGES {
+            for choice in choices_for_runtime(language) {
+                assert!(!new.contains(&choice.model.id), "{language}");
+            }
+        }
     }
 
     #[test]
@@ -2144,7 +2427,12 @@ mod tests {
                 Qwen3Asr06B,
                 QwenCleoAsr17B,
                 IvritWhisperLargeV3Turbo,
-                NbWhisperMedium
+                NbWhisperMedium,
+                WhisperLargeV3,
+                WhisperMedium,
+                WhisperSmall,
+                BreezeAsr25,
+                Qwen3Asr17B,
             ]
         );
         assert_eq!(

@@ -1,6 +1,6 @@
 //! The catalog's pinned model files and the language lists its entries share.
 
-use super::models::GgufArtifact;
+use super::models::{GgufArtifact, TranscriptionModelId};
 
 pub(super) const PARAKEET_V3_LANGUAGES: &[&str] = &[
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
@@ -243,3 +243,152 @@ pub(super) const NEMOTRON_3_5_LANGUAGES: &[&str] = &[
     "en", "es", "fr", "de", "it", "pt", "nl", "tr", "ru", "uk", "pl", "cs", "sk", "bg", "hr", "ro",
     "hu", "sv", "da", "fi", "et", "ar", "hi", "ja", "ko", "zh", "vi",
 ];
+// handy-computer's Q8_0 conversions of OpenAI's Whisper large-v3, medium, and
+// small (Apache-2.0), and of MediaTek Research's Breeze ASR 25, a Whisper
+// large-v2 fine-tune (Apache-2.0), all converted with transcribe.cpp's
+// Whisper converter. Each pin is a 40-digit commit; its size and SHA-256
+// match the Hub's LFS record, and the header names the architecture and
+// variant below (748 F32 and 513 Q8_0 tensors for large-v3 and Breeze, 564
+// and 385 for medium, 288 and 193 for small).
+pub(super) const WHISPER_LARGE_V3_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "whisper-large-v3-Q8_0.gguf",
+    revision: "e3e29bee6389c7da4a141406f07bb80ddac5337c",
+    repository: "handy-computer/whisper-large-v3-gguf",
+    bytes: 1_668_741_440,
+    sha256: "2fa1a5f179f8a511a53e2108db270aa4af3ce08cd976af4180e2854666bb4ba3",
+    architecture: "whisper",
+    variant: "whisper-large-v3",
+};
+pub(super) const WHISPER_MEDIUM_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "whisper-medium-Q8_0.gguf",
+    revision: "ec78f06fded51aa82cde751678b78f76f78c8b7f",
+    repository: "handy-computer/whisper-medium-gguf",
+    bytes: 831_538_144,
+    sha256: "09e6a65e7de377aa5b10bae24608bc6f8ca2ed04b3993ef10d4a02bcd9a82adf",
+    architecture: "whisper",
+    // NB-Whisper Medium's legacy file carries the same variant name; a
+    // header's variant only has to match the model's own artifact.
+    variant: "whisper-medium",
+};
+pub(super) const WHISPER_SMALL_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "whisper-small-Q8_0.gguf",
+    revision: "c0214bd34be9296695486f838e0142f900803159",
+    repository: "handy-computer/whisper-small-gguf",
+    bytes: 269_751_136,
+    sha256: "9b9c8811bbcc82a7766f0fb0925614bdacb0923b2cc630daeac17108b655b860",
+    architecture: "whisper",
+    variant: "whisper-small",
+};
+pub(super) const BREEZE_ASR_25_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "Breeze-ASR-25-Q8_0.gguf",
+    revision: "1e5e8d7295110e1e14e305e9cf7411d82711beaa",
+    repository: "handy-computer/Breeze-ASR-25-gguf",
+    bytes: 1_667_964_224,
+    sha256: "1650c163cd1623d13b585368ffd87d7e669c5ff23014511e0fa91bb4ce994756",
+    architecture: "whisper",
+    variant: "breeze-asr-25",
+};
+// handy-computer's Q8_0 conversion of Alibaba's Qwen3-ASR 1.7B (Apache-2.0),
+// 365 F32 and 344 Q8_0 tensors. QwenCleo, a fine-tune of it, carries the same
+// variant name.
+pub(super) const QWEN_1_7B_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "Qwen3-ASR-1.7B-Q8_0.gguf",
+    revision: "92282af1610a2db19d66f2bef1e260f5deca782d",
+    repository: "handy-computer/Qwen3-ASR-1.7B-gguf",
+    bytes: 2_185_030_624,
+    sha256: "9a0d81792dfea2d5f278b8a63deb3ea6e02139ce42c2301f32ea19c4f77526b7",
+    architecture: "qwen3_asr",
+    variant: "qwen3-asr-1.7b",
+};
+
+/// Who made a catalog model, under which licence, and where its pinned file
+/// came from, read from the pinned file's own header and its transcribe.cpp
+/// catalog entry (2778ae4).
+#[cfg_attr(not(test), allow(dead_code))] // read by the picker's details in a UI unit
+pub struct ModelSource {
+    pub author: &'static str,
+    pub license_spdx: &'static str,
+    pub license_url: &'static str,
+    pub upstream_repo: &'static str,
+    /// The upstream commit the catalog records, as the catalog abbreviates it.
+    pub upstream_revision: &'static str,
+    pub converted_by: &'static str,
+}
+
+const APACHE_2_0: &str = "https://www.apache.org/licenses/LICENSE-2.0";
+const HANDY_COMPUTER: &str = "handy-computer, with transcribe.cpp";
+
+const WHISPER_LARGE_V3_SOURCE: ModelSource = ModelSource {
+    author: "OpenAI",
+    license_spdx: "Apache-2.0",
+    license_url: APACHE_2_0,
+    upstream_repo: "openai/whisper-large-v3",
+    upstream_revision: "06f233f",
+    converted_by: HANDY_COMPUTER,
+};
+const WHISPER_MEDIUM_SOURCE: ModelSource = ModelSource {
+    author: "OpenAI",
+    license_spdx: "Apache-2.0",
+    license_url: APACHE_2_0,
+    upstream_repo: "openai/whisper-medium",
+    upstream_revision: "abdf7c3",
+    converted_by: HANDY_COMPUTER,
+};
+const WHISPER_SMALL_SOURCE: ModelSource = ModelSource {
+    author: "OpenAI",
+    license_spdx: "Apache-2.0",
+    license_url: APACHE_2_0,
+    upstream_repo: "openai/whisper-small",
+    upstream_revision: "973afd2",
+    converted_by: HANDY_COMPUTER,
+};
+const BREEZE_ASR_25_SOURCE: ModelSource = ModelSource {
+    author: "MediaTek Research",
+    license_spdx: "Apache-2.0",
+    license_url: APACHE_2_0,
+    upstream_repo: "MediaTek-Research/Breeze-ASR-25",
+    upstream_revision: "cffe7cc",
+    converted_by: HANDY_COMPUTER,
+};
+const QWEN_1_7B_SOURCE: ModelSource = ModelSource {
+    author: "Alibaba Qwen Team",
+    license_spdx: "Apache-2.0",
+    license_url: APACHE_2_0,
+    upstream_repo: "Qwen/Qwen3-ASR-1.7B",
+    upstream_revision: "7278e1e",
+    converted_by: HANDY_COMPUTER,
+};
+
+/// The provenance Unit F recorded for the models it added. The older
+/// models carry theirs in comments beside their artifacts, so they answer
+/// `None` until someone moves it here; every id is named, so a new model
+/// can't skip the question.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn source(id: TranscriptionModelId) -> Option<&'static ModelSource> {
+    use TranscriptionModelId as M;
+    match id {
+        M::WhisperLargeV3 => Some(&WHISPER_LARGE_V3_SOURCE),
+        M::WhisperMedium => Some(&WHISPER_MEDIUM_SOURCE),
+        M::WhisperSmall => Some(&WHISPER_SMALL_SOURCE),
+        M::BreezeAsr25 => Some(&BREEZE_ASR_25_SOURCE),
+        M::Qwen3Asr17B => Some(&QWEN_1_7B_SOURCE),
+        M::ParakeetUnifiedEnglish
+        | M::ParakeetV2
+        | M::ParakeetV3
+        | M::WhisperLargeV3Turbo
+        | M::Qwen3Asr06B
+        | M::QwenCleoAsr17B
+        | M::IvritWhisperLargeV3Turbo
+        | M::SenseVoiceSmall
+        | M::CohereTranscribe
+        | M::UnderdogBark3Pro
+        | M::UnderdogBark3Clean
+        | M::ParakeetUltra
+        | M::Nemotron35Asr
+        | M::GigaAmV3
+        | M::NbWhisperMedium
+        | M::GraniteSpeech5
+        | M::AppleSpeech
+        | M::Custom(_) => None,
+    }
+}
