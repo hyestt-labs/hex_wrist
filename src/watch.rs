@@ -23,6 +23,7 @@ pub(crate) mod audio;
 pub(crate) mod delivered;
 pub(crate) mod delivery;
 pub(crate) mod e2ee;
+pub(crate) mod field;
 pub(crate) mod frame;
 pub(crate) mod pairing;
 pub(crate) mod recording;
