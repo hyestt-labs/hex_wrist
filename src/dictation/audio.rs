@@ -646,6 +646,11 @@ impl Owner {
                 // No permission: record nothing and open nothing. The first
                 // refusal asks or tells; the next ones are quiet.
                 if !self.access.admit() {
+                    // A revoked permission closes a warm input here, when no
+                    // capture depends on it.
+                    if self.input_idle() {
+                        self.follow_permission();
+                    }
                     let _ = reply.send(false);
                     return true;
                 }

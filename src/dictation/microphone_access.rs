@@ -347,20 +347,35 @@ mod tests {
 
     #[test]
     fn a_revoked_permission_closes_the_warm_input_once_idle() {
-        let permission = Fake::new(PermissionState::Ready);
-        let opens = Opens::default();
-        let audio = open_audio(&permission, &opens, false);
-        assert_eq!(
-            opens.count(),
-            1,
-            "granted and warm: open at startup, as before"
-        );
-        assert!(!audio.microphone_gated());
-        permission.set(PermissionState::NeedsSettings);
-        audio.cancel().unwrap();
-        assert!(audio.microphone_gated());
-        assert!(!audio.start(at()).unwrap());
-        assert_eq!(opens.count(), 1);
+        for ending in ["cancel", "refused start"] {
+            let permission = Fake::new(PermissionState::Ready);
+            let opens = Opens::default();
+            let audio = open_audio(&permission, &opens, false);
+            assert_eq!(
+                opens.count(),
+                1,
+                "granted and warm: open at startup, as before"
+            );
+            assert!(!audio.microphone_gated());
+
+            permission.set(PermissionState::NeedsSettings);
+            if ending == "cancel" {
+                audio.cancel().unwrap();
+            } else {
+                assert!(!audio.start(at()).unwrap());
+            }
+            assert!(audio.microphone_gated(), "{ending}");
+            assert_eq!(opens.count(), 1, "{ending}");
+
+            // The stream was closed: the next grant needs a fresh open.
+            permission.set(PermissionState::Ready);
+            assert!(audio.start(at()).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while opens.count() < 2 {
+                assert!(Instant::now() < deadline, "{ending}: the input stayed open");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
     }
 
     #[test]

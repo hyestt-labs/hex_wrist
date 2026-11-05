@@ -1512,7 +1512,14 @@ fn control_dictation(
                 ControlReply::done("Recording; `hex dictation stop` or the shortcut finishes")
             } else {
                 hotkeys.dictation.suspend();
-                ControlReply::error("busy", "the microphone is busy; try again")
+                if input.starts_cold(false) {
+                    ControlReply::error(
+                        "busy",
+                        "the microphone is not allowed; allow it in System Settings",
+                    )
+                } else {
+                    ControlReply::error("busy", "the microphone is busy; try again")
+                }
             }
         }
         false if !recording && print.is_some() => ControlReply::error(
