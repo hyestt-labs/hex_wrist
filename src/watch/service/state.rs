@@ -168,6 +168,7 @@ impl Core {
             Message::Delivered { id, report } => self.on_delivered(&id, report, now),
             Message::Confirmed { id, verified } => self.on_confirmed(&id, verified, now),
             Message::Captured { id, field } => self.on_captured(&id, field, now),
+            Message::Keyed { id, key, outcome } => self.on_keyed(&id, key, outcome, now),
             Message::Claim {
                 code,
                 reply,
@@ -190,7 +191,9 @@ impl Core {
                 Waiting::Transcript { reply, .. }
                 | Waiting::Duplicate { reply, .. }
                 | Waiting::Focus { reply, .. }
-                | Waiting::Capture { reply, .. } => reply.abandon(),
+                | Waiting::Capture { reply, .. }
+                | Waiting::Settle { reply, .. }
+                | Waiting::Key { reply, .. } => reply.abandon(),
             }
         }
         self.outbound.stop();
@@ -243,6 +246,12 @@ impl Core {
                 } => {
                     tracing::warn!(id, "the focused application did not answer Accessibility");
                     self.finish_capture(&id, &device, None, reply, now);
+                }
+                Waiting::Settle { id, key, reply, .. } => self.press_key(key, &id, reply, now),
+                Waiting::Key { id, key, reply, .. } => {
+                    tracing::warn!(id, "the watch-ax thread did not answer a key request");
+                    let (status, body) = self.key_timed_out(key);
+                    self.answer(reply, status, body);
                 }
             }
         }
@@ -452,18 +461,26 @@ impl Core {
             .into_iter()
             .partition(|waiting| {
                 waiting.id() == id
-                    && !matches!(waiting, Waiting::Focus { .. } | Waiting::Capture { .. })
+                    && !matches!(
+                        waiting,
+                        Waiting::Focus { .. }
+                            | Waiting::Capture { .. }
+                            | Waiting::Settle { .. }
+                            | Waiting::Key { .. }
+                    )
             });
         self.waiting = others;
         for waiting in mine {
             match waiting {
                 Waiting::Transcript { reply, .. } => self.answer(reply, status, body.clone()),
                 Waiting::Duplicate { reply, .. } => self.answer(reply, 200, duplicate.clone()),
-                Waiting::Focus { .. } | Waiting::Capture { .. } => {
-                    unreachable!("focus waiters were kept")
-                }
+                Waiting::Focus { .. }
+                | Waiting::Capture { .. }
+                | Waiting::Settle { .. }
+                | Waiting::Key { .. } => unreachable!("only transcript waiters were taken"),
             }
         }
+        self.release_settled(id, now);
     }
 
     /// The `watch-ax` thread read the focused field for `/focus`. A capture
@@ -580,6 +597,7 @@ impl Core {
         live.record.updated_at = Timestamp::string(now.wall);
         live.touched = now.at;
         self.remember_handled(id, now);
+        self.release_settled(id, now);
         Refusal::Failed { error }
     }
 }

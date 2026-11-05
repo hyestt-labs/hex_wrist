@@ -26,6 +26,7 @@ use crate::watch::suspect::SuspectReason;
 use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
 
 mod field;
+mod keys;
 
 const M4A: &[u8] = include_bytes!("../../../tests/fixtures/watch-audio/tone-440-16k.m4a");
 const ID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
@@ -1592,20 +1593,17 @@ fn a_background_upload_replayed_a_day_later_reads_duplicate() {
 }
 
 #[test]
-fn stale_actions_and_unsupported_actions_inside_the_envelope() {
+fn stale_actions_and_unknown_recordings_inside_the_envelope() {
     let mut h = harness("query");
     let watch = h.pair("watch-1");
     let enter = h.query(&watch, "/enter", &[("id", ID)]).unwrap();
     assert_eq!(enter.status, 200);
     assert_eq!(
         enter.body,
-        json!({"ok": false, "reason": "not-supported", "error": "Enter from the watch is not supported yet"})
+        json!({"ok": false, "reason": "unknown-id", "error": "unknown-id"})
     );
     let undo = h.query(&watch, "/undo", &[("id", ID)]).unwrap();
-    assert_eq!(
-        undo.body["error"],
-        "Undo from the watch is not supported yet"
-    );
+    assert_eq!(undo.body, json!({"ok": false, "reason": "unknown-id"}));
 
     let nonce = Harness::fresh_nonce();
     let head = e2ee::QueryHead {

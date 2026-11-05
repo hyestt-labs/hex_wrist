@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
+use crate::watch::desktop::Key;
 use crate::watch::e2ee::{self, SharedKey};
 use crate::watch::frame::response_frame_json;
 use crate::watch::refusal::Refusal;
@@ -162,6 +163,21 @@ pub(crate) enum Waiting {
         reply: Reply,
         deadline: Instant,
     },
+    /// `/enter` for a recording still being processed: runs when it has a
+    /// verdict, or at the deadline (`ENTER_WAIT_SECONDS`).
+    Settle {
+        id: String,
+        key: Key,
+        reply: Reply,
+        deadline: Instant,
+    },
+    /// A key handed to the `watch-ax` thread: answered when it reports.
+    Key {
+        id: String,
+        key: Key,
+        reply: Reply,
+        deadline: Instant,
+    },
 }
 
 impl Waiting {
@@ -170,7 +186,9 @@ impl Waiting {
             Self::Transcript { id, .. }
             | Self::Duplicate { id, .. }
             | Self::Focus { id, .. }
-            | Self::Capture { id, .. } => id,
+            | Self::Capture { id, .. }
+            | Self::Settle { id, .. }
+            | Self::Key { id, .. } => id,
         }
     }
 
@@ -179,7 +197,9 @@ impl Waiting {
             Self::Transcript { deadline, .. }
             | Self::Duplicate { deadline, .. }
             | Self::Focus { deadline, .. }
-            | Self::Capture { deadline, .. } => *deadline,
+            | Self::Capture { deadline, .. }
+            | Self::Settle { deadline, .. }
+            | Self::Key { deadline, .. } => *deadline,
         }
     }
 }

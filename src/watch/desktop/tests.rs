@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::fake::{FakeScreen, editable, text_area};
 use super::*;
@@ -12,7 +12,10 @@ fn desktop(screen: &Arc<FakeScreen>) -> Desktop {
 
 fn press(desktop: &Desktop, key: Key, expected: FieldSnapshot) -> KeyOutcome {
     let (done, outcome) = mpsc::channel();
-    desktop.press(key, expected, move |result| done.send(result).unwrap());
+    let valid_until = Instant::now() + Duration::from_secs(5);
+    desktop.press(key, expected, valid_until, move |result| {
+        done.send(result).unwrap();
+    });
     outcome.recv_timeout(Duration::from_secs(2)).unwrap()
 }
 
@@ -142,7 +145,8 @@ fn a_key_waits_for_a_paste_that_holds_the_lock() {
     let desktop = Desktop::start(screen.clone()).unwrap();
     let guard = desktop.lock();
     let (done, outcome) = mpsc::channel();
-    desktop.press(Key::Enter, text_area(7), move |result| {
+    let valid_until = Instant::now() + Duration::from_secs(5);
+    desktop.press(Key::Enter, text_area(7), valid_until, move |result| {
         done.send(result).unwrap();
     });
     // Held: nothing is pressed yet.
@@ -153,4 +157,20 @@ fn a_key_waits_for_a_paste_that_holds_the_lock() {
         outcome.recv_timeout(Duration::from_secs(2)).unwrap(),
         KeyOutcome::Pressed
     );
+}
+
+/// Catches an Enter pressed after the watch was told the request failed.
+#[test]
+fn a_key_for_a_request_given_up_on_is_not_pressed() {
+    let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
+    let desktop = desktop(&screen);
+    let (done, outcome) = mpsc::channel();
+    desktop.press(Key::Enter, text_area(7), Instant::now(), move |result| {
+        done.send(result).unwrap();
+    });
+    assert!(matches!(
+        outcome.recv_timeout(Duration::from_secs(2)).unwrap(),
+        KeyOutcome::Failed(_)
+    ));
+    assert!(screen.keys().is_empty());
 }

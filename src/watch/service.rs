@@ -12,6 +12,7 @@
 mod envelope;
 #[cfg(test)]
 mod integration;
+mod keys;
 mod pending;
 mod routes;
 mod state;
@@ -198,6 +199,12 @@ pub(crate) enum Message {
     Captured {
         id: String,
         field: Option<field::FieldSnapshot>,
+    },
+    /// The `watch-ax` thread pressed `key` for `id`, or says why not.
+    Keyed {
+        id: String,
+        key: super::desktop::Key,
+        outcome: super::desktop::KeyOutcome,
     },
     /// The dictation worker finished recording `id`.
     Delivered {

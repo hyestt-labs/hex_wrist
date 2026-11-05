@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::pending::{Reply, Waiting};
 use super::state::{CAPTURE_WAIT, Core, Now};
+use crate::watch::desktop::Key;
 use crate::watch::frame::{
     E2EE_PATH, E2EE_QUERY_PATH, RequestHead, Route, Tier, body_refusal, cloud_route,
     plaintext_refusal,
@@ -90,8 +91,12 @@ impl Core {
             ("GET", "/health") => self.health(),
             ("GET", "/status") => self.status(&head.query, &device, inside, now),
             ("POST", "/focus") => return self.focus(&body, &device, reply, now),
-            ("POST", "/enter") => Ok(not_supported("Enter")),
-            ("POST", "/undo") => Ok(not_supported("Undo")),
+            ("POST", "/enter") => {
+                return self.key_request(Key::Enter, &body, &device, reply, now);
+            }
+            ("POST", "/undo") => {
+                return self.key_request(Key::Undo, &body, &device, reply, now);
+            }
             ("POST", "/ping") => Ok(ping(&head, now)),
             ("POST", "/pairing/request") => self.pairing_request(&body, now),
             ("GET", "/pairing/result") => self.pairing_result(&head.query, now),
@@ -367,19 +372,6 @@ impl Core {
             )),
         }
     }
-}
-
-/// `/enter` and `/undo` wait for B2 (they need the field snapshot and the
-/// read-back); the watch reads `reason` and shows it.
-fn not_supported(action: &str) -> (u16, Value) {
-    (
-        200,
-        json!({
-            "ok": false,
-            "reason": "not-supported",
-            "error": format!("{action} from the watch is not supported yet"),
-        }),
-    )
 }
 
 /// The relay's edge normally answers `/ping` itself; this is the direct

@@ -11,6 +11,7 @@
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use super::field::{Expectation, FieldSnapshot, Focused, KeyGate, key_gate};
 
@@ -90,6 +91,9 @@ enum Job {
     Press {
         key: Key,
         expected: FieldSnapshot,
+        /// The reply was given up on at this moment; a key pressed later
+        /// would act on a request the watch was told had failed.
+        valid_until: Instant,
         done: Done<KeyOutcome>,
     },
 }
@@ -195,11 +199,13 @@ impl Desktop {
         &self,
         key: Key,
         expected: FieldSnapshot,
+        valid_until: Instant,
         done: impl FnOnce(KeyOutcome) + Send + 'static,
     ) {
         self.submit(Job::Press {
             key,
             expected,
+            valid_until,
             done: Box::new(done),
         });
     }
@@ -233,8 +239,9 @@ fn run(screen: &dyn Screen, exclusive: &Arc<Exclusive>, job: Job) {
         Job::Press {
             key,
             expected,
+            valid_until,
             done,
-        } => done(press(screen, exclusive, key, &expected)),
+        } => done(press(screen, exclusive, key, &expected, valid_until)),
     }
 }
 
@@ -245,6 +252,7 @@ fn press(
     exclusive: &Arc<Exclusive>,
     key: Key,
     expected: &FieldSnapshot,
+    valid_until: Instant,
 ) -> KeyOutcome {
     if screen.secure_input() {
         return KeyOutcome::Sensitive;
@@ -253,6 +261,10 @@ fn press(
         return KeyOutcome::Failed("Accessibility permission is not granted".to_owned());
     }
     let _exclusive = exclusive.acquire();
+    // The wait for the lock may have outlasted the request.
+    if Instant::now() >= valid_until {
+        return KeyOutcome::Failed("the request timed out before the key was pressed".to_owned());
+    }
     let focused = screen.focused();
     let gate = key_gate(
         &Expectation::Field(expected.clone()),
