@@ -97,7 +97,10 @@ struct WatchSim {
         let tooShort = gotUnits.isEmpty || gotUnits.count * 2 < wantUnits.count
         let common = tooShort ? 0 : lcs(wantUnits, gotUnits)
         let score = wantUnits.isEmpty ? 0 : Double(common) / Double(wantUnits.count)
+        // Precision: how much of the read-back is the sentence. Two copies of it score 50.
+        let precision = gotUnits.isEmpty ? 0 : Double(common) / Double(gotUnits.count)
         emit(["event": "match", "percent": Int((score * 100).rounded()),
+              "precision": Int((precision * 100).rounded()),
               "mode": cjk ? "ordered-chars" : "ordered-words", "common": common,
               "expected_units": wantUnits.count, "actual_units": gotUnits.count, "too_short": tooShort])
     }

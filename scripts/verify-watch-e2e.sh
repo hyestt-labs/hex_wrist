@@ -16,7 +16,9 @@
 #
 # Exit status: 0 every case passed, 1 a case failed, 2 bad usage or a tool is
 # missing, 3 blocked on a one-time permission or a locked screen (the output
-# lists each click). The script never tries to grant a permission itself.
+# lists each click), 4 nothing failed but a row is BLOCKED on a dependency
+# (mic-stays-closed needs C1), so it is not proven. The script never tries to
+# grant a permission itself.
 #
 # Never touches /Applications/Wristper.app, its data folder
 # (~/Library/Application Support/Wristper), its relay room, or its Keychain
@@ -67,7 +69,7 @@ unset HEX_APPLICATION_SUPPORT_DIR HEX_WATCH_RELAY_BASE
 #   WRISTPER_HOOKS_COMMIT  that commit plus the DEBUG-only E2E hooks (branch test/sim-fixture-audio): stage 2 builds this app
 WRISTPER_SRC=${WRISTPER_SRC:-/Users/glenhsu/orca/workspaces/wristper/coding}
 WRISTPER_SRC_COMMIT=${WRISTPER_SRC_COMMIT:-426185302ac51f77b07fc59878491bdf9a16ce71}
-WRISTPER_HOOKS_COMMIT=${WRISTPER_HOOKS_COMMIT:-c7dcb971f9ff6175bfc7676a681db77e1fdc0505}
+WRISTPER_HOOKS_COMMIT=${WRISTPER_HOOKS_COMMIT:-027800efddfc06a7088767faf61461a43b2a30c7}
 # Links the Rust test binary on this Mac (Xcode 26: -lswiftCompatibility56). Optional.
 WATCH_E2E_B2_ENV=${WATCH_E2E_B2_ENV:-/Users/glenhsu/orca/workspaces/hex_wrist/migration_to_hex/artifacts/wristper-migration-20261104/b2-test-env/env.sh}
 SIGN_IDENTITY=${SIGN_IDENTITY:-Developer ID Application: WEI CHIEH HSU (VQY3J86U79)}
@@ -234,11 +236,17 @@ cleanup() {
   if [ -s "$out/chrome-handles" ]; then
     while IFS= read -r h; do chrome_close "$h"; done < "$out/chrome-handles"
   fi
+  # TextEdit documents and Terminal windows this run made and a failure left open (each is re-verified first).
+  if [ -s "$out/target-handles" ]; then
+    CLEANUP_PASS=1
+    while IFS=' ' read -r kind h; do close_target "$kind" "$h"; done < "$out/target-handles"
+  fi
   if [ -n "$keep_setting_original" ] && [ -x "$hex" ]; then
     "$hex" settings set labs.keep_on_clipboard "$keep_setting_original" >/dev/null 2>&1
   fi
   if [ "$keep" = 0 ]; then
-    stop_wristper_test
+    # --preflight-only leaves an already running Wristper Test as it found it.
+    if [ "$preflight_only" = 0 ] || [ "$wt_started" = 1 ]; then stop_wristper_test; fi
     delete_sim
   elif [ -n "$sim_udid" ]; then
     log "--keep-running: simulator $sim_name ($sim_udid) stays; remove it with: xcrun simctl delete $sim_udid"
@@ -422,20 +430,39 @@ fresh_room() {
   done
 }
 
+wt_started=0   # 1 when this run launched Wristper Test (--preflight-only then stops it at exit)
+launch_wristper_test() {
+  log "launching Wristper Test in the background"
+  open -g "$app" || die "could not open $app"
+  for _ in $(seq 1 60); do status_json >/dev/null && break; sleep 1; done
+  status_json >/dev/null || die "Wristper Test did not answer hex status within 60 s"
+  for _ in $(seq 1 30); do [ -s "$TEST_DATA/relay-room" ] && break; sleep 1; done
+  [ -s "$TEST_DATA/relay-room" ] || die "no relay room in $TEST_DATA; the watch service did not start (see $TEST_DATA/logs/process.log)"
+  wt_started=1
+}
+
+# Before the preflight: only make sure the app answers, so its permissions can be read. Nothing is
+# reset here, so a run that ends BLOCKED, and --preflight-only, change no state.
 start_app() {
+  if status_json >/dev/null; then
+    log "Wristper Test is already running (left as it is until the preflight passes)"
+  else
+    launch_wristper_test
+  fi
+  status_json > "$out/status-start.json"
+}
+
+# After the preflight passed: stop it, give it a new relay room, start it again, and check the room changed.
+restart_with_new_room() {
   stop_wristper_test
   for _ in $(seq 1 30); do status_json >/dev/null || break; sleep 1; done
   fresh_room
-  # Where Hex's log and the macOS log stood before this launch (the mic-stays-closed scenario reads what came after).
+  # Where Hex's log and the macOS log stood before this launch (mic-stays-closed reads what came after).
   proc_log_offset=$(stat -f%z "$TEST_DATA/logs/process.log" 2>/dev/null || echo 0)
   launch_time=$(date '+%Y-%m-%d %H:%M:%S')
-  log "launching Wristper Test in the background (new relay room)"
-  open -g "$app" || die "could not open $app"
-  for _ in $(seq 1 60); do status_json >/dev/null && break; sleep 1; done
-  status_json > "$out/status-start.json" || die "Wristper Test did not answer hex status within 60 s"
-  for _ in $(seq 1 30); do [ -s "$TEST_DATA/relay-room" ] && break; sleep 1; done
-  [ -s "$TEST_DATA/relay-room" ] || die "no relay room in $TEST_DATA; the watch service did not start (see $TEST_DATA/logs/process.log)"
+  launch_wristper_test
   [ "$(cat "$TEST_DATA/relay-room")" != "$(cat "$tmp/old-room")" ] || die "the relay room is the same as the previous run's; it was not renewed"
+  status_json > "$out/status-start.json"
   log "relay room: new for this run (differs from the previous one)"
 }
 
@@ -615,17 +642,23 @@ term_verify() {
   [ -n "$got" ] && [ "$got" = "$tty" ]
 }
 
-# Prints a handle for the opened target.
+# Prints a handle for the opened target, and notes it in target-handles so the exit trap can close
+# whatever a failed or interrupted run left behind (open_target runs in a subshell, so a variable
+# could not carry it back). close_target re-verifies every handle before it acts.
 open_target() {
+  local h=
   case "$1" in
-    textedit) te_open ;;
-    terminal) term_open 'clear; cat' 1 ;;
-    shell) term_open 'clear' 1.5 ;;
+    textedit) h=$(te_open) || return 1 ;;
+    terminal) h=$(term_open 'clear; cat' 1) || return 1 ;;
+    shell) h=$(term_open 'clear' 1.5) || return 1 ;;
     # Prints one ENTER:<line> for every Return it receives, so an extra, empty Return shows as "ENTER:".
-    recorder) term_open 'clear; while IFS= read -r l; do echo "ENTER:$l"; done' 1.5 ;;
-    claude|codex) term_open "cd '$AGENT_DIR' && clear && '$AGENT_BIN'" 12 ;;
-    chrome) chrome_open ;;
+    recorder) h=$(term_open 'clear; while IFS= read -r l; do echo "ENTER:$l"; done' 1.5) || return 1 ;;
+    claude|codex) h=$(term_open "cd '$AGENT_DIR' && clear && '$AGENT_BIN'" 12) || return 1 ;;
+    chrome) chrome_open; return ;;   # its handles are noted by chrome_open
   esac
+  [ -n "$h" ] || return 1
+  echo "$(kind_of "$1") $h" >> "$out/target-handles"
+  echo "$h"
 }
 
 focus_target() {
@@ -660,14 +693,14 @@ close_target() {
   local id path tty pids
   case "$(kind_of "$1")" in
     textedit)
-      te_verify "$2" || { log "not closing TextEdit window ${2%%|*}: it is not the document this run made"; return 0; }
+      te_verify "$2" || { [ -n "${CLEANUP_PASS:-}" ] || log "not closing TextEdit window ${2%%|*}: it is not (or no longer) the document this run made"; return 0; }
       id=${2%%|*}
       # A document we made is untitled and has no file. If it somehow has one, that file is ours: Trash it first.
       path=$(osascript -e "tell application \"TextEdit\" to return POSIX path of (path of document of window id $id as alias)" 2>/dev/null)
       [ -n "$path" ] && [ -e "$path" ] && /usr/bin/trash "$path" >/dev/null 2>&1
       osascript -e "tell application \"TextEdit\" to close window id $id saving no" >/dev/null 2>&1 ;;
     terminal)
-      term_verify "$2" || { log "not closing Terminal window ${2%%|*}: it is not the window this run made"; return 0; }
+      term_verify "$2" || { [ -n "${CLEANUP_PASS:-}" ] || log "not closing Terminal window ${2%%|*}: it is not (or no longer) the window this run made"; return 0; }
       id=${2%%|*}; tty=${2#*|}
       # Hang up exactly the processes on this window's own tty (what closing a terminal does), then close it.
       pids=$(ps -t "${tty#/dev/}" -o pid= 2>/dev/null)
@@ -691,9 +724,15 @@ record() {
 # Pairing codes are single use and expire in 2 minutes, but they are still kept out of the saved logs.
 redact_pairing() { sed -E 's/"code":"[0-9]{6}"/"code":"******"/; s/pair-code [0-9]{6}/pair-code ******/'; }
 
-judge() { # lang-or-kind readback -> percent
+judge() { # lang-or-kind readback -> percent (ordered recall)
   "$sim" match --expected "$(text_for "$1")" --actual "$2" | jq -r .percent
 }
+# Precision: the share of the read-back that is the sentence. Only for fields that start empty
+# (a TextEdit document, the Chrome textarea): a sentence pasted twice scores 100 on recall but 50 here.
+precision_of() { # lang-or-kind readback -> percent
+  "$sim" match --expected "$(text_for "$1")" --actual "$2" | jq -r .precision
+}
+starts_empty() { [ "$1" = textedit ] || [ "$1" = chrome ]; }
 
 want() { [ -z "$only" ] || [[ $1 =~ $only ]]; }
 
@@ -730,10 +769,11 @@ pair_sim() { # stage
 # sim_run TARGET AUDIO [watch-sim deliver args...]
 # Opens the target, focuses it, delivers AUDIO (en, zh, agent) from watch-sim,
 # reads the target back. Sets SC_REPORT (JSON), SC_READBACK, SC_MS, SC_HANDLE.
-SC_REPORT=null; SC_READBACK=; SC_MS=0; SC_HANDLE=; SC_FILE="$out/readback.txt"
+SC_REPORT=null; SC_READBACK=; SC_MS=0; SC_HANDLE=; SC_TARGET=; SC_FILE="$out/readback.txt"
 sim_run() {
   local target=$1 audio=$2 started
   shift 2
+  SC_TARGET=$target
   SC_REPORT=null; SC_READBACK=; SC_MS=0
   SC_HANDLE=$(open_target "$target") || SC_HANDLE=
   [ -n "$SC_HANDLE" ] || { SC_REPORT='{"event":"no-target"}'; : > "$SC_FILE"; return 1; }
@@ -777,9 +817,14 @@ finish() {
   FAILS=; BLOCKED_NOTE=
 }
 
-judged() { # lang -> percent, with the pass threshold check
+judged() { # lang -> percent, with the pass threshold check (recall, plus precision for empty-start fields)
+  local precision
   SC_PERCENT=$(judge "$1" "$SC_READBACK"); SC_PERCENT=${SC_PERCENT:-0}
   chk "$(is [ "$SC_PERCENT" -ge "$(pass_for "$1")" ])" "read-back matches only ${SC_PERCENT}%"
+  if starts_empty "$SC_TARGET"; then
+    precision=$(precision_of "$1" "$SC_READBACK"); precision=${precision:-0}
+    chk "$(is [ "$precision" -ge "$(pass_for "$1")" ])" "only ${precision}% of the read-back is the sentence (pasted twice, or extra text?)"
+  fi
 }
 
 stage1() {
@@ -1078,7 +1123,7 @@ stage2() {
     return
   fi
 
-  local container target lang handle readback percent result started ms enter_arg detail res_line phase mac_state
+  local container target lang handle readback percent result started ms enter_arg detail res_line phase mac_state precision
   container=$(xcrun simctl get_app_container "$sim_udid" "$WATCH_BUNDLE" data) || die "no app container"
   mkdir -p "$container/tmp"
   for lang in ${langs//,/ }; do
@@ -1108,6 +1153,10 @@ stage2() {
       chk "$(is [ "$phase" = finished ])" "watch phase is '${phase:-none}', want finished"
       case "$mac_state" in pasted|unverified) ;; *) chk bad "Mac state is '${mac_state:-none}', want pasted or unverified" ;; esac
       chk "$(is [ "$percent" -ge "$(pass_for "$lang")" ])" "read-back matches only ${percent}% (ordered, need $(pass_for "$lang"))"
+      if starts_empty "$target"; then
+        precision=$(precision_of "$lang" "$readback"); precision=${precision:-0}
+        chk "$(is [ "$precision" -ge "$(pass_for "$lang")" ])" "only ${precision}% of the read-back is the sentence (pasted twice, or extra text?)"
+      fi
       result=PASS; [ -z "$FAILS" ] || result=FAIL
       record 2 "$target" "$lang" "$result" "$percent" "${mac_state:-no-result}" "$ms" \
         "$(tr '\r\n' '  ' <<<"$readback" | tail -c 200)" "$(jq -c --arg f "${FAILS#; }" '. + {fails:$f}' <<<"$detail")"
@@ -1145,6 +1194,7 @@ start_app
 check_permissions
 [ "$preflight_only" = 1 ] && { log "preflight OK"; echo "PREFLIGHT: OK"; exit 0; }
 clip_backup
+restart_with_new_room
 select_model "${langs%%,*}"
 wait_listener
 make_fixtures
@@ -1173,7 +1223,7 @@ fi
 [ -s "$results" ] || { echo "RESULT: FAIL (no cases ran)"; exit 1; }
 blocked_rows=$(jq -r 'select(.result=="BLOCKED") | .target' "$results" | tr '\n' ' ')
 if [ -n "$blocked_rows" ]; then
-  echo "RESULT: PASS, but not proven: ${blocked_rows}BLOCKED on C1 (run with --c1 after it merges; that makes them count)"
-  exit 0
+  echo "RESULT: INCOMPLETE (no row failed, but ${blocked_rows}BLOCKED on C1: not proven; run with --c1 after C1 merges)"
+  exit 4
 fi
 echo "RESULT: PASS"
