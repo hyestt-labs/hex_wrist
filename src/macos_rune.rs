@@ -1074,6 +1074,10 @@ impl Pump {
         while let Ok(call) = self.control_calls.try_recv() {
             self.control(call);
         }
+        // A dictation start found the microphone refused: Settings shows it.
+        if crate::dictation::microphone_access::take_settings_request() {
+            show(&self.window, Destination::Settings);
+        }
         while let Some(action) = self
             .status_actions
             .as_ref()

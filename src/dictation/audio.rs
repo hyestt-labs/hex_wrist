@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use color_eyre::eyre::{Result, eyre};
 
 use crate::audio::recording_environment::{CaptureMarker, RecordingEnvironmentController};
-use crate::audio::{CaptureInstant, RecoveringAudioInput, RecoveringAudioInputEvent};
+use crate::audio::{CaptureInstant, Opener, RecoveringAudioInput, RecoveringAudioInputEvent};
+use crate::dictation::microphone_access::MicrophoneAccess;
 use crate::dictation::{
     ClipSource, DictationCapture, DictationClip, Finish, POST_RELEASE_TAIL, ReleaseTail,
 };
@@ -101,6 +102,9 @@ struct State {
     recognition_generation: AtomicU64,
     outstanding_recognition_frames: Arc<AtomicU64>,
     capture_generation: AtomicU64,
+    /// The microphone permission is missing, so the owner holds the input
+    /// closed (see [`MicrophoneAccess`]).
+    gated: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +159,9 @@ enum Command {
 
 struct Owner {
     input: RecoveringAudioInput,
+    access: MicrophoneAccess,
+    /// What the owner runs: the saved policy, or the released microphone
+    /// while the permission is missing.
     release_while_idle: bool,
     pending_capture: Option<PendingCapture>,
     capture: DictationCapture,
@@ -211,10 +218,45 @@ impl DictationAudio {
         release_while_idle: bool,
         engine: Option<Arc<TranscriptionEngine>>,
     ) -> Result<Self> {
-        let input = if release_while_idle {
-            RecoveringAudioInput::closed(device_override, selection_revision, selected_device)
+        Self::open_through(
+            MicrophoneAccess::system(release_while_idle),
+            Arc::new(crate::audio::open_configured_input),
+            device_override,
+            selection_revision,
+            selected_device,
+            recording_environment,
+            pending_input,
+            engine,
+        )
+    }
+
+    /// Opens the input only when `access` says the microphone may be open
+    /// now; every later open goes through `opener`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_through(
+        access: MicrophoneAccess,
+        opener: Opener,
+        device_override: Option<&str>,
+        selection_revision: u64,
+        selected_device: Option<&str>,
+        recording_environment: RecordingEnvironmentController,
+        pending_input: PendingInputEvents,
+        engine: Option<Arc<TranscriptionEngine>>,
+    ) -> Result<Self> {
+        let input = if access.release_while_idle() {
+            RecoveringAudioInput::closed_with(
+                opener,
+                device_override,
+                selection_revision,
+                selected_device,
+            )
         } else {
-            RecoveringAudioInput::open(device_override, selection_revision, selected_device)
+            RecoveringAudioInput::open_with(
+                opener,
+                device_override,
+                selection_revision,
+                selected_device,
+            )
         };
         let device_name = input
             .is_open()
@@ -227,7 +269,7 @@ impl DictationAudio {
             device_name,
             recording_environment,
             pending_input,
-            release_while_idle,
+            access,
             engine,
         )
     }
@@ -237,7 +279,7 @@ impl DictationAudio {
         device_name: String,
         recording_environment: RecordingEnvironmentController,
         pending_input: PendingInputEvents,
-        release_while_idle: bool,
+        access: MicrophoneAccess,
         engine: Option<Arc<TranscriptionEngine>>,
     ) -> Result<Self> {
         let (owner, mut audio) = Owner::new(
@@ -245,7 +287,7 @@ impl DictationAudio {
             device_name,
             recording_environment,
             pending_input,
-            release_while_idle,
+            access,
             engine,
         );
         audio.worker = Some(
@@ -292,6 +334,21 @@ impl DictationAudio {
         });
     }
 
+    /// Whether a capture starts on a closed microphone: the saved policy
+    /// releases it, or the permission is missing and the owner holds it
+    /// closed until the first capture after the grant. The listener picks
+    /// its tone and its edge boundary by this, not by the policy alone.
+    pub fn starts_cold(&self, release_while_idle: bool) -> bool {
+        release_while_idle || self.state.gated.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn microphone_gated(&self) -> bool {
+        self.state.gated.load(Ordering::Acquire)
+    }
+
+    /// `release` is the saved policy; the owner applies it once the
+    /// permission is granted.
     pub fn set_release_while_idle(&self, release: bool) {
         let _ = self.commands.send(Command::SetReleaseWhileIdle(release));
     }
@@ -490,9 +547,10 @@ impl Owner {
         device_name: String,
         recording_environment: RecordingEnvironmentController,
         pending_input: PendingInputEvents,
-        release_while_idle: bool,
+        access: MicrophoneAccess,
         engine: Option<Arc<TranscriptionEngine>>,
     ) -> (Self, DictationAudio) {
+        let release_while_idle = access.release_while_idle();
         let state = Arc::new(State {
             sample_rate: AtomicU64::new(if input.is_open() {
                 u64::from(input.sample_rate())
@@ -506,6 +564,7 @@ impl Owner {
             recognition_generation: AtomicU64::new(0),
             outstanding_recognition_frames: Arc::new(AtomicU64::new(0)),
             capture_generation: AtomicU64::new(0),
+            gated: AtomicBool::new(!access.granted()),
         });
         let capture = new_capture(
             if input.is_open() {
@@ -521,6 +580,7 @@ impl Owner {
         let stream_opened_at = input.is_open().then(Instant::now);
         let owner = Self {
             input,
+            access,
             release_while_idle,
             pending_capture: None,
             capture,
@@ -583,6 +643,12 @@ impl Owner {
     fn handle(&mut self, command: Command) -> bool {
         match command {
             Command::Start { at, kind, reply } => {
+                // No permission: record nothing and open nothing. The first
+                // refusal asks or tells; the next ones are quiet.
+                if !self.access.admit() {
+                    let _ = reply.send(false);
+                    return true;
+                }
                 // Draining can discover a failure belonging to the previous capture or idle
                 // period. Validate and advance the new capture only after that drain.
                 if self.input.is_open() && !self.input.is_recovering() {
@@ -657,6 +723,7 @@ impl Owner {
                     }
                 }
                 self.state.recording.store(false, Ordering::Release);
+                self.follow_permission();
                 let _ = reply.send(finish);
                 if let Some(event) = deferred {
                     self.handle_input(event);
@@ -669,13 +736,18 @@ impl Owner {
                 }
                 self.capture.cancel();
                 self.state.recording.store(false, Ordering::Release);
+                self.follow_permission();
                 let _ = reply.send(());
             }
             Command::SelectMicrophone { revision, device } => {
                 self.input.request_selection(revision, device.as_deref());
             }
             Command::SetReleaseWhileIdle(release) => {
-                self.release_while_idle = release;
+                self.access.set_wanted(release);
+                self.release_while_idle = self.access.release_while_idle();
+                self.state
+                    .gated
+                    .store(!self.access.granted(), Ordering::Release);
             }
             #[cfg(test)]
             Command::InvalidateRecognition { reply } => {
@@ -699,6 +771,18 @@ impl Owner {
             Command::Shutdown => return false,
         }
         true
+    }
+
+    /// A capture just ended, so a permission change can apply now: a grant
+    /// restores the saved policy (the capture that followed it ran as a
+    /// cold open, and the input it opened stays warm if that is the
+    /// policy); a revocation closes the input once idle. Never mid-capture,
+    /// so the tone and boundary the listener chose stay right.
+    fn follow_permission(&mut self) {
+        let gated = !self.access.granted();
+        if self.state.gated.swap(gated, Ordering::AcqRel) != gated {
+            self.release_while_idle = self.access.release_while_idle();
+        }
     }
 
     fn drain_through(&mut self, boundary: CaptureInstant) {
@@ -1148,7 +1232,7 @@ mod tests {
             "Test microphone".into(),
             RecordingEnvironmentController::for_test(),
             PendingInputEvents::default(),
-            false,
+            MicrophoneAccess::unrestricted(false),
             None,
         );
         input.state.recovering.store(false, Ordering::Release);
@@ -1836,7 +1920,7 @@ mod tests {
             device.into(),
             RecordingEnvironmentController::for_test(),
             PendingInputEvents::default(),
-            false,
+            MicrophoneAccess::unrestricted(false),
             None,
         )
         .expect("a missing microphone should enter recovery, not stop the listener");
@@ -1886,7 +1970,7 @@ mod tests {
                 "Test microphone".into(),
                 RecordingEnvironmentController::for_test(),
                 pending_input,
-                false,
+                MicrophoneAccess::unrestricted(false),
                 None,
             )
             .unwrap();
@@ -1924,7 +2008,7 @@ mod tests {
             "Missing microphone".into(),
             RecordingEnvironmentController::for_test(),
             PendingInputEvents::default(),
-            false,
+            MicrophoneAccess::unrestricted(false),
             None,
         )
         .unwrap();
@@ -2497,5 +2581,64 @@ mod tests {
         drop(open_sink(&mut owner, 4, at));
         chunk_at(&mut owner, at + Duration::from_millis(10));
         assert!(owner.capture_sink.is_none());
+    }
+    /// The owner with the microphone permission missing and a counter on every
+    /// stream it asks to open.
+    fn gated_owner(
+        wanted: bool,
+    ) -> (
+        Owner,
+        DictationAudio,
+        crate::dictation::microphone_access::fakes::Opens,
+    ) {
+        use crate::dictation::microphone_access::fakes::{Fake, Opens};
+        let opens = Opens::default();
+        let input = RecoveringAudioInput::closed_with(opens.opener(), None, 0, None);
+        let (owner, audio) = Owner::new(
+            input,
+            "System default".into(),
+            RecordingEnvironmentController::for_test(),
+            PendingInputEvents::default(),
+            MicrophoneAccess::with_permission(
+                Box::new(Fake::new(
+                    crate::desktop::onboarding::PermissionState::NeedsSettings,
+                )),
+                wanted,
+            ),
+            None,
+        );
+        (owner, audio, opens)
+    }
+
+    /// A stream failure normally reopens the microphone. With none open and no
+    /// permission, there is nothing to reopen and nothing may open.
+    #[test]
+    fn an_interrupted_stream_never_reopens_while_the_permission_is_missing() {
+        for wanted in [false, true] {
+            let (mut owner, _audio, opens) = gated_owner(wanted);
+            owner.handle_input(RecoveringAudioInputEvent::Interrupted);
+            owner.reconcile_input();
+            owner.handle_input(RecoveringAudioInputEvent::OpenFailed("test".into()));
+            owner.reconcile_input();
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(opens.count(), 0, "wanted {wanted}");
+            assert!(!owner.input.is_active(), "wanted {wanted}");
+        }
+    }
+
+    /// The stated exception: Annotate's capture sink is a user action that
+    /// macOS asks about itself, so it opens the microphone with or without
+    /// the dictation permission read. It is not a dictation path.
+    #[cfg(hex_capture)]
+    #[test]
+    fn the_capture_sink_is_the_one_open_path_the_gate_does_not_cover() {
+        let (mut owner, _audio, opens) = gated_owner(false);
+        let _sink = open_sink(&mut owner, 4, capture_time());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while opens.count() == 0 {
+            assert!(Instant::now() < deadline, "the sink never asked to open");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(opens.count(), 1);
     }
 }

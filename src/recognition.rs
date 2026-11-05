@@ -389,7 +389,7 @@ pub fn listen(
     if hotkeys.dictation.is_recording() {
         let accepted = input.start(capture_boundary(
             &input,
-            microphone_policy.release_while_idle,
+            input.starts_cold(microphone_policy.release_while_idle),
         ))?;
         if accepted {
             events.dictation(DictationPhase::Started, "")?;
@@ -477,7 +477,8 @@ pub fn listen(
                         raw,
                         reply,
                     } => {
-                        let release_while_idle = microphone_policy.release_while_idle;
+                        let release_while_idle =
+                            input.starts_cold(microphone_policy.release_while_idle);
                         let other_recording = programmatic.is_some();
                         let suspended =
                             crate::app_settings::hotkey_capture_active() || input.is_recovering();
@@ -510,8 +511,10 @@ pub fn listen(
                         }
                         let id = next_programmatic_id;
                         next_programmatic_id = next_programmatic_id.wrapping_add(1).max(1);
-                        let boundary =
-                            capture_boundary(&input, microphone_policy.release_while_idle);
+                        let boundary = capture_boundary(
+                            &input,
+                            input.starts_cold(microphone_policy.release_while_idle),
+                        );
                         match input.start_programmatic(boundary) {
                             Ok(()) => {
                                 hotkeys.disarm_pending_gestures();
@@ -592,8 +595,10 @@ pub fn listen(
                             .is_some_and(|active| active.matches_owner(id, &owner_token))
                         {
                             let active = programmatic.take().expect("active dictation was checked");
-                            let boundary =
-                                capture_boundary(&input, microphone_policy.release_while_idle);
+                            let boundary = capture_boundary(
+                                &input,
+                                input.starts_cold(microphone_policy.release_while_idle),
+                            );
                             // The microphone may have failed before this
                             // finish reached the audio owner, with its loss
                             // still queued.
@@ -824,7 +829,7 @@ pub fn listen(
                 &input.device_name(),
                 &mut events,
                 indicator.as_ref(),
-                microphone_policy.release_while_idle,
+                input.starts_cold(microphone_policy.release_while_idle),
             )?;
         }
         let (next_microphone_revision, microphone) = crate::app_settings::microphone_selection();
@@ -849,7 +854,7 @@ pub fn listen(
                 &input.device_name(),
                 &mut events,
                 indicator.as_ref(),
-                microphone_policy.release_while_idle,
+                input.starts_cold(microphone_policy.release_while_idle),
             )?;
         }
         // The capture shortcut ignores keys while shortcuts are suspended or
@@ -925,7 +930,7 @@ pub fn listen(
                     &input.device_name(),
                     &mut events,
                     indicator.as_ref(),
-                    microphone_policy.release_while_idle,
+                    input.starts_cold(microphone_policy.release_while_idle),
                 )?;
                 if !accepted {
                     hotkeys.suspend(shortcut);
@@ -941,9 +946,9 @@ pub fn listen(
         if hotkeys.any_recording()
             && input.become_intentional(capture_boundary(
                 &input,
-                microphone_policy.release_while_idle,
+                input.starts_cold(microphone_policy.release_while_idle),
             ))?
-            && microphone_policy.release_while_idle
+            && input.starts_cold(microphone_policy.release_while_idle)
         {
             feedback::play(Tone::DictationStart);
         }

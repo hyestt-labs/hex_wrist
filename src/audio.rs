@@ -79,7 +79,7 @@ pub fn input_route_generation() -> u64 {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn notify_input_route_changed() {
+pub(crate) fn notify_input_route_changed() {
     INPUT_ROUTE_GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -274,7 +274,7 @@ type InputOpenResult = (u64, Result<Opened, String>);
 
 /// What an open resolves: `--device`, the saved microphone, and the open
 /// device's name, which is kept rather than reopened when it resolves again.
-struct OpenRequest {
+pub(crate) struct OpenRequest {
     device_override: Option<String>,
     selected_device: Option<String>,
     fallback: SelectedFallback,
@@ -297,7 +297,7 @@ impl OpenRequest {
     }
 }
 
-type Opener = Arc<dyn Fn(&OpenRequest) -> Result<Opened> + Send + Sync>;
+pub(crate) type Opener = Arc<dyn Fn(&OpenRequest) -> Result<Opened> + Send + Sync>;
 
 pub struct RecoveringAudioInput {
     input: Option<AudioInput>,
@@ -518,6 +518,9 @@ impl AudioInput {
             &device_name,
             follows_default.then(|| device_name.clone()),
         )?;
+        // The one line every real stream open leaves, for checks that the
+        // microphone stayed closed (Apple Watch only setup).
+        tracing::info!(device = %device_name, "microphone stream opened");
 
         Ok(Self {
             _stream: Some(started.stream),
@@ -596,13 +599,35 @@ impl AudioInput {
 }
 
 impl RecoveringAudioInput {
+    // macOS opens through `open_with` so its owner can gate the open.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn open(
         device_override: Option<&str>,
         selection_revision: u64,
         selected_device: Option<&str>,
     ) -> Self {
-        let mut input = Self::closed(device_override, selection_revision, selected_device);
-        let opened = open_configured_input(&OpenRequest {
+        Self::open_with(
+            Arc::new(open_configured_input),
+            device_override,
+            selection_revision,
+            selected_device,
+        )
+    }
+
+    /// [`Self::open`] through `opener`, which every later open uses too.
+    pub fn open_with(
+        opener: Opener,
+        device_override: Option<&str>,
+        selection_revision: u64,
+        selected_device: Option<&str>,
+    ) -> Self {
+        let mut input = Self::closed_with(
+            opener.clone(),
+            device_override,
+            selection_revision,
+            selected_device,
+        );
+        let opened = opener(&OpenRequest {
             device_override: device_override.map(str::to_owned),
             selected_device: selected_device.map(str::to_owned),
             fallback: SelectedFallback::Immediate,
@@ -633,7 +658,24 @@ impl RecoveringAudioInput {
         }
     }
 
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn closed(
+        device_override: Option<&str>,
+        selection_revision: u64,
+        selected_device: Option<&str>,
+    ) -> Self {
+        Self::closed_with(
+            Arc::new(open_configured_input),
+            device_override,
+            selection_revision,
+            selected_device,
+        )
+    }
+
+    /// Nothing open, and nothing opens until [`Self::request_open`] or a
+    /// recovery asks `opener` to.
+    pub fn closed_with(
+        opener: Opener,
         device_override: Option<&str>,
         selection_revision: u64,
         selected_device: Option<&str>,
@@ -648,7 +690,7 @@ impl RecoveringAudioInput {
             route_generation: input_route_generation(),
             selection_retry: MICROPHONE_RETRY_INITIAL,
             reports_new_devices: cfg!(target_os = "macos"),
-            opener: Arc::new(open_configured_input),
+            opener,
             route_generation_source: input_route_generation,
             outage: None,
         }
@@ -1125,7 +1167,7 @@ fn description_name<E: std::fmt::Display>(
 /// Resolves and opens the input, or keeps the open one when it resolves to
 /// the same device. A listed saved microphone that will not open falls back
 /// to the system default.
-fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
+pub(crate) fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
     if let Some(path) = fixture::path() {
         if request.keep.as_deref() == Some(fixture::NAME) {
             return Ok(Opened::Unchanged {
