@@ -1,17 +1,22 @@
 #!/bin/bash
-# End-to-end proof that Wristper Test.app receives Apple Watch dictations over
-# the production relay and pastes them into a real app, with no human in the
+# One command that proves Wristper Test.app takes Apple Watch dictations over
+# the production relay and pastes them into real apps, with no human in the
 # loop once the one-time permissions are granted.
 #
-#   stage 1  watch-sim: the shipping watch protocol code as a macOS CLI
-#   stage 2  the real watch app (DEBUG build) in a watchOS Simulator
+#   stage 1  watch-sim (the shipping watch protocol code as a macOS CLI):
+#            pairing, then English and Mandarin into TextEdit and Terminal
+#   stage 2  the real watch app (DEBUG build) in a watchOS Simulator, same cases
+#   stage 3  scenarios no unit test covers: keep_on_clipboard with an app
+#            switch, Enter and Undo (TextEdit, Terminal cat, a plain shell),
+#            a double Enter, a Chromium text field, and with --with-agents
+#            interactive claude and codex
+#   stage 4  the B2 live tests (cargo nextest, #[ignore] watch_live)
 #
-# Each stage pairs a fresh watch to the test app's own relay room, sends an
-# English and a Mandarin recording while TextEdit or Terminal (running cat)
-# has focus, and reads the text back from that app.
+# `--all` (the default) runs every stage and ends with one PASS/FAIL table.
 #
-# Exit status: 0 every case passed, 1 a case failed, 2 bad usage or a tool
-# is missing, 3 blocked on a one-time permission (the output says which).
+# Exit status: 0 every case passed, 1 a case failed, 2 bad usage or a tool is
+# missing, 3 blocked on a one-time permission or a locked screen (the output
+# lists each click). The script never tries to grant a permission itself.
 #
 # Never touches /Applications/Wristper.app, its data folder
 # (~/Library/Application Support/Wristper), its relay room, or its Keychain
@@ -24,18 +29,30 @@ build=1
 targets=textedit,terminal
 langs=en,zh
 keep=0
+with_agents=0
+preflight_only=0
+only=
+usage() {
+  echo "usage: $0 [--all] [--stage 1|2|3|4|all] [--skip-build] [--targets textedit,terminal] [--langs en,zh]"
+  echo "          [--only <regex on scenario names>] [--with-agents] [--preflight-only] [--keep-running]"
+}
 while [ $# -gt 0 ]; do
   case "$1" in
-    --stage) stage=$2; shift 2 ;;
+    --all) stage=all; shift ;;
+    --stage) stage=${2:-}; shift 2 ;;
     --skip-build) build=0; shift ;;
     --targets) targets=$2; shift 2 ;;
     --langs) langs=$2; shift 2 ;;
+    --only) only=$2; shift 2 ;;
+    --with-agents) with_agents=1; shift ;;
+    --preflight-only) preflight_only=1; shift ;;
     --keep-running) keep=1; shift ;;
-    -h|--help) sed -n 2,20p "$0"; echo; echo "usage: $0 [--stage 1|2|all] [--skip-build] [--targets textedit,terminal] [--langs en,zh] [--keep-running]"; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
+    -h|--help) sed -n 2,24p "$0"; echo; usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-case "$stage" in 1|2|all) ;; *) echo "--stage must be 1, 2, or all" >&2; exit 2 ;; esac
+case "$stage" in 1|2|3|4|all) ;; *) echo "--stage must be 1, 2, 3, 4, or all" >&2; exit 2 ;; esac
+stage_on() { [ "$stage" = all ] || [ "$stage" = "$1" ]; }
 
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
@@ -43,6 +60,8 @@ unset HEX_APPLICATION_SUPPORT_DIR HEX_WATCH_RELAY_BASE
 
 WRISTPER_SRC=${WRISTPER_SRC:-/Users/glenhsu/orca/workspaces/wristper/coding}
 WRISTPER_HOOKS_SRC=${WRISTPER_HOOKS_SRC:-/Users/glenhsu/orca/workspaces/wristper/sim-hooks}
+# Links the Rust test binary on this Mac (Xcode 26: -lswiftCompatibility56). Optional.
+WATCH_E2E_B2_ENV=${WATCH_E2E_B2_ENV:-/Users/glenhsu/orca/workspaces/hex_wrist/migration_to_hex/artifacts/wristper-migration-20261104/b2-test-env/env.sh}
 SIGN_IDENTITY=${SIGN_IDENTITY:-Developer ID Application: WEI CHIEH HSU (VQY3J86U79)}
 SIM_NAME=${WATCH_E2E_SIM_NAME:-Wristper E2E}
 SIM_TYPE=${WATCH_E2E_SIM_TYPE:-com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-11-46mm}
@@ -52,8 +71,13 @@ TEST_DATA="$HOME/Library/Application Support/Wristper Test"
 OLD_DATA="$HOME/Library/Application Support/Wristper"
 EN_TEXT=${WATCH_E2E_EN_TEXT:-Please send the quarterly report to the design team before Friday.}
 ZH_TEXT=${WATCH_E2E_ZH_TEXT:-今天下午三點在會議室討論新的產品設計。}
+AGENT_TEXT=${WATCH_E2E_AGENT_TEXT:-Reply with only the word pong.}
 EN_PASS=${WATCH_E2E_EN_PASS:-80}
 ZH_PASS=${WATCH_E2E_ZH_PASS:-60}
+# A page with no user data: one empty textarea, focused on load.
+CHROME_URL='data:text/html,%3Ctextarea%20id%3Dt%20autofocus%20style%3D%22width%3A90vw%3Bheight%3A80vh%22%3E%3C%2Ftextarea%3E'
+# Where claude and codex start (they ask to trust a folder they have not seen).
+AGENT_DIR=${WATCH_E2E_AGENT_DIR:-$root}
 
 app="$root/target/app/Wristper Test.app"
 hex="$app/Contents/MacOS/hex"
@@ -65,10 +89,16 @@ results="$out/results.jsonl"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$out/run.log" >&2; }
 die() { log "ERROR: $*"; exit "${2:-1}"; }
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+# run_to SECONDS CMD...: a command that a pending permission prompt could hang forever.
+run_to() { local s=$1; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@"; }
 
-for tool in jq python3 osascript say afconvert xcrun codesign; do
+for tool in jq python3 perl osascript say afconvert xcrun codesign pbcopy pbpaste; do
   command -v "$tool" >/dev/null || die "missing tool: $tool" 2
 done
+if stage_on 4; then
+  command -v cargo >/dev/null || die "missing tool: cargo (stage 4)" 2
+  cargo nextest --version >/dev/null 2>&1 || die "missing cargo-nextest (brew install cargo-nextest)" 2
+fi
 
 # Safety: the test build's data root is its own, and nothing below names the
 # installed app's folder.
@@ -76,14 +106,101 @@ done
 
 log_pid=
 sim_udid=
+keep_setting_original=
 cleanup() {
   [ -n "$log_pid" ] && kill "$log_pid" 2>/dev/null
+  if [ -n "$keep_setting_original" ] && [ -x "$hex" ]; then
+    "$hex" settings set labs.keep_on_clipboard "$keep_setting_original" >/dev/null 2>&1
+  fi
   if [ "$keep" = 0 ]; then
     [ -x "$hex" ] && "$hex" quit >/dev/null 2>&1
     [ -n "$sim_udid" ] && xcrun simctl shutdown "$sim_udid" >/dev/null 2>&1
   fi
 }
 trap cleanup EXIT
+
+# --- preflight --------------------------------------------------------------
+# Everything that needs a human is collected here and reported once, as a
+# BLOCKED block with exit status 3. Nothing here tries to grant anything.
+
+blocked=()
+need() { blocked+=("$1"); }
+
+# The app that runs this script: TCC attributes Automation and Accessibility to it.
+runner_app() {
+  local pid=$$ comm name i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -n "$pid" ] && [ "$pid" -gt 1 ] || break
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null)
+    case "$comm" in
+      *.app/*) name=${comm%%.app/*}; echo "${name##*/}"; return ;;
+    esac
+  done
+  echo "the app that runs this script (Terminal, iTerm, Orca, or codex's host)"
+}
+
+# (A pipe into grep -q would die of SIGPIPE under pipefail, so capture first.)
+screen_locked() { local o; o=$(ioreg -n Root -d1 2>/dev/null); [[ $o == *'"IOConsoleLocked" = Yes'* ]]; }
+
+# probe_automation APP: can the runner send Apple events to APP? Adds to `blocked` when not.
+probe_automation() {
+  local appname=$1 err rc runner
+  runner=$(runner_app)
+  err=$(run_to 25 osascript -e "tell application \"$appname\" to get name" 2>&1 >/dev/null); rc=$?
+  [ $rc = 0 ] && return 0
+  need "Automation: in System Settings > Privacy & Security > Automation, turn on \"$appname\" under \"$runner\" (or click OK when macOS asks). osascript said: ${err:-timed out waiting for the prompt}"
+  return 1
+}
+
+# The runner needs Accessibility for the B2 live tests and Automation of System Events to prove it.
+probe_runner_accessibility() {
+  local err rc runner
+  runner=$(runner_app)
+  err=$(run_to 25 osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1 >/dev/null); rc=$?
+  [ $rc = 0 ] && return 0
+  if grep -qi 'assistive' <<<"$err"; then
+    need "Accessibility: in System Settings > Privacy & Security > Accessibility, turn on \"$runner\" (the stage 4 live tests read the focused field through it)."
+  else
+    need "Automation: in System Settings > Privacy & Security > Automation, turn on \"System Events\" under \"$runner\", and in Accessibility turn on \"$runner\". osascript said: ${err:-timed out waiting for the prompt}"
+  fi
+}
+
+# Chrome must allow the throwaway page to be read back through AppleScript.
+probe_chrome() {
+  local id err rc
+  [ -d "/Applications/Google Chrome.app" ] || { need "Install Google Chrome (the Chromium read-back scenario opens a throwaway data: page in it)."; return; }
+  probe_automation "Google Chrome" || return
+  id=$(chrome_open) || true
+  if [ -z "$id" ]; then
+    need "Chrome did not open the throwaway page; check Google Chrome starts and no modal dialog is open."
+    return
+  fi
+  err=$(run_to 25 osascript -e "tell application \"Google Chrome\" to execute active tab of window id $id javascript \"1+1\"" 2>&1 >/dev/null); rc=$?
+  chrome_close "$id"
+  [ $rc = 0 ] || need "Chrome: choose View > Developer > Allow JavaScript from Apple Events in Google Chrome (once; the read-back uses it). osascript said: ${err:-timed out}"
+}
+
+print_blocked() {
+  local i=1 line
+  {
+    echo
+    echo "BLOCKED: ${#blocked[@]} thing(s) need a human on this Mac before the run can continue."
+    echo "The script never grants permissions itself. Do each step once, then run again with --skip-build:"
+    for line in "${blocked[@]}"; do echo "  $i. $line"; i=$((i + 1)); done
+    echo "Wristper Test is left running so you can grant its permissions."
+  } | tee -a "$out/run.log"
+  keep=1
+  exit 3
+}
+
+# A locked screen hides every window from Accessibility and AppleScript. It is
+# only recorded here: the build below still runs, and check_permissions then
+# reports it with everything else. The script never tries to unlock it.
+if screen_locked; then
+  need "The screen is locked (IOConsoleLocked). Unlock this Mac and keep it awake and idle for the run (about 15 min; System Settings > Lock Screen can keep it from locking again). Nothing here unlocks it."
+  log "screen is locked: GUI scenarios cannot run; building only"
+fi
 
 # --- build ------------------------------------------------------------------
 
@@ -94,7 +211,7 @@ build_mac_app() {
   # build-app.sh signs a test build ad hoc, whose identity changes with every
   # build, so macOS forgets its Accessibility and Microphone grants each
   # time. Re-signing with the Developer ID keeps one identity across builds.
-  if security find-identity -v -p codesigning | grep -qF "$SIGN_IDENTITY"; then
+  if [[ $(security find-identity -v -p codesigning) == *"$SIGN_IDENTITY"* ]]; then
     log "re-signing with $SIGN_IDENTITY"
     {
       codesign --force --options runtime --sign "$SIGN_IDENTITY" "$app/Contents/Library/HexMicrophone.driver" &&
@@ -117,13 +234,18 @@ build_watch_sim() {
 [ -x "$hex" ] || die "$app is missing; run without --skip-build" 2
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "$TEST_BUNDLE" ] \
   || die "$app is not $TEST_BUNDLE" 2
-{ [ "$build" = 1 ] || [ ! -x "$sim" ]; } && build_watch_sim
+if { [ "$build" = 1 ] || [ ! -x "$sim" ]; } && { stage_on 1 || stage_on 3; }; then build_watch_sim; fi
 
 # --- the test app -----------------------------------------------------------
 
 status_json() { "$hex" status --json 2>/dev/null; }
 
 start_app() {
+  if [ "$build" = 1 ] && status_json >/dev/null; then
+    log "restarting Wristper Test so the new build runs (hex quit)"
+    "$hex" quit >/dev/null 2>&1
+    for _ in $(seq 1 30); do status_json >/dev/null || break; sleep 1; done
+  fi
   if status_json >/dev/null; then
     log "Wristper Test is already running"
   else
@@ -158,36 +280,38 @@ select_model() { # lang
   log "model: $(jq -r '.model.name + " (" + .model.id + ", " + .model.language + ")"' <<<"$s")"
 }
 
-ensure_ready() {
-  local s mic ax
+# Every missing permission, listed together. Until unit C adds the setup page
+# to the Wristper build, the listener also waits for Microphone.
+check_permissions() {
+  local s mic ax t
   s=$(status_json)
   echo "$s" > "$out/status-ready.json"
   mic=$(jq -r .permissions.microphone <<<"$s")
   ax=$(jq -r .permissions.accessibility <<<"$s")
-  if [ "$mic" != ready ] || [ "$ax" != ready ]; then
-    cat <<EOF | tee -a "$out/run.log"
-
-BLOCKED: Wristper Test needs a one-time permission (microphone=$mic, accessibility=$ax).
-The listener that turns watch audio into pasted text starts only after
-Microphone, Accessibility, and the speech model are all ready.
-Do this once on this Mac, then run the script again with --skip-build:
-  1. Run: "$hex" window show
-  2. In the Wristper Test window, click Allow for Microphone in the setup page.
-  3. In System Settings > Privacy & Security > Accessibility, turn on "Wristper Test".
-     If it is not listed, click +, and add: $app
-  4. If the status still says needs-restart, run: "$hex" restart
-Wristper Test is left running so you can grant them.
-EOF
-    keep=1
-    exit 3
+  if [ "$mic" != ready ]; then
+    need "Microphone for Wristper Test.app ($mic): run \"$hex\" window show, then click Allow for Microphone in the setup page."
   fi
+  if [ "$ax" != ready ]; then
+    need "Accessibility for Wristper Test.app ($ax): System Settings > Privacy & Security > Accessibility, turn on \"Wristper Test\"; if it is not listed click + and add $app. Then run \"$hex\" restart if the status stays needs-restart."
+  fi
+  if ! screen_locked; then
+    for t in TextEdit Terminal; do probe_automation "$t"; done
+    if stage_on 3 && { [ -z "$only" ] || [[ chrome =~ $only ]]; }; then probe_chrome; fi
+    if stage_on 4; then probe_runner_accessibility; fi
+  fi
+  [ ${#blocked[@]} -eq 0 ] || print_blocked
+  log "preflight: permissions ready"
+}
+
+wait_listener() {
+  local s
   for _ in $(seq 1 30); do
     [ "$(status_json | jq -r .listener.running)" = true ] && break
     sleep 1
   done
   s=$(status_json)
   [ "$(jq -r .listener.running <<<"$s")" = true ] || die "listener not running: $(jq -c .listener <<<"$s")"
-  log "listener running; permissions ready"
+  log "listener running"
 }
 
 # --- fixtures ---------------------------------------------------------------
@@ -195,22 +319,41 @@ EOF
 voice_for() { say -v '?' | awk -v loc="$1" '$0 ~ loc {print $1; exit}'; }
 
 make_fixtures() {
-  local en zh
+  local en zh l
   en=$(say -v '?' | awk '/^Samantha /{print "Samantha"; exit}'); [ -n "$en" ] || en=$(voice_for en_US)
   zh=$(say -v '?' | awk '/^Meijia /{print "Meijia"; exit}'); [ -n "$zh" ] || zh=$(voice_for zh_TW)
   [ -n "$zh" ] || die "no zh_TW voice for say; install one in System Settings > Accessibility > Spoken Content" 2
-  say -v "$en" -o "$out/en.aiff" "$EN_TEXT" && say -v "$zh" -o "$out/zh.aiff" "$ZH_TEXT" || die "say failed"
+  say -v "$en" -o "$out/en.aiff" "$EN_TEXT" && say -v "$zh" -o "$out/zh.aiff" "$ZH_TEXT" \
+    && say -v "$en" -o "$out/agent.aiff" "$AGENT_TEXT" || die "say failed"
   # The watch's recorder: 16 kHz mono AAC at 32 kbps in .m4a (WatchProbe/ProbeModel.swift recorderSettings).
-  for l in en zh; do
+  for l in en zh agent; do
     afconvert -f m4af -d aac@16000 -c 1 -b 32000 "$out/$l.aiff" "$out/$l.m4a" || die "afconvert failed for $l"
   done
-  log "fixtures: en ($en) $(stat -f%z "$out/en.m4a") B, zh ($zh) $(stat -f%z "$out/zh.m4a") B"
+  log "fixtures: en ($en) $(stat -f%z "$out/en.m4a") B, zh ($zh) $(stat -f%z "$out/zh.m4a") B, agent $(stat -f%z "$out/agent.m4a") B"
 }
 
-text_for() { [ "$1" = zh ] && echo "$ZH_TEXT" || echo "$EN_TEXT"; }
+text_for() { case "$1" in zh) echo "$ZH_TEXT" ;; agent) echo "$AGENT_TEXT" ;; *) echo "$EN_TEXT" ;; esac; }
 pass_for() { [ "$1" = zh ] && echo "$ZH_PASS" || echo "$EN_PASS"; }
 
 # --- targets ----------------------------------------------------------------
+# textedit: a new document. terminal: a Terminal window running cat.
+# shell: a Terminal window at a plain zsh prompt. chrome: a throwaway page.
+# claude, codex: a Terminal window running that agent.
+
+kind_of() {
+  case "$1" in
+    textedit) echo textedit ;;
+    terminal|shell|claude|codex) echo terminal ;;
+    chrome) echo chrome ;;
+  esac
+}
+
+chrome_open() {
+  run_to 40 osascript -e 'tell application "Google Chrome"' -e 'activate' \
+    -e 'set w to make new window with properties {mode:"incognito"}' \
+    -e "set URL of active tab of w to \"$CHROME_URL\"" -e 'delay 2' -e 'return id of w' -e 'end tell'
+}
+chrome_close() { run_to 20 osascript -e "tell application \"Google Chrome\" to close window id $1" >/dev/null 2>&1; }
 
 # Prints a handle for the opened target.
 open_target() {
@@ -221,38 +364,55 @@ open_target() {
     terminal)
       osascript -e 'tell application "Terminal"' -e 'activate' -e 'set t to do script "clear; cat"' \
         -e 'delay 1' -e 'return tty of t' -e 'end tell' ;;
+    shell)
+      osascript -e 'tell application "Terminal"' -e 'activate' -e 'set t to do script "clear"' \
+        -e 'delay 1.5' -e 'return tty of t' -e 'end tell' ;;
+    claude|codex)
+      osascript -e 'tell application "Terminal"' -e 'activate' \
+        -e "set t to do script \"cd '$AGENT_DIR' && clear && $1\"" \
+        -e 'delay 12' -e 'return tty of t' -e 'end tell' ;;
+    chrome) chrome_open ;;
   esac
 }
 
 focus_target() {
-  case "$1" in
+  case "$(kind_of "$1")" in
     textedit)
       osascript -e "tell application \"TextEdit\"" -e "activate" \
         -e "set index of (first window whose name is \"$2\") to 1" -e "end tell" >/dev/null ;;
     terminal)
       osascript -e 'tell application "Terminal"' -e 'activate' -e 'repeat with w in windows' \
         -e "if tty of selected tab of w is \"$2\" then set index of w to 1" -e 'end repeat' -e 'end tell' >/dev/null ;;
+    chrome)
+      osascript -e 'tell application "Google Chrome"' -e 'activate' \
+        -e "set index of (first window whose id is $2) to 1" -e 'delay 0.5' \
+        -e "execute active tab of window id $2 javascript \"document.getElementById('t').focus()\"" \
+        -e 'end tell' >/dev/null ;;
   esac
 }
 
 read_target() {
-  case "$1" in
+  case "$(kind_of "$1")" in
     textedit) osascript -e "tell application \"TextEdit\" to return text of document \"$2\"" ;;
     terminal)
       osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' \
         -e "if tty of selected tab of w is \"$2\" then return contents of selected tab of w" \
         -e 'end repeat' -e 'end tell' ;;
+    chrome)
+      osascript -e "tell application \"Google Chrome\" to execute active tab of window id $2 javascript \"document.getElementById('t').value\"" ;;
   esac
 }
 
 close_target() {
-  case "$1" in
+  case "$(kind_of "$1")" in
     textedit) osascript -e "tell application \"TextEdit\" to close document \"$2\" saving no" >/dev/null 2>&1 ;;
     terminal)
-      pkill -t "${2#/dev/}" cat 2>/dev/null
+      # Only processes on this window's own tty; never by name across the system.
+      pkill -t "${2#/dev/}" -f 'cat|claude|codex' 2>/dev/null
       osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' \
         -e "if tty of selected tab of w is \"$2\" then do script \"exit\" in selected tab of w" \
         -e 'end repeat' -e 'end tell' >/dev/null 2>&1 ;;
+    chrome) chrome_close "$2" ;;
   esac
 }
 
@@ -265,52 +425,242 @@ record() {
   log "stage $1 $2 $3: $4 (match ${5}%, state $6, ${7} ms)"
 }
 
-judge() { # lang readback -> percent
+judge() { # lang-or-kind readback -> percent
   "$sim" match --expected "$(text_for "$1")" --actual "$2" | jq -r .percent
 }
 
-# --- stage 1: watch-sim -----------------------------------------------------
+want() { [ -z "$only" ] || [[ $1 =~ $only ]]; }
 
-stage1() {
+# --- watch-sim cases (stages 1 and 3) ---------------------------------------
+
+sim_paired=0
+pair_sim() { # stage
   export WATCH_SIM_STATE="$out/watch-sim-state"
-  log "stage 1: pairing watch-sim through the production relay"
-  "$sim" pair --timeout 150 > "$out/stage1-pair.jsonl" 2>&1 &
+  log "stage $1: pairing watch-sim through the production relay"
+  "$sim" pair --timeout 150 > "$out/stage$1-pair.jsonl" 2>&1 &
   local pid=$! code=
   for _ in $(seq 1 30); do
-    code=$(jq -r 'select(.event=="code") | .code' "$out/stage1-pair.jsonl" 2>/dev/null | head -1)
+    code=$(jq -r 'select(.event=="code") | .code' "$out/stage$1-pair.jsonl" 2>/dev/null | head -1)
     [ -n "$code" ] && break
     sleep 0.5
   done
-  [ -n "$code" ] || { cat "$out/stage1-pair.jsonl" >&2; die "watch-sim got no pairing code"; }
+  [ -n "$code" ] || { cat "$out/stage$1-pair.jsonl" >&2; die "watch-sim got no pairing code"; }
   log "watch-sim code $code; hex watch pair $code"
   "$hex" watch pair "$code" 2>&1 | tee -a "$out/run.log"
   wait "$pid"
-  jq -e 'select(.event=="paired") | .ok' "$out/stage1-pair.jsonl" >/dev/null \
-    || { cat "$out/stage1-pair.jsonl" >&2; record 1 pairing - FAIL 0 unpaired 0 "" "null"; return; }
-  record 1 pairing - PASS 100 paired "$(jq -r 'select(.event=="paired") | .ms' "$out/stage1-pair.jsonl")" "" \
-    "$(jq -c 'select(.event=="paired")' "$out/stage1-pair.jsonl")"
+  jq -e 'select(.event=="paired") | .ok' "$out/stage$1-pair.jsonl" >/dev/null \
+    || { cat "$out/stage$1-pair.jsonl" >&2; record "$1" pairing - FAIL 0 unpaired 0 "" "null"; return 1; }
+  record "$1" pairing - PASS 100 paired "$(jq -r 'select(.event=="paired") | .ms' "$out/stage$1-pair.jsonl")" "" \
+    "$(jq -c 'select(.event=="paired")' "$out/stage$1-pair.jsonl")"
+  sim_paired=1
+}
 
-  local target lang handle report readback percent state started ms result enter
+# sim_run TARGET AUDIO [watch-sim deliver args...]
+# Opens the target, focuses it, delivers AUDIO (en, zh, agent) from watch-sim,
+# reads the target back. Sets SC_REPORT (JSON), SC_READBACK, SC_MS, SC_HANDLE.
+SC_REPORT=null; SC_READBACK=; SC_MS=0; SC_HANDLE=; SC_FILE="$out/readback.txt"
+sim_run() {
+  local target=$1 audio=$2 started
+  shift 2
+  SC_REPORT=null; SC_READBACK=; SC_MS=0
+  SC_HANDLE=$(open_target "$target") || SC_HANDLE=
+  [ -n "$SC_HANDLE" ] || { SC_REPORT='{"event":"no-target"}'; : > "$SC_FILE"; return 1; }
+  sleep 1
+  focus_target "$target" "$SC_HANDLE"
+  started=$(now_ms)
+  SC_REPORT=$("$sim" deliver --audio "$out/$audio.m4a" --timeout 90 "$@" | tail -1)
+  SC_MS=$(( $(now_ms) - started ))
+  jq -e . >/dev/null 2>&1 <<<"$SC_REPORT" || SC_REPORT=$(jq -Rn --arg r "$SC_REPORT" '{raw:$r}')
+  sleep 1
+  read_target "$target" "$SC_HANDLE" > "$SC_FILE" 2>/dev/null
+  SC_READBACK=$(cat "$SC_FILE")
+}
+
+# After sim_run for a target that stays open (agents), close it.
+sim_close() { close_target "$1" "$SC_HANDLE"; }
+
+rj() { jq -r "$1" <<<"$SC_REPORT" 2>/dev/null; }          # a field of the report
+FAILS=
+chk() { [ "$1" = ok ] || FAILS="$FAILS; $2"; }              # chk ok|bad "what failed"
+is() { if "$@"; then echo ok; else echo bad; fi; }
+breaks() { tr -cd '\r\n' < "$SC_FILE" | wc -c | tr -d ' '; }  # line breaks in the read-back
+count() { grep -o -- "$1" "$SC_FILE" | wc -l | tr -d ' '; }  # occurrences of a string
+
+# finish STAGE SCENARIO LANG PERCENT: records PASS when FAILS is empty.
+finish() {
+  local result=PASS
+  [ -z "$FAILS" ] || result=FAIL
+  record "$1" "$2" "$3" "$result" "$4" "$(rj '.state // .event')" "$SC_MS" \
+    "$(tr '\r\n' '  ' <"$SC_FILE" | tail -c 200)" "$(jq -c --arg f "${FAILS#; }" '. + {fails:$f}' <<<"$SC_REPORT")"
+  FAILS=
+}
+
+judged() { # lang -> percent, with the pass threshold check
+  SC_PERCENT=$(judge "$1" "$SC_READBACK"); SC_PERCENT=${SC_PERCENT:-0}
+  chk "$(is [ "$SC_PERCENT" -ge "$(pass_for "$1")" ])" "read-back matches only ${SC_PERCENT}%"
+}
+
+stage1() {
+  pair_sim 1 || return
+  local target lang
   for lang in ${langs//,/ }; do
     select_model "$lang"
     for target in ${targets//,/ }; do
-      handle=$(open_target "$target") || { record 1 "$target" "$lang" FAIL 0 no-target 0 "" null; continue; }
-      sleep 1
-      focus_target "$target" "$handle"
-      enter=; [ "$target" = terminal ] && enter=--enter
-      started=$(now_ms)
-      report=$("$sim" deliver --audio "$out/$lang.m4a" --timeout 90 $enter | tail -1)
-      ms=$(( $(now_ms) - started ))
-      sleep 1
-      readback=$(read_target "$target" "$handle")
-      close_target "$target" "$handle"
-      percent=$(judge "$lang" "$readback")
-      state=$(jq -r '.state // .event' <<<"$report")
-      result=FAIL; [ "${percent:-0}" -ge "$(pass_for "$lang")" ] && result=PASS
-      record 1 "$target" "$lang" "$result" "$percent" "$state" "$ms" \
-        "$(tr '\n' ' ' <<<"$readback" | tail -c 200)" "$report"
+      sim_run "$target" "$lang"
+      sim_close "$target"
+      judged "$lang"
+      chk "$(is [ "$(rj '.terminal')" = true ])" "no terminal state ($(rj '.state'))"
+      finish 1 "$target" "$lang" "$SC_PERCENT"
     done
   done
+}
+
+# --- stage 3: scenarios no test covers --------------------------------------
+
+set_keep() { "$hex" settings set labs.keep_on_clipboard "$1" >/dev/null 2>&1; sleep 1; }
+
+scenario_clipboard() {
+  local sentinel="WATCH-E2E-SENTINEL-$RANDOM$RANDOM" board
+  keep_setting_original=$("$hex" settings get labs.keep_on_clipboard 2>/dev/null)
+  [ "$keep_setting_original" = true ] && keep_setting_original=on || keep_setting_original=off
+
+  if want clipboard-keep-switch; then
+    # keep_on_clipboard on, the person switches app after the recording started:
+    # the dictation is withheld and the clipboard they had must still be there.
+    set_keep on; printf %s "$sentinel" | pbcopy
+    sim_run textedit en --after-focus 'open -a Finder; sleep 2'
+    board=$(pbpaste)
+    sim_close textedit
+    chk "$(is [ "$(rj '.state')" = target-changed ])" "state is $(rj '.state'), want target-changed"
+    chk "$(is [ "$board" = "$sentinel" ])" "clipboard is '${board:0:60}', want the sentinel back"
+    chk "$(is [ "$(count Friday)" = 0 ])" "text reached the document anyway"
+    SC_PERCENT=0; finish 3 clipboard-keep-switch en "$SC_PERCENT"
+  fi
+
+  if want clipboard-keep-paste; then
+    # keep_on_clipboard on, no switch: the dictation stays on the clipboard.
+    set_keep on; printf %s "$sentinel" | pbcopy
+    sim_run textedit en
+    sleep 5; board=$(pbpaste)
+    sim_close textedit
+    judged en
+    chk "$(is [ "$(judge en "$board")" -ge "$EN_PASS" ])" "clipboard is '${board:0:60}', want the dictation"
+    finish 3 clipboard-keep-paste en "$SC_PERCENT"
+  fi
+
+  if want clipboard-default-restore; then
+    # keep_on_clipboard off (the default): the clipboard comes back after the paste.
+    set_keep off; printf %s "$sentinel" | pbcopy
+    sim_run textedit en
+    sleep 6; board=$(pbpaste)
+    sim_close textedit
+    judged en
+    chk "$(is [ "$board" = "$sentinel" ])" "clipboard is '${board:0:60}', want the sentinel restored"
+    finish 3 clipboard-default-restore en "$SC_PERCENT"
+  fi
+  set_keep "$keep_setting_original"
+}
+
+scenario_enter_undo() {
+  if want textedit-enter; then
+    sim_run textedit en --enter; sim_close textedit
+    judged en
+    chk "$(is [ "$(rj '.enter.body.ok')" = true ])" "enter reply: $(rj '.enter|tostring')"
+    chk "$(is [ "$(( $(breaks) - 1 ))" = 1 ])" "Return typed $(( $(breaks) - 1 )) times, want 1"
+    finish 3 textedit-enter en "$SC_PERCENT"
+  fi
+  if want textedit-undo; then
+    sim_run textedit en --undo; sim_close textedit
+    SC_PERCENT=$(judge en "$SC_READBACK"); SC_PERCENT=${SC_PERCENT:-0}
+    chk "$(is [ "$(rj '.undo.body.ok')" = true ])" "undo reply: $(rj '.undo|tostring')"
+    chk "$(is [ "$SC_PERCENT" -lt 20 ])" "text is still in the document after undo (${SC_PERCENT}%)"
+    finish 3 textedit-undo en "$SC_PERCENT"
+  fi
+  if want cat-enter; then
+    sim_run terminal en --enter; sim_close terminal
+    judged en
+    chk "$(is [ "$(rj '.enter.body.ok')" = true ])" "enter reply: $(rj '.enter|tostring')"
+    chk "$(is [ "$(count quarterly)" -ge 2 ])" "cat did not echo the line (Return not typed)"
+    finish 3 cat-enter en "$SC_PERCENT"
+  fi
+  if want cat-undo; then
+    # Undo is never offered in a terminal: the reply must refuse and the line must stay.
+    sim_run terminal en --undo; sim_close terminal
+    judged en
+    chk "$(is [ "$(rj '.undo.body.ok')" = false ])" "undo in a terminal was not refused: $(rj '.undo|tostring')"
+    finish 3 cat-undo en "$SC_PERCENT"
+  fi
+  if want shell-enter; then
+    sim_run shell en --enter; sim_close shell
+    judged en
+    chk "$(is [ "$(rj '.enter.body.ok')" = true ])" "enter reply: $(rj '.enter|tostring')"
+    chk "$(is [ "$(count 'command not found')" = 1 ])" "the shell ran the line $(count 'command not found') times, want 1"
+    finish 3 shell-enter en "$SC_PERCENT"
+  fi
+}
+
+scenario_double_enter() {
+  local ok
+  if want enter-twice-textedit; then
+    sim_run textedit en --enter-twice; sim_close textedit
+    judged en
+    ok=$(jq -r '[.enters[].body.ok] | map(select(. == true)) | length' <<<"$SC_REPORT" 2>/dev/null)
+    chk "$(is [ "${ok:-0}" = 1 ])" "$ok of 2 Enter calls reported ok, want 1: $(rj '.enters|tostring')"
+    chk "$(is [ "$(( $(breaks) - 1 ))" = 1 ])" "Return typed $(( $(breaks) - 1 )) times, want 1"
+    finish 3 enter-twice-textedit en "$SC_PERCENT"
+  fi
+  if want enter-twice-shell; then
+    sim_run shell en --enter-twice; sim_close shell
+    judged en
+    chk "$(is [ "$(count 'command not found')" = 1 ])" "the shell ran the line $(count 'command not found') times, want 1"
+    finish 3 enter-twice-shell en "$SC_PERCENT"
+  fi
+}
+
+scenario_chrome() {
+  local lang
+  for lang in ${langs//,/ }; do
+    want "chrome-$lang" || want chrome || continue
+    select_model "$lang"
+    sim_run chrome "$lang"; sim_close chrome
+    judged "$lang"
+    chk "$(is [ "$(rj '.terminal')" = true ])" "no terminal state ($(rj '.state'))"
+    finish 3 chrome-textarea "$lang" "$SC_PERCENT"
+  done
+}
+
+# Off by default: needs the user's claude and codex logins and spends tokens.
+scenario_agents() {
+  local agent n
+  for agent in claude codex; do
+    want "agent-$agent" || continue
+    if ! command -v "$agent" >/dev/null; then
+      SC_REPORT='{"event":"missing"}'; SC_MS=0; : > "$SC_FILE"; FAILS="$agent is not installed"
+      finish 3 "agent-$agent" en 0; continue
+    fi
+    sim_run "$agent" agent --enter
+    judged agent
+    chk "$(is [ "$(rj '.enter.body.ok')" = true ])" "enter reply: $(rj '.enter|tostring')"
+    # The agent answers "pong" only if Return really submitted the prompt.
+    for n in $(seq 1 45); do
+      read_target "$agent" "$SC_HANDLE" > "$SC_FILE" 2>/dev/null
+      [ "$(grep -io 'pong' "$SC_FILE" | wc -l | tr -d ' ')" -ge 2 ] && break
+      sleep 2
+    done
+    chk "$(is [ "$(grep -io 'pong' "$SC_FILE" | wc -l | tr -d ' ')" -ge 2 ])" "no reply from $agent within 90 s: Return did not submit, or $agent needs a login or a folder trust in $AGENT_DIR"
+    sim_close "$agent"
+    finish 3 "agent-$agent" en "$SC_PERCENT"
+  done
+}
+
+stage3() {
+  [ "$sim_paired" = 1 ] || pair_sim 3 || return
+  select_model en
+  scenario_clipboard
+  scenario_enter_undo
+  scenario_double_enter
+  scenario_chrome
+  [ "$with_agents" = 1 ] && { select_model en; scenario_agents; }
 }
 
 # --- stage 2: the real watch app in a watchOS Simulator ---------------------
@@ -328,9 +678,10 @@ sim_device() {
 }
 
 wait_log() { # pattern timeout-seconds start-line -> matching line
-  local i
+  local i m
   for i in $(seq 1 $(( $2 * 2 ))); do
-    if tail -n +"$3" "$out/stage2-watch.log" | grep -m1 -E "$1"; then return 0; fi
+    m=$(tail -n +"$3" "$out/stage2-watch.log" | grep -E "$1"; true)
+    if [ -n "$m" ]; then echo "${m%%$'\n'*}"; return 0; fi
     sleep 0.5
   done
   return 1
@@ -415,24 +766,48 @@ stage2() {
   done
 }
 
+# --- stage 4: the B2 live tests ---------------------------------------------
+
+stage4() {
+  local log4="$out/stage4-live.log" name res rc
+  log "stage 4: cargo nextest run --locked --bin hex --run-ignored only -E 'test(watch_live)'"
+  [ -f "$WATCH_E2E_B2_ENV" ] && . "$WATCH_E2E_B2_ENV"
+  # One test at a time: both drive the same screen.
+  (cd "$root" && cargo nextest run --locked --bin hex --run-ignored only -E 'test(watch_live)' --no-fail-fast -j 1) > "$log4" 2>&1
+  rc=$?
+  # Lines like "        PASS [   3.2s] hex watch::live_tests::watch_live_…"; failures print again in the summary.
+  while read -r res name; do
+    [ "$res" = PASS ] || res=FAIL
+    record 4 "${name##*::}" - "$res" "$([ "$res" = PASS ] && echo 100 || echo 0)" "$(tr 'A-Z' 'a-z' <<<"$res")" 0 "" "null"
+  done < <(sed -nE 's/^ *(PASS|FAIL|SIGABRT|SIGSEGV|SIGKILL|TIMEOUT|LEAK) +\[[^]]*\] +(.* )?([^ ]*watch_live[^ ]*).*$/\1 \3/p' "$log4" | awk '!seen[$2]++')
+  if ! jq -e 'select(.stage=="4")' "$results" >/dev/null 2>&1; then
+    record 4 live - FAIL 0 "no-test-ran(exit $rc)" 0 "$(tail -c 200 "$log4" | tr '\n' ' ')" null
+  elif [ $rc -ne 0 ] && ! jq -e 'select(.stage=="4" and .result!="PASS")' "$results" >/dev/null; then
+    record 4 live - FAIL 0 "nextest-exit-$rc" 0 "$(tail -c 200 "$log4" | tr '\n' ' ')" null
+  fi
+}
+
 # --- run --------------------------------------------------------------------
 
 start_app
+check_permissions
+[ "$preflight_only" = 1 ] && { log "preflight OK"; echo "PREFLIGHT: OK"; exit 0; }
 select_model "${langs%%,*}"
-ensure_ready
+wait_listener
 make_fixtures
-case "$stage" in
-  1) stage1 ;;
-  2) stage2 ;;
-  all) stage1; stage2 ;;
-esac
+stage_on 1 && stage1
+stage_on 2 && stage2
+stage_on 3 && stage3
+stage_on 4 && stage4
 
 echo
-printf '%-5s %-9s %-4s %-6s %6s %-12s %7s  %s\n' STAGE TARGET LANG RESULT MATCH STATE MS "READ BACK"
-jq -r '[.stage,.target,.lang,.result,(.match_percent+"%"),.state,.ms,(.text|.[0:70])] | @tsv' "$results" |
-  while IFS=$'\t' read -r a b c d e f g h; do printf '%-5s %-9s %-4s %-6s %6s %-12s %7s  %s\n' "$a" "$b" "$c" "$d" "$e" "$f" "$g" "$h"; done
+printf '%-5s %-26s %-4s %-6s %6s %-14s %7s  %s\n' STAGE SCENARIO LANG RESULT MATCH STATE MS "READ BACK"
+jq -r '[.stage,.target,.lang,.result,(.match_percent+"%"),.state,.ms,(.text|.[0:60]),((.detail.fails // "")|tostring)] | @tsv' "$results" |
+  while IFS=$'\t' read -r a b c d e f g h i; do
+    printf '%-5s %-26s %-4s %-6s %6s %-14s %7s  %s\n' "$a" "$b" "$c" "$d" "$e" "$f" "$g" "$h"
+    [ -n "$i" ] && printf '        └ %s\n' "$i"
+  done
 echo
-echo "Enter: Wristper B1 answers /enter with not-supported; the stage 1 terminal rows show it under detail.enter (B2 adds Enter)."
 echo "Details: $results"
 if jq -e 'select(.result!="PASS")' "$results" >/dev/null; then
   echo "RESULT: FAIL"; exit 1

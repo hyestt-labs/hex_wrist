@@ -13,9 +13,10 @@ struct WatchSim {
             case "pair": try await pair(timeout: Double(option(args, "--timeout") ?? "180") ?? 180)
             case "deliver": try await deliver(args)
             case "health": try await health()
+            case "action": try await action(args)
             case "match": match(expected: option(args, "--expected") ?? "", actual: option(args, "--actual") ?? "")
             default:
-                emit(["event": "usage", "usage": "watch-sim pair [--timeout s] | deliver --audio <m4a> [--language auto] [--enter] [--timeout s] | health | match --expected <text> --actual <text>"])
+                emit(["event": "usage", "usage": "watch-sim pair [--timeout s] | deliver --audio <m4a> [--language auto] [--after-focus <sh>] [--enter] [--enter-twice] [--undo] [--timeout s] | action --path /enter|/undo --id <uuid> | health | match --expected <text> --actual <text>"])
                 exit(2)
             }
         } catch {
@@ -107,6 +108,29 @@ struct WatchSim {
         return (reply.status, body, state)
     }
 
+    /// One watch action (`/enter`, `/undo`) through the shipping watch code's own
+    /// encrypted `sendAction`, with the Mac's reply kept verbatim.
+    static func rawAction(_ target: PairedMac, _ path: String, id: UUID) async -> [String: Any] {
+        switch await WatchMacStatus.sendAction(target: target, path: path, id: id, timeout: 20) {
+        case .reply(let status, let body):
+            let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            return ["status": status, "body": json ?? String(decoding: body, as: UTF8.self)]
+        case .noReply: return ["status": 0, "error": "no-reply"]
+        case .unauthenticated: return ["status": 401, "error": "unauthenticated"]
+        case .relayFailure(let failure): return ["status": 0, "error": "\(failure)"]
+        }
+    }
+
+    static func action(_ args: [String]) async throws {
+        guard let target = WatchMacTargetStore.selected(), target.isEncrypted,
+              let path = option(args, "--path"), let id = option(args, "--id").flatMap(UUID.init) else {
+            throw BridgeError.notConfigured
+        }
+        var report = await rawAction(target, path, id: id)
+        report["event"] = "action"
+        emit(report)
+    }
+
     /// WatchDelivery.swift `DeliveryPolicy.isTerminal`, minus the agent states.
     static let terminal: Set<String> = ["pasted", "unverified", "saved", "copied", "failed", "target-changed",
                                         "not-editable", "sensitive", "suspect", "segmented", "undone"]
@@ -124,6 +148,15 @@ struct WatchSim {
         let refusal = await WatchMacStatus.captureFocus(target: target, id: id)
         report["focus_ms"] = ms(since: started)
         report["focus_refusal"] = refusal.map { "\($0)" } as Any
+        if let hook = option(args, "--after-focus") {
+            // The person switches app between starting the recording and its audio arriving.
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/sh")
+            task.arguments = ["-c", hook]
+            try task.run()
+            task.waitUntilExit()
+            report["after_focus_exit"] = Int(task.terminationStatus)
+        }
 
         let sendStart = Date()
         let result = try await WatchMacBridge.send(audio: audio, id: id, room: target.room, token: target.token,
@@ -149,9 +182,19 @@ struct WatchSim {
 
         if args.contains("--enter") {
             let enterStart = Date()
-            let entered = await WatchMacStatus.pressEnter(target: target, id: id)
-            report["enter"] = entered == .entered ? "entered" : "\(entered)"
+            report["enter"] = await rawAction(target, "/enter", id: id)
             report["enter_ms"] = ms(since: enterStart)
+        }
+        if args.contains("--enter-twice") {
+            // Two /enter calls at the same moment, as a watch double tap or a retry would send them.
+            async let first = rawAction(target, "/enter", id: id)
+            async let second = rawAction(target, "/enter", id: id)
+            report["enters"] = await [first, second]
+        }
+        if args.contains("--undo") {
+            // Undo needs the read-back to have confirmed the paste (up to 1 s after it).
+            try await Task.sleep(for: .seconds(2))
+            report["undo"] = await rawAction(target, "/undo", id: id)
         }
         report["total_ms"] = ms(since: started)
         report["ok"] = report["terminal"] as? Bool ?? false
