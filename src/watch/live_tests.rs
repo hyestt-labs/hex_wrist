@@ -39,6 +39,15 @@ fn osascript(script: &str) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// The text of the element that has focus now.
+fn text_of_focus() -> String {
+    MacScreen
+        .focused()
+        .and_then(|focused| focused.element)
+        .and_then(|element| element.0.value())
+        .unwrap_or_default()
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(1200));
 }
@@ -177,13 +186,13 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
         Some(true),
         "the read-back saw the text"
     );
-    let value = MacScreen.value(field.pid).unwrap_or_default();
+    let value = text_of_focus();
     assert!(value.contains("hello from the watch"), "{value:?}");
 
     // Enter inserts a line break in the same field.
     assert_eq!(rig.press(Key::Enter, &field), KeyOutcome::Pressed);
     std::thread::sleep(Duration::from_millis(300));
-    let value = MacScreen.value(field.pid).unwrap_or_default();
+    let value = text_of_focus();
     assert!(
         value.ends_with('\n'),
         "Return went into the field: {value:?}"
@@ -194,7 +203,7 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
     assert_eq!(confirmation(&events, Duration::from_secs(3)), Some(true));
     assert_eq!(rig.press(Key::Undo, &field), KeyOutcome::Pressed);
     std::thread::sleep(Duration::from_millis(400));
-    let value = MacScreen.value(field.pid).unwrap_or_default();
+    let value = text_of_focus();
     assert!(!value.contains("second words"), "undone: {value:?}");
 
     // Another application in front: nothing is pasted, nothing is pressed.
@@ -220,7 +229,7 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
     assert_eq!(rig.press(Key::Enter, &field), KeyOutcome::TargetChanged);
     osascript(r#"tell application "TextEdit" to activate"#);
     settle();
-    let value = MacScreen.value(field.pid).unwrap_or_default();
+    let value = text_of_focus();
     assert!(!value.contains("should not land"), "{value:?}");
 }
 

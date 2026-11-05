@@ -9,8 +9,8 @@
 use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryOutcome, WatchDelivery};
-use super::desktop::{Held, Screen};
-use super::field::{Gate, gate, read_back_confirms};
+use super::desktop::Held;
+use super::field::{ElementRef, Gate, gate, read_back_confirms};
 use super::recording::Verification;
 use super::{suspect, zh};
 
@@ -65,8 +65,9 @@ pub(crate) struct Delivered {
 /// Holds the keyboard lock until the read-back is done.
 pub(crate) struct FollowUp {
     held: Held,
-    desktop: super::desktop::Desktop,
-    pid: i32,
+    /// The element the paste went into; `None` when it could not be kept,
+    /// and the paste then stays unconfirmed.
+    element: Option<ElementRef>,
     terminal: bool,
     text: String,
     before: Option<String>,
@@ -89,22 +90,16 @@ impl FollowUp {
     fn run(self, delivery: &WatchDelivery, sleep: impl FnMut(Duration)) {
         let Self {
             held,
-            desktop,
-            pid,
+            element,
             terminal,
             text,
             before,
             restore,
         } = self;
         let confirmed = !terminal
-            && wait_for_text(
-                desktop.screen(),
-                pid,
-                &text,
-                before.as_deref(),
-                READ_BACK_TIMEOUT,
-                sleep,
-            );
+            && element.as_ref().is_some_and(|element| {
+                wait_for_text(element, &text, before.as_deref(), READ_BACK_TIMEOUT, sleep)
+            });
         // Before the keyboard is released: an Enter parked on the lock must
         // find the record already upgraded, or `on_confirmed` sees `entered`
         // and the paste stays `unverified` for good.
@@ -128,12 +123,11 @@ pub(crate) fn restore_delay(terminal: bool, read_back_confirmed: bool) -> Durati
     }
 }
 
-/// Looks for `text` in the focused field of `pid` until `timeout`. The
+/// Looks for `text` in `element`, the one that was pasted into, until `timeout`. The
 /// field must differ from `before`, so text that was already there does not
 /// confirm a paste that never landed.
 pub(crate) fn wait_for_text(
-    screen: &dyn Screen,
-    pid: i32,
+    element: &ElementRef,
     text: &str,
     before: Option<&str>,
     timeout: Duration,
@@ -141,7 +135,7 @@ pub(crate) fn wait_for_text(
 ) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        let value = screen.value(pid);
+        let value = element.0.value();
         if read_back_confirms(text, before, value.as_deref()) {
             return true;
         }
@@ -210,39 +204,44 @@ pub(crate) fn deliver(
     // again right before ⌘V. A switch inside the last few microseconds is
     // still possible; AX offers no way to pin the target.
     let decision = match first {
-        Gate::Paste { target, .. } => {
-            let before = screen.value(target.pid);
+        Gate::Paste { .. } => {
+            let element = focused.as_ref().and_then(|focused| focused.element.clone());
+            let before = element.as_ref().and_then(|element| element.0.value());
             let again = screen.focused();
             let second = gate(&job.expectation, again.as_ref(), screen.secure_input());
-            let before = match &second {
-                Gate::Paste { target: now, .. } if now.pid == target.pid => before,
-                Gate::Paste { target: now, .. } => screen.value(now.pid),
-                _ => None,
+            // The read-back follows the element focused now, which the second
+            // gate just judged; `before` comes from the same element.
+            let now = again.as_ref().and_then(|focused| focused.element.clone());
+            let same = match (&element, &now) {
+                (Some(first), Some(second)) => first == second,
+                (None, None) => true,
+                _ => false,
             };
-            (second, before)
+            let (element, before) = match (&second, same) {
+                (Gate::Paste { .. }, true) => (element, before),
+                (Gate::Paste { .. }, false) => {
+                    let before = now.as_ref().and_then(|element| element.0.value());
+                    (now, before)
+                }
+                _ => (None, None),
+            };
+            (second, element, before)
         }
-        other => (other, None),
+        other => (other, None, None),
     };
     match decision {
-        (Gate::Withhold(withheld), _) => done(DeliveryOutcome::Withheld(withheld), None),
-        (Gate::Copy, _) => {
+        (Gate::Withhold(withheld), ..) => done(DeliveryOutcome::Withheld(withheld), None),
+        (Gate::Copy, ..) => {
             inserter.copy(&text, commit)?;
             done(DeliveryOutcome::Copied, None)
         }
-        (
-            Gate::Paste {
-                target,
-                verification,
-            },
-            before,
-        ) => {
+        (Gate::Paste { verification, .. }, element, before) => {
             let terminal = verification == Verification::Terminal;
             let before = if terminal { None } else { before };
             let inserted = inserter.insert(&text, commit)?;
             let follow_up = FollowUp {
                 held,
-                desktop: desktop.clone(),
-                pid: target.pid,
+                element,
                 terminal,
                 text: inserted.text,
                 before,

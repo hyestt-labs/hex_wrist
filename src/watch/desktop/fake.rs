@@ -1,11 +1,11 @@
 //! A scripted `Screen` for tests: no Accessibility, no key events.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::watch::desktop::Screen;
-use crate::watch::field::{FieldSnapshot, Focused, Rect};
+use crate::watch::field::{Element, ElementRef, FieldSnapshot, Focused, Rect};
 
 #[derive(Default)]
 pub(crate) struct FakeScreen {
@@ -18,8 +18,8 @@ pub(crate) struct FakeScreen {
     pub(crate) focus_script: Mutex<VecDeque<Option<Focused>>>,
     /// How long each `focused` read takes.
     pub(crate) focus_delay: Mutex<std::time::Duration>,
-    /// What `value` answers, one entry per call; the last repeats.
-    pub(crate) values: Mutex<VecDeque<Option<String>>>,
+    /// The element every focused field without its own is read through.
+    pub(crate) element: Arc<FakeElement>,
     /// The keys pressed: `return` or `undo`.
     pub(crate) keys: Mutex<Vec<&'static str>>,
 }
@@ -41,10 +41,7 @@ impl FakeScreen {
     }
 
     pub(crate) fn script_values(&self, values: impl IntoIterator<Item = Option<&'static str>>) {
-        *self.values.lock().unwrap() = values
-            .into_iter()
-            .map(|value| value.map(str::to_owned))
-            .collect();
+        self.element.script(values);
     }
 }
 
@@ -58,23 +55,11 @@ impl Screen for FakeScreen {
     }
 
     fn focused(&self) -> Option<Focused> {
-        let delay = *self.focus_delay.lock().unwrap();
-        if !delay.is_zero() {
-            std::thread::sleep(delay);
+        let mut focused = self.read_focus()?;
+        if focused.element.is_none() {
+            focused.element = Some(ElementRef(self.element.clone()));
         }
-        if let Some(scripted) = self.focus_script.lock().unwrap().pop_front() {
-            return scripted;
-        }
-        self.focus.lock().unwrap().clone()
-    }
-
-    fn value(&self, _pid: i32) -> Option<String> {
-        let mut values = self.values.lock().unwrap();
-        if values.len() > 1 {
-            values.pop_front().flatten()
-        } else {
-            values.front().cloned().flatten()
-        }
+        Some(focused)
     }
 
     fn press_return(&self) -> Result<(), String> {
@@ -91,6 +76,51 @@ impl Screen for FakeScreen {
         }
         self.keys.lock().unwrap().push("undo");
         Ok(())
+    }
+}
+
+impl FakeScreen {
+    fn read_focus(&self) -> Option<Focused> {
+        let delay = *self.focus_delay.lock().unwrap();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        if let Some(scripted) = self.focus_script.lock().unwrap().pop_front() {
+            return scripted;
+        }
+        self.focus.lock().unwrap().clone()
+    }
+}
+
+/// A field's text, scripted: one answer per read, the last repeating.
+#[derive(Default)]
+pub(crate) struct FakeElement {
+    values: Mutex<VecDeque<Option<String>>>,
+}
+
+impl FakeElement {
+    pub(crate) fn scripted(values: impl IntoIterator<Item = Option<&'static str>>) -> Arc<Self> {
+        let element = Arc::new(Self::default());
+        element.script(values);
+        element
+    }
+
+    fn script(&self, values: impl IntoIterator<Item = Option<&'static str>>) {
+        *self.values.lock().unwrap() = values
+            .into_iter()
+            .map(|value| value.map(str::to_owned))
+            .collect();
+    }
+}
+
+impl Element for FakeElement {
+    fn value(&self) -> Option<String> {
+        let mut values = self.values.lock().unwrap();
+        if values.len() > 1 {
+            values.pop_front().flatten()
+        } else {
+            values.front().cloned().flatten()
+        }
     }
 }
 
@@ -120,6 +150,7 @@ pub(crate) fn text_area(pid: i32) -> FieldSnapshot {
 pub(crate) fn editable(field: FieldSnapshot) -> Focused {
     Focused {
         field,
+        element: None,
         editable: true,
     }
 }

@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::watch::delivery::{DeliveryEvent, DeliveryReport, Job};
 use crate::watch::desktop::Desktop;
-use crate::watch::desktop::fake::{FakeScreen, editable, text_area};
-use crate::watch::field::{Expectation, FieldSnapshot, Focused, Withheld};
+use crate::watch::desktop::fake::{FakeElement, FakeScreen, editable, text_area};
+use crate::watch::field::{ElementRef, Expectation, FieldSnapshot, Focused, Withheld};
 
 #[derive(Default)]
 struct FakeInserter {
@@ -180,6 +180,7 @@ fn a_field_that_cannot_be_edited_withholds() {
         Expectation::Field(text_area(7)),
         Some(Focused {
             field: text_area(7),
+            element: None,
             editable: false,
         }),
     );
@@ -519,4 +520,50 @@ fn a_switch_to_a_password_field_before_the_paste_is_sensitive() {
         DeliveryOutcome::Withheld(Withheld::PasswordField)
     );
     assert!(rig.inserter.inserted.is_empty());
+}
+
+fn focused_through(field: FieldSnapshot, element: &Arc<FakeElement>) -> Focused {
+    Focused {
+        field,
+        element: Some(ElementRef(element.clone())),
+        editable: true,
+    }
+}
+
+/// Catches confirming a paste because another field, which already held
+/// the words, had focus when the read-back looked: undo would then be
+/// offered for a paste that never reached the field it is undone in.
+#[test]
+fn the_read_back_reads_the_element_that_was_pasted_into() {
+    let pasted_into = FakeElement::scripted([Some("")]);
+    let elsewhere = FakeElement::scripted([Some("hello there")]);
+    let mut rig = in_field();
+    {
+        let mut script = rig.screen.focus_script.lock().unwrap();
+        script.push_back(Some(focused_through(text_area(7), &pasted_into)));
+        script.push_back(Some(focused_through(text_area(7), &pasted_into)));
+    }
+    // After the paste, focus has moved to another field of the same app.
+    rig.screen
+        .set_focus(Some(focused_through(text_area(7), &elsewhere)));
+    let delivered = say(&mut rig, "hello there");
+    reported(&rig, &delivered);
+    delivered.follow_up.unwrap().run(&rig.delivery, |_| {});
+    assert_eq!(confirmations(&rig), [false]);
+    assert_eq!(*rig.inserter.restores.lock().unwrap(), [RESTORE_GRACE]);
+}
+
+#[test]
+fn the_read_back_confirms_when_the_pasted_element_shows_the_words() {
+    let pasted_into = FakeElement::scripted([Some(""), Some("hello there")]);
+    let mut rig = in_field();
+    {
+        let mut script = rig.screen.focus_script.lock().unwrap();
+        script.push_back(Some(focused_through(text_area(7), &pasted_into)));
+        script.push_back(Some(focused_through(text_area(7), &pasted_into)));
+    }
+    let delivered = say(&mut rig, "hello there");
+    reported(&rig, &delivered);
+    delivered.follow_up.unwrap().run(&rig.delivery, |_| {});
+    assert_eq!(confirmations(&rig), [true]);
 }

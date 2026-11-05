@@ -2,9 +2,17 @@
 //! the keys. Every read is bounded by `accessibility`'s messaging timeout.
 
 use super::desktop::Screen;
-use super::field::{FieldSnapshot, Focused, Rect};
+use super::field::{Element, ElementRef, FieldSnapshot, Focused, Rect};
 
 pub(crate) struct MacScreen;
+
+struct MacElement(crate::accessibility::FieldElement);
+
+impl Element for MacElement {
+    fn value(&self) -> Option<String> {
+        self.0.value()
+    }
+}
 
 fn rect(frame: [f64; 4]) -> Rect {
     Rect {
@@ -44,6 +52,7 @@ impl Screen for MacScreen {
         let (bundle_id, app_name) = application(field.pid);
         Some(Focused {
             editable: field.editable,
+            element: Some(ElementRef(std::sync::Arc::new(MacElement(field.element)))),
             field: FieldSnapshot {
                 pid: field.pid,
                 role: field.role,
@@ -58,10 +67,6 @@ impl Screen for MacScreen {
                 app_name,
             },
         })
-    }
-
-    fn value(&self, pid: i32) -> Option<String> {
-        crate::accessibility::focused_value(pid)
     }
 
     fn press_return(&self) -> Result<(), String> {

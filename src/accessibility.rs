@@ -261,6 +261,23 @@ pub struct FocusedField {
     pub window: Option<[f64; 4]>,
     /// The value is settable, or the role is a text input.
     pub editable: bool,
+    /// The element itself, to read its value later.
+    pub element: FieldElement,
+}
+
+/// A retained Accessibility element. Core Foundation objects may be used
+/// from any thread; each read is bounded by the element's messaging timeout.
+pub struct FieldElement(CfObject);
+
+// SAFETY: A retained CFType; AXUIElement reads are thread-safe.
+unsafe impl Send for FieldElement {}
+unsafe impl Sync for FieldElement {}
+
+impl FieldElement {
+    /// The element's text value.
+    pub fn value(&self) -> Option<String> {
+        copy_string(&self.0, c"AXValue")
+    }
 }
 
 /// The frontmost application's focused element. Every element is bounded
@@ -292,15 +309,8 @@ pub fn focused_field() -> Option<FocusedField> {
         window,
         editable: is_editable(&element, &role),
         role,
+        element: FieldElement(element),
     })
-}
-
-/// The text value of the focused element when it belongs to `pid`.
-pub fn focused_value(pid: i32) -> Option<String> {
-    // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
-    let application = bounded_element(unsafe { AXUIElementCreateApplication(pid) })?;
-    let element = copy_element(&application, c"AXFocusedUIElement")?;
-    copy_string(&element, c"AXValue")
 }
 
 fn is_editable(element: &CfObject, role: &str) -> bool {

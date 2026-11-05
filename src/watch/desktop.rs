@@ -24,8 +24,6 @@ pub(crate) trait Screen: Send + Sync {
     fn secure_input(&self) -> bool;
     /// The frontmost application's focused element.
     fn focused(&self) -> Option<Focused>;
-    /// The text value of the focused element, when it belongs to `pid`.
-    fn value(&self, pid: i32) -> Option<String>;
     fn press_return(&self) -> Result<(), String>;
     /// ⌘Z.
     fn press_undo(&self) -> Result<(), String>;

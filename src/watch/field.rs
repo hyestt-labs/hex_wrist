@@ -148,10 +148,35 @@ pub(crate) enum Expectation {
     Missing,
 }
 
+/// The live Accessibility element a field was read from, kept so the
+/// read-back reads the very element that was pasted into and not whatever
+/// has focus later.
+pub(crate) trait Element: Send + Sync {
+    /// The element's text value.
+    fn value(&self) -> Option<String>;
+}
+
+#[derive(Clone)]
+pub(crate) struct ElementRef(pub(crate) std::sync::Arc<dyn Element>);
+
+impl std::fmt::Debug for ElementRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ElementRef")
+    }
+}
+
+impl PartialEq for ElementRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// The focused element as the paste finds it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Focused {
     pub(crate) field: FieldSnapshot,
+    /// `None` when the platform could not keep the element.
+    pub(crate) element: Option<ElementRef>,
     /// `kAXValueAttribute` is settable, or the role is a text field, text
     /// area, combo box, search field, or cell.
     pub(crate) editable: bool,
@@ -325,7 +350,11 @@ mod tests {
     }
 
     fn focused(field: FieldSnapshot, editable: bool) -> Focused {
-        Focused { field, editable }
+        Focused {
+            field,
+            element: None,
+            editable,
+        }
     }
 
     #[test]

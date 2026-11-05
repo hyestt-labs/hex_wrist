@@ -119,7 +119,7 @@ Apple Watch                               // watch.pair, watch.dictate
   reaches History.
 - **Read-back and clipboard.** After ⌘V a background thread looks for the
   text that went in (not the text sent: a continuation join may add a space or
-  change case) in the focused field for 1 s; a change plus the words confirms
+  change case) in the element that was pasted into for 1 s; a change plus the words confirms
   (`pasted`, `read-back`). The clipboard comes back at once on confirmation,
   else after 4 s, through the same generation guard as every Hex paste (a
   newer paste or an outside change cancels it); an original carrying
@@ -200,8 +200,10 @@ Apple Watch                               // watch.pair, watch.dictate
   cancellation are checked after both reads, but Accessibility cannot pin the
   target, so a switch of app inside those last microseconds still sends the
   key to the new app. Needs the live check to size it.
-- The read-back reads the focused element of the app in front, not the
-  original element object Wristper kept; an app that moves focus inside its
-  own window right after ⌘V stays `unverified`.
+- The read-back keeps the AX element the paste went into and reads only that
+  element, as Wristper does with its first candidate; it does not also read
+  whatever has focus later. An app that replaces the field object after ⌘V
+  (some Electron apps, possibly Orca) therefore stays `unverified`, which
+  also keeps Undo closed. The live Orca and Slack check will show how often.
 - `/health`'s `model`, `model_id`, and `model_name` follow the saved
   transcription selection, not whether the model is loaded.
