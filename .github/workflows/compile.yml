@@ -1,7 +1,8 @@
 name: Compile
 
 # What a pull request runs, besides hex-agent-policy: a fast compile of the app
-# on Linux, macOS, and Windows x64 (cargo clippy, warnings as errors). Pull
+# on Linux, macOS, and Windows x64 (cargo clippy, warnings as errors), and on
+# Linux the Apple Watch tests. Pull
 # requests merge without waiting for it, and a breakage on dev goes to the CI
 # failure pipeline. The full suites (check-linux.yml, check-macos.yml,
 # check-windows.yml) run in Release's check and stable channels, and by hand.
@@ -10,6 +11,8 @@ name: Compile
 # cache saved by a pull request is visible to that pull request alone, so
 # without it every new pull request compiled from nothing. Pull requests
 # restore dev's cache and save none, which keeps them out of the 10 GB quota.
+# A failed run saves nothing: a cache saved before the build got far is never
+# replaced while its key still matches exactly.
 # Only code paths trigger it; a docs-only change runs nothing. No check here
 # is required, so a skipped run blocks no merge; making one required needs a
 # job that always reports first.
@@ -73,7 +76,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
       - name: Install native libraries
         run: |
           sudo apt-get update
@@ -82,6 +84,13 @@ jobs:
             libfontconfig1-dev libfreetype-dev libxcursor-dev libxi-dev \
             libxrandr-dev libopenblas-dev libvulkan-dev glslc libshaderc-dev
       - run: cargo clippy --locked --bin hex -- -D warnings
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
+        with:
+          tool: cargo-nextest
+      # The Apple Watch protocol core is pure and cross-platform, so every
+      # pull request runs its tests here; the full suites stay in check-*.yml.
+      # Windows takes longer than this whole job, so it adds no wall time.
+      - run: "cargo nextest run --locked --profile ci --bin hex watch::"
 
   macos:
     name: macOS
@@ -101,7 +110,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
       - name: Install the Metal toolchain
         run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
       - run: cargo clippy --locked --bin hex -- -D warnings
@@ -124,7 +132,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
       - name: Install the Vulkan SDK
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
         with:
