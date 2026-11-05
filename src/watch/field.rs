@@ -109,6 +109,8 @@ pub(crate) fn is_terminal(bundle_id: Option<&str>) -> bool {
 
 /// What the paste must match, decided when the audio is accepted.
 #[derive(Clone, Debug, PartialEq)]
+// Kept inline: one lives per recording, and the tests read it by value.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Expectation {
     /// The field `/focus` captured when the watch started recording.
     Field(FieldSnapshot),
@@ -168,6 +170,7 @@ impl Withheld {
 
 /// What the output worker does with the text.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Gate {
     /// Send ⌘V. `Terminal` is final at once; `None` awaits the read-back.
     Paste {

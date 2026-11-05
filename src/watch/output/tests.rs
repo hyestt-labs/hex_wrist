@@ -433,3 +433,51 @@ fn the_keyboard_stays_held_until_the_read_back_is_done() {
     waiting.recv_timeout(Duration::from_secs(2)).unwrap();
     probe.join().unwrap();
 }
+
+/// Catches an Enter, parked on the keyboard lock, pressing before the
+/// confirmation went out: the record would then stay `unverified` for good.
+#[test]
+fn the_confirmation_goes_out_before_the_keyboard_is_released() {
+    let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
+    screen.script_values([Some(""), Some("hello there")]);
+    let seen: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let log = Arc::clone(&seen);
+    let delivery = WatchDelivery::new(
+        Job {
+            id: "6f9619ff-8b86-d011-b42d-00c04fc964ff".into(),
+            language: "en".into(),
+            expectation: Expectation::Field(text_area(7)),
+            desktop: Desktop::inline(screen.clone()),
+        },
+        move |event| {
+            if let DeliveryEvent::Confirmed { verified } = event {
+                log.lock().unwrap().push(verified);
+            }
+        },
+    );
+    let mut inserter = FakeInserter::default();
+    let delivered = deliver(
+        &mut inserter,
+        &delivery,
+        &Request {
+            text: "hello there",
+            raw: "hello there",
+            copy_only: false,
+            preferred: &[],
+        },
+        &|| true,
+    )
+    .unwrap();
+    delivery.deliver(DeliveryReport::failed("placeholder report"));
+    // The thread that wins the lock after the read-back looks at what the
+    // watch thread has heard by then.
+    let desktop = delivery.job().desktop.clone();
+    let heard = Arc::clone(&seen);
+    let waiter = std::thread::spawn(move || {
+        let _held = desktop.lock();
+        heard.lock().unwrap().clone()
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    delivered.follow_up.unwrap().run(&delivery, |_| {});
+    assert_eq!(waiter.join().unwrap(), [true]);
+}

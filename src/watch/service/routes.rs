@@ -92,10 +92,10 @@ impl Core {
             ("GET", "/status") => self.status(&head.query, &device, inside, now),
             ("POST", "/focus") => return self.focus(&body, &device, reply, now),
             ("POST", "/enter") => {
-                return self.key_request(Key::Enter, &body, &device, reply, now);
+                return self.key_request(Key::Enter, &body, (&device, inside), reply, now);
             }
             ("POST", "/undo") => {
-                return self.key_request(Key::Undo, &body, &device, reply, now);
+                return self.key_request(Key::Undo, &body, (&device, inside), reply, now);
             }
             ("POST", "/ping") => Ok(ping(&head, now)),
             ("POST", "/pairing/request") => self.pairing_request(&body, now),

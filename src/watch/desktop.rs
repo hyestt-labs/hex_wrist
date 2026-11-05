@@ -86,6 +86,9 @@ impl Drop for Held {
     }
 }
 
+// A job is built, queued, and run once; boxing the snapshot would only add
+// an allocation per key press.
+#[allow(clippy::large_enum_variant)]
 enum Job {
     Capture(Done<Option<FieldSnapshot>>),
     Press {

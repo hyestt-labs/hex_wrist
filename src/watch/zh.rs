@@ -28,6 +28,23 @@ pub(crate) fn applies(language: &str) -> bool {
     language.is_empty() || language == "auto" || language.starts_with("zh")
 }
 
+/// Japanese shares kanji with Chinese, and s2tw would rewrite them (学 to
+/// 學), so a recording that carries kana is left as heard.
+fn has_kana(text: &str) -> bool {
+    text.chars()
+        .any(|character| ('\u{3040}'..='\u{30FF}').contains(&character))
+}
+
+/// What the watch pastes: `text` in Traditional Chinese when the recording
+/// is Chinese or undecided and not Japanese, else unchanged.
+pub(crate) fn for_recording(text: &str, language: &str) -> String {
+    if applies(language) && !has_kana(text) {
+        to_traditional(text)
+    } else {
+        text.to_owned()
+    }
+}
+
 /// `text` in Traditional Chinese with Taiwan character variants.
 pub(crate) fn to_traditional(text: &str) -> String {
     match TAIWAN.as_ref() {
@@ -72,5 +89,13 @@ mod tests {
         assert!(applies(""));
         assert!(!applies("en"));
         assert!(!applies("ja"));
+    }
+
+    #[test]
+    fn japanese_is_left_alone_even_when_the_language_is_undecided() {
+        // 学 is simplified-looking Japanese kanji; s2tw would make it 學.
+        assert_eq!(for_recording("学校へ行きます", "auto"), "学校へ行きます");
+        assert_eq!(for_recording("学校", ""), "學校");
+        assert_eq!(for_recording("学校", "en"), "学校");
     }
 }

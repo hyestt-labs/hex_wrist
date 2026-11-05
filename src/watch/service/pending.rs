@@ -168,6 +168,11 @@ pub(crate) enum Waiting {
     Settle {
         id: String,
         key: Key,
+        /// Who asked, and whether inside their own envelope: a plaintext
+        /// request parked before the watch ratcheted to E2EE-only is
+        /// refused when it is released.
+        device: String,
+        inside: bool,
         reply: Reply,
         deadline: Instant,
     },

@@ -301,3 +301,43 @@ fn another_watch_cannot_press_keys_for_a_recording() {
     );
     assert!(h.screen.keys().is_empty());
 }
+
+/// A plaintext Enter can park before the envelope that ratchets its watch
+/// to encrypted-only; it must be refused when the wait ends.
+#[test]
+fn a_parked_plaintext_enter_is_refused_once_the_watch_is_encrypted_only() {
+    let mut h = harness("enter-ratchet");
+    let watch = h.pair("watch-1");
+    h.screen.trusted.store(true, Ordering::SeqCst);
+    let headers = h.device_headers(&watch);
+    h.request(
+        "POST",
+        "/focus",
+        &[],
+        &headers,
+        format!(r#"{{"id":"{ID}"}}"#).as_bytes(),
+    )
+    .unwrap();
+    let head = audio_head(&watch, ID, "requested", h.now.epoch());
+    assert!(h.send_audio(&watch, &head, M4A).is_none());
+    let parked = h.request(
+        "POST",
+        "/enter",
+        &[],
+        &headers,
+        format!(r#"{{"id":"{ID}"}}"#).as_bytes(),
+    );
+    assert!(parked.is_none(), "the plaintext Enter waits");
+    let frame = format!("frame-{}", h.next_frame);
+    assert!(h.core.paired.require_e2ee(&watch.device));
+    h.deliver(
+        0,
+        report(DeliveryOutcome::Sent(Verification::Terminal), "ls"),
+    );
+    let (status, body) = h.take(&frame).expect("answered when released");
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (403, Some("e2ee-required"))
+    );
+    assert!(h.screen.keys().is_empty());
+}

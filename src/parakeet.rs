@@ -1889,6 +1889,134 @@ mod tests {
             "pathological token repetition: {text}"
         );
     }
+
+    mod watch_output {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use super::*;
+        use crate::watch::delivery::{DeliveryEvent, DeliveryOutcome, Job, WatchDelivery};
+        use crate::watch::desktop::Desktop;
+        use crate::watch::desktop::fake::{FakeScreen, editable, text_area};
+        use crate::watch::field::{Expectation, Withheld};
+        use crate::watch::output::{Inserted, Inserter};
+        use crate::watch::recording::Verification;
+
+        #[derive(Default)]
+        struct Typed(Vec<String>);
+
+        impl Inserter for Typed {
+            fn insert(&mut self, text: &str, _: &dyn Fn() -> bool) -> Result<Inserted, String> {
+                self.0.push(text.to_owned());
+                Ok(Inserted {
+                    text: text.to_owned(),
+                    restore: None,
+                })
+            }
+
+            fn copy(&mut self, _: &str, _: &dyn Fn() -> bool) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        fn run(
+            language: &str,
+            focus_pid: i32,
+            text: &str,
+        ) -> (
+            Vec<String>,
+            Option<String>,
+            mpsc::Receiver<DeliveryEvent>,
+            WorkerEvent,
+        ) {
+            let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(
+                focus_pid,
+            )))));
+            screen.script_values([Some(""), Some("hello there")]);
+            let (sink, events) = mpsc::channel();
+            let delivery = WatchDelivery::new(
+                Job {
+                    id: "6f9619ff-8b86-d011-b42d-00c04fc964ff".into(),
+                    language: language.into(),
+                    expectation: Expectation::Field(text_area(7)),
+                    desktop: Desktop::inline(screen),
+                },
+                move |event| {
+                    let _ = sink.send(event);
+                },
+            );
+            let job = OutputJob::Completed {
+                job_id: DictationJobId(1),
+                control: Arc::new(JobControl::default()),
+                target: TranscriptionTarget::Watch(delivery),
+                result: Box::new(Ok(CompletedTranscript {
+                    text: text.to_owned(),
+                    raw: text.to_owned(),
+                    application: None,
+                    timings: JobTimings {
+                        total_started: Instant::now(),
+                        queue_ms: 0,
+                        audio_ms: 1000,
+                        prepare_ms: 0,
+                        inference_ms: 5,
+                    },
+                    processing: None,
+                    recording: None,
+                })),
+            };
+            let mut typed = Typed::default();
+            let mut last = None;
+            let event = finish_output(
+                job,
+                &mut |_, _, _| panic!("a watch recording never uses the dictation paste"),
+                &mut typed,
+                &mut last,
+                None,
+            );
+            (typed.0, last, events, event)
+        }
+
+        fn reported(events: &mpsc::Receiver<DeliveryEvent>) -> DeliveryOutcome {
+            match events.recv_timeout(Duration::from_secs(2)).unwrap() {
+                DeliveryEvent::Report(report) => report.outcome,
+                other => panic!("the report comes first, not {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_sent_paste_reports_first_and_the_read_back_confirms_after() {
+            let (typed, last, events, event) = run("en", 7, "hello there");
+            assert_eq!(typed, ["hello there"]);
+            assert_eq!(last.as_deref(), Some("hello there"));
+            assert!(matches!(event, WorkerEvent::Completed { .. }));
+            assert_eq!(reported(&events), DeliveryOutcome::Sent(Verification::None));
+            assert!(matches!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                DeliveryEvent::Confirmed { verified: true }
+            ));
+        }
+
+        /// The field refused the text; Paste last must still be able to
+        /// give it back, since History never sees it.
+        #[test]
+        fn a_withheld_text_is_reported_and_stays_recoverable_by_paste_last() {
+            let (typed, last, events, _) = run("en", 8, "hello there");
+            assert!(typed.is_empty());
+            assert_eq!(last.as_deref(), Some("hello there"));
+            assert_eq!(
+                reported(&events),
+                DeliveryOutcome::Withheld(Withheld::TargetChanged)
+            );
+        }
+
+        #[test]
+        fn a_suspect_text_is_never_offered_again() {
+            let (typed, last, events, _) = run("en", 7, "Thank you.");
+            assert!(typed.is_empty());
+            assert_eq!(last, None);
+            assert!(matches!(reported(&events), DeliveryOutcome::Suspect(_)));
+        }
+    }
 }
 
 #[cfg(test)]

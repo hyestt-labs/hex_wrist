@@ -135,15 +135,17 @@ fn harness(name: &str) -> Harness {
         paired,
         crate::watch::delivered::load(&dir.join(DELIVERED_FILE)),
         dir.join(DELIVERED_FILE),
-        Box::new(Sink {
-            frames: Arc::clone(&frames),
-            connected: Arc::clone(&connected),
-        }),
-        Box::new(FakeDictation {
-            jobs: Arc::clone(&jobs),
-            refuse: Arc::clone(&refuse),
-        }),
-        Desktop::inline(screen.clone()),
+        state::Links {
+            outbound: Box::new(Sink {
+                frames: Arc::clone(&frames),
+                connected: Arc::clone(&connected),
+            }),
+            dictation: Box::new(FakeDictation {
+                jobs: Arc::clone(&jobs),
+                refuse: Arc::clone(&refuse),
+            }),
+            desktop: Desktop::inline(screen.clone()),
+        },
         inbox,
     );
     Harness {

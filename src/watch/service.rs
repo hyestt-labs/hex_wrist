@@ -31,7 +31,7 @@ use super::pairing::{self, PairedDevices, SecretStore};
 use super::relay::{NotConnected, Relay, RelayConfig, RelayEvent, RelayTiming};
 #[cfg(target_os = "macos")]
 use crate::recognition::RecognitionControl;
-use state::{Core, Flow, Identity, Now};
+use state::{Core, Flow, Identity, Links, Now};
 
 /// How long a claim may take from `claim`'s call to the relay's
 /// `claim_ok` or `claim_failed`, time in the inbox included.
@@ -274,9 +274,11 @@ impl WatchService {
                     paired,
                     delivered,
                     delivered_path,
-                    Box::new(relay),
-                    dictation,
-                    desktop,
+                    Links {
+                        outbound: Box::new(relay),
+                        dictation,
+                        desktop,
+                    },
                     core_inbox,
                 );
                 run(core, messages);

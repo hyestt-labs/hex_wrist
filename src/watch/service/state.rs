@@ -115,6 +115,13 @@ pub(crate) enum Flow {
     Exit,
 }
 
+/// What the `watch` thread talks to besides its inbox.
+pub(crate) struct Links {
+    pub(crate) outbound: Box<dyn Outbound>,
+    pub(crate) dictation: Box<dyn Dictation>,
+    pub(crate) desktop: Desktop,
+}
+
 pub(crate) struct Core {
     pub(super) identity: Identity,
     pub(super) paired: PairedDevices,
@@ -142,11 +149,14 @@ impl Core {
         paired: PairedDevices,
         delivered: DeliveredIds,
         delivered_path: PathBuf,
-        outbound: Box<dyn Outbound>,
-        dictation: Box<dyn Dictation>,
-        desktop: Desktop,
+        links: Links,
         inbox: mpsc::Sender<Message>,
     ) -> Self {
+        let Links {
+            outbound,
+            dictation,
+            desktop,
+        } = links;
         Self {
             identity,
             paired,
@@ -254,7 +264,14 @@ impl Core {
                     tracing::warn!(id, "the focused application did not answer Accessibility");
                     self.finish_capture(&id, &device, None, reply, now);
                 }
-                Waiting::Settle { id, key, reply, .. } => self.press_key(key, &id, reply, now),
+                Waiting::Settle {
+                    id,
+                    key,
+                    device,
+                    inside,
+                    reply,
+                    ..
+                } => self.resume_settled(key, &id, &device, inside, reply, now),
                 Waiting::Key { id, key, reply, .. } => {
                     tracing::warn!(id, "the watch-ax thread did not answer a key request");
                     let (status, body) = self.key_timed_out(key);

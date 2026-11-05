@@ -105,12 +105,15 @@ impl FollowUp {
                 READ_BACK_TIMEOUT,
                 sleep,
             );
+        // Before the keyboard is released: an Enter parked on the lock must
+        // find the record already upgraded, or `on_confirmed` sees `entered`
+        // and the paste stays `unverified` for good.
+        if !terminal {
+            delivery.confirm(confirmed);
+        }
         drop(held);
         if let Some(restore) = restore {
             restore(restore_delay(terminal, confirmed));
-        }
-        if !terminal {
-            delivery.confirm(confirmed);
         }
     }
 }
@@ -150,11 +153,7 @@ pub(crate) fn wait_for_text(
 }
 
 fn heard_as_traditional(text: &str, language: &str) -> String {
-    if zh::applies(language) {
-        zh::to_traditional(text)
-    } else {
-        text.to_owned()
-    }
+    zh::for_recording(text, language)
 }
 
 /// `Err` is a failure the watch reads as `failed`: the paste was not
@@ -255,7 +254,7 @@ impl Inserter for Shared<'_> {
 impl Inserter for crate::paste::Paster {
     fn insert(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<Inserted, String> {
         let sent = self
-            .paste_deferred(text, || commit())
+            .paste_deferred(text, commit)
             .map_err(|error| error.to_string())?;
         Ok(Inserted {
             text: sent.inserted,
@@ -266,7 +265,7 @@ impl Inserter for crate::paste::Paster {
     }
 
     fn copy(&mut self, text: &str, commit: &dyn Fn() -> bool) -> Result<(), String> {
-        self.paste(text, crate::paste::PasteMode::CopyOnly, || commit())
+        self.paste(text, crate::paste::PasteMode::CopyOnly, commit)
             .map_err(|error| error.to_string())
     }
 }

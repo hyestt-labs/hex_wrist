@@ -31,10 +31,11 @@ impl Core {
         &mut self,
         key: Key,
         body: &[u8],
-        device: &str,
+        caller: (&str, bool),
         reply: Reply,
         now: Now,
     ) {
+        let (device, inside) = caller;
         let id = match self.key_target(body, device, now) {
             Ok(id) => id,
             Err(refusal) => return self.refuse(reply, refusal),
@@ -49,6 +50,8 @@ impl Core {
             self.waiting.push(Waiting::Settle {
                 id,
                 key,
+                device: device.to_owned(),
+                inside,
                 reply,
                 deadline: now.at + Duration::from_secs(ENTER_WAIT_SECONDS),
             });
@@ -188,10 +191,35 @@ impl Core {
             .partition(|waiting| matches!(waiting, Waiting::Settle { id: held, .. } if held == id));
         self.waiting = others;
         for waiting in mine {
-            if let Waiting::Settle { key, reply, .. } = waiting {
-                self.press_key(key, id, reply, now);
+            if let Waiting::Settle {
+                key,
+                device,
+                inside,
+                reply,
+                ..
+            } = waiting
+            {
+                self.resume_settled(key, id, &device, inside, reply, now);
             }
         }
+    }
+
+    /// Swift's `ratchetRefusal` after `waitUntilSettled`: a plaintext
+    /// `/enter` can park before the envelope that makes its watch
+    /// encrypted-only, so the check runs again once the wait is over.
+    pub(super) fn resume_settled(
+        &mut self,
+        key: Key,
+        id: &str,
+        device: &str,
+        inside: bool,
+        reply: Reply,
+        now: Now,
+    ) {
+        if !inside && self.paired.requires_e2ee(device) {
+            return self.refuse(reply, Refusal::E2eeRequired);
+        }
+        self.press_key(key, id, reply, now);
     }
 }
 
