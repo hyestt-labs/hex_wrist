@@ -27,7 +27,8 @@ Apple Watch                               // watch.pair, watch.dictate
 ├── Dictate
 │   ├── Watch starts recording -> /e2ee/query {/focus}   -> watch-ax reads the focused field
 │   │   ├── field read   -> captured:true, role          -> record awaiting-audio, capsule "Recording"
-│   │   └── nothing read (no Accessibility, no focus, app silent for 1.5 s) -> captured:false
+│   │   └── nothing read (no Accessibility, no focus, app silent for 1.5 s) -> captured:false;
+│   │                                                 its recording is withheld as target-changed (Wristper pasted at the cursor)
 │   ├── Watch stops -> /e2ee (AudioHead + m4a)           -> decode -> DictationWorker
 │   │   ├── Traditional Chinese (zh or auto)             -> s2tw, watch recordings only
 │   │   ├── suspect text (silence caption, wrong script) -> suspect, not pasted

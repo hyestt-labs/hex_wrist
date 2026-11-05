@@ -54,16 +54,18 @@ fn audio_after_focus_must_match_the_captured_field() {
     assert_eq!(expectation(&h, 0), Expectation::Field(text_area(7)));
 }
 
-/// Wristper pastes at the cursor when `/focus` ran but saw no field
-/// (nothing focused, or Accessibility off).
+/// A `/focus` that read nothing (no Accessibility, nothing focused, a hung
+/// app) must not turn a `focus: requested` recording into a paste at
+/// whatever has the cursor when the audio arrives: the user may have
+/// switched apps while recording. Only `focus: current` pastes there.
 #[test]
-fn a_focus_that_captured_nothing_pastes_at_the_cursor() {
+fn a_focus_that_captured_nothing_does_not_paste_at_the_cursor() {
     let mut h = harness("focus-empty");
     let watch = h.pair("watch-1");
     let (_, body) = focus(&mut h, &watch);
     assert_eq!(body["captured"], false);
     assert!(requested(&mut h, &watch).is_none());
-    assert_eq!(expectation(&h, 0), Expectation::Current);
+    assert_eq!(expectation(&h, 0), Expectation::Missing);
 }
 
 /// A resend from the unsent list names no field; whatever `/focus` saw

@@ -353,11 +353,12 @@ impl Core {
         } else if job.snapshot_missing {
             Expectation::Missing
         } else {
-            // A `/focus` that captured nothing pastes at the cursor, as
-            // Wristper does.
+            // Wristper pastes at the cursor when `/focus` read nothing. Hex
+            // does not: the user may have left the field while recording, so
+            // only an explicit `focus: current` resend pastes there.
             live.field
                 .clone()
-                .map_or(Expectation::Current, Expectation::Field)
+                .map_or(Expectation::Missing, Expectation::Field)
         };
         // A resend of the same id must not keep the previous attempt's text.
         live.record = Record {
