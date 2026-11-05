@@ -1,6 +1,6 @@
 //! The catalog's pinned model files and the language lists its entries share.
 
-use super::models::{GgufArtifact, TranscriptionModelId};
+use super::models::{GgufArtifact, ModelDefinition, ModelRuntime, TranscriptionModelId};
 
 pub(super) const PARAKEET_V3_LANGUAGES: &[&str] = &[
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
@@ -392,3 +392,312 @@ pub fn source(id: TranscriptionModelId) -> Option<&'static ModelSource> {
         | M::Custom(_) => None,
     }
 }
+
+/// Every catalog model, in the order the picker and the fallback walk them.
+pub const MODELS: &[ModelDefinition] = &[
+    ModelDefinition {
+        id: TranscriptionModelId::ParakeetUnifiedEnglish,
+        name: "Parakeet Unified English",
+        realtime: "~163x",
+        word_error_rate: Some(1.60),
+        streams: true,
+        runtime: ModelRuntime::Gguf(&PARAKEET_UNIFIED_ENGLISH_ARTIFACT),
+        languages: &["en"],
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::ParakeetV2,
+        name: "Parakeet v2",
+        realtime: "~55x",
+        word_error_rate: Some(1.69),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&PARAKEET_V2_ARTIFACT),
+        languages: &["en"],
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::ParakeetV3,
+        name: "Parakeet v3",
+        realtime: "~33x",
+        word_error_rate: Some(1.94),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&PARAKEET_V3_ARTIFACT),
+        languages: PARAKEET_V3_LANGUAGES,
+        // The pinned v3 artifact detects language from audio and has no prompt input.
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperLargeV3Turbo,
+        name: "Whisper large-v3-turbo",
+        realtime: "~19x",
+        word_error_rate: Some(2.01),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_ARTIFACT),
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::Qwen3Asr06B,
+        name: "Qwen3-ASR 0.6B",
+        realtime: "~16x",
+        word_error_rate: Some(7.64),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&QWEN_ARTIFACT),
+        languages: QWEN_LANGUAGES,
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::QwenCleoAsr17B,
+        name: "QwenCleo-ASR 1.7B",
+        // Half Qwen3-ASR 0.6B's speed on apollo's Vulkan GPU (22x against 41x).
+        realtime: "~9x",
+        // The author's own 3,699-utterance evaluation, not a public test set.
+        word_error_rate: Some(19.85),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&QWENCLEO_ARTIFACT),
+        languages: &["ar"],
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::IvritWhisperLargeV3Turbo,
+        name: "ivrit.ai Whisper large-v3-turbo",
+        // The same architecture and size as Whisper large-v3-turbo; on apollo
+        // it ran a 9.8 s Hebrew clip as fast as the stock model (38x and 36x).
+        realtime: "~19x",
+        word_error_rate: Some(18.45),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&IVRIT_WHISPER_ARTIFACT),
+        // ivrit.ai: the fine-tune lost language detection and translation, so
+        // it always runs with the Hebrew hint.
+        languages: &["he"],
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::SenseVoiceSmall,
+        name: "SenseVoice Small",
+        realtime: "~72x",
+        word_error_rate: Some(10.11),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&SENSEVOICE_ARTIFACT),
+        languages: &["zh", "yue", "en", "ja", "ko"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::CohereTranscribe,
+        name: "Cohere Transcribe",
+        realtime: "73x",
+        word_error_rate: Some(1.27),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&COHERE_ARTIFACT),
+        languages: COHERE_LANGUAGES,
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::UnderdogBark3Pro,
+        name: "Underdog Bark 3.0 Pro",
+        realtime: "~33x",
+        word_error_rate: Some(1.38),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&UNDERDOG_BARK_3_PRO_ARTIFACT),
+        languages: &["en"],
+        // Like Parakeet v3, its base, the artifact has no language input.
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::UnderdogBark3Clean,
+        name: "Underdog Bark 3.0 Clean",
+        realtime: "~33x",
+        word_error_rate: Some(1.71),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&UNDERDOG_BARK_3_CLEAN_ARTIFACT),
+        languages: &["en"],
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::ParakeetUltra,
+        name: "Parakeet Ultra",
+        // As fast as Parakeet v3 on apollo's Vulkan GPU (191x against 211x
+        // on a FLEURS English clip), so it keeps v3's figure.
+        realtime: "~33x",
+        // LibriSpeech test-clean, transcribe.cpp's published conversion
+        // benchmark (`model_benchmarks`); not measured in Hex.
+        word_error_rate: Some(1.80),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&PARAKEET_ULTRA_ARTIFACT),
+        languages: PARAKEET_V3_LANGUAGES,
+        // Like v3, its base: it detects the language from the audio and has
+        // no language input.
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::Nemotron35Asr,
+        name: "Nemotron 3.5 ASR",
+        // On apollo's Vulkan GPU it ran 0.55 to 0.97 times as fast as
+        // Parakeet v3 (17.9 s and 54.6 s German clips), against v3's ~33x.
+        realtime: "~25x",
+        // LibriSpeech test-clean, Hex's run (`model_benchmarks`). On the same
+        // runs Parakeet v3 made fewer errors: 1.95% here, and on FLEURS 4.88%
+        // English and 5.17% German against 7.91% and 10.39% (8.77% and
+        // 10.46% with Auto). It is here to stream with the language set.
+        word_error_rate: Some(3.05),
+        streams: true,
+        runtime: ModelRuntime::Gguf(&NEMOTRON_3_5_ASR_ARTIFACT),
+        languages: NEMOTRON_3_5_LANGUAGES,
+        // Its prompt takes the language (`runtime_language`), and Auto leaves
+        // it to the model.
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::GigaAmV3,
+        name: "GigaAM v3",
+        // On apollo's Vulkan GPU it ran 1.2 to 1.4 times as fast as Parakeet
+        // v3 (the FLEURS Russian test split, and a 10 s clip of it).
+        realtime: "~40x",
+        // FLEURS Russian test, Hex's run (`model_benchmarks`): Parakeet v3
+        // scored 6.52% on the same run and Whisper large-v3-turbo 5.36%.
+        word_error_rate: Some(5.37),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&GIGAAM_V3_E2E_RNNT_ARTIFACT),
+        languages: &["ru"],
+        // Russian only: it has no language input.
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::NbWhisperMedium,
+        name: "NB-Whisper Medium",
+        // On apollo's Vulkan GPU it ran FLEURS Norwegian at 0.89 times
+        // Whisper large-v3-turbo's speed (37x and 41x real time).
+        realtime: "~17x",
+        // FLEURS Norwegian test, Hex's run (`model_benchmarks`): Whisper
+        // large-v3-turbo scored 8.94% on the same run.
+        word_error_rate: Some(6.68),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&NB_WHISPER_MEDIUM_ARTIFACT),
+        // Measured only for Bokmål with the `no` hint, which it always gets.
+        languages: &["no"],
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::GraniteSpeech5,
+        name: "Granite Speech 5.0",
+        // On apollo's Vulkan GPU it ran 2.1 to 2.4 times as fast as Whisper
+        // large-v3-turbo and 0.4 to 0.64 times Parakeet v3's speed (an 11 s
+        // clip, and the FLEURS English and Japanese test splits).
+        realtime: "~25x",
+        // FLEURS English test, Hex's run (`model_benchmarks`).
+        word_error_rate: Some(4.77),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&GRANITE_SPEECH_5_ARTIFACT),
+        languages: GRANITE_SPEECH_5_LANGUAGES,
+        // A CTC head with no language input: it transcribes whichever of
+        // its seven languages it hears.
+        accepts_language_hint: false,
+        supports_language_detection: false,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperLargeV3,
+        name: "Whisper large-v3",
+        // transcribe.cpp's catalog, FLEURS and the 35 s "dots" clip on the base
+        // M4 (`model_benchmarks`); other systems show no figure until measured.
+        realtime: if cfg!(target_os = "macos") {
+            "~8x"
+        } else {
+            "Unknown"
+        },
+        // FLEURS English test (Q8_0), the catalog's own run (`model_benchmarks`).
+        word_error_rate: Some(4.03),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_LARGE_V3_ARTIFACT),
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperMedium,
+        name: "Whisper medium",
+        realtime: if cfg!(target_os = "macos") {
+            "~15x"
+        } else {
+            "Unknown"
+        },
+        word_error_rate: Some(4.64),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_MEDIUM_ARTIFACT),
+        // Its file has no Cantonese token (`supports_language`).
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::WhisperSmall,
+        name: "Whisper small",
+        realtime: if cfg!(target_os = "macos") {
+            "~40x"
+        } else {
+            "Unknown"
+        },
+        word_error_rate: Some(6.51),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&WHISPER_SMALL_ARTIFACT),
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::BreezeAsr25,
+        name: "Breeze ASR 25",
+        realtime: if cfg!(target_os = "macos") {
+            "~8x"
+        } else {
+            "Unknown"
+        },
+        // FLEURS Mandarin test, character error rate (`model_benchmarks`).
+        word_error_rate: Some(8.10),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&BREEZE_ASR_25_ARTIFACT),
+        languages: &["zh", "en"],
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::Qwen3Asr17B,
+        name: "Qwen3-ASR 1.7B",
+        realtime: if cfg!(target_os = "macos") {
+            "~11x"
+        } else {
+            "Unknown"
+        },
+        word_error_rate: Some(7.14),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&QWEN_1_7B_ARTIFACT),
+        languages: QWEN_LANGUAGES,
+        accepts_language_hint: true,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::AppleSpeech,
+        name: "Apple Speech",
+        realtime: "On device",
+        word_error_rate: None,
+        streams: false,
+        runtime: ModelRuntime::AppleSpeech,
+        languages: &["*"],
+        accepts_language_hint: true,
+        supports_language_detection: false,
+    },
+];
