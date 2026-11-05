@@ -79,6 +79,14 @@ jobs:
         with:
           key: test-build-${{ hashFiles('packaging/linux/build.Dockerfile') }}
           cache-on-failure: true
+      # The build image takes about 5 minutes to build on a fresh runner
+      # (shaderc's glslc from source); test builds keep it in the cache.
+      # Release builds still build it, like they skip the Rust cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: inputs.test-build
+        with:
+          path: ${{ runner.temp }}/linux-build-image.tar.zst
+          key: linux-build-image-${{ env.HEX_LINUX_ARCH }}-${{ hashFiles('packaging/linux/build.Dockerfile') }}
       - name: Install nfpm
         # The build dependencies live in the build image
         # (packaging/linux/build.Dockerfile).
@@ -92,6 +100,7 @@ jobs:
       - name: Build
         env:
           HEX_RELEASE_DIST: ${{ runner.temp }}/dist
+          HEX_LINUX_BUILD_IMAGE_ARCHIVE: ${{ inputs.test-build && format('{0}/linux-build-image.tar.zst', runner.temp) || '' }}
           CARGO_BUILD_JOBS: 4
           OPENSSL_NO_VENDOR: 1
           CC: clang
