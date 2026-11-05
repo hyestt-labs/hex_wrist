@@ -90,13 +90,17 @@ out="$root/target/watch-e2e/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$out"
 results="$out/results.jsonl"
 : > "$results"
+# Secrets live only here: the clipboard backup, the watch's pairing keys, and
+# raw logs that hold pairing codes. Mode 0700, moved to the Trash at exit.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/wristper-e2e.XXXXXX") || { echo "cannot make a temp folder" >&2; exit 2; }
+pbtool="$root/target/watch-e2e/pasteboard-tool"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$out/run.log" >&2; }
 die() { log "ERROR: $*"; exit "${2:-1}"; }
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 # run_to SECONDS CMD...: a command that a pending permission prompt could hang forever.
 run_to() { local s=$1; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@"; }
 
-for tool in jq python3 perl osascript say afconvert xcrun codesign pbcopy pbpaste; do
+for tool in jq python3 perl osascript say afconvert xcrun codesign; do
   command -v "$tool" >/dev/null || die "missing tool: $tool" 2
 done
 if stage_on 4; then
@@ -108,10 +112,41 @@ fi
 # installed app's folder.
 [ "$TEST_DATA" != "$OLD_DATA" ] || die "test data root equals the installed app's" 2
 
+# --- the person's clipboard -------------------------------------------------
+# Every scenario that needs a sentinel, and every paste, changes the clipboard.
+# Back up the whole pasteboard (all items, all types) before the first one and
+# put it back at the end (and in the exit trap). Restore is verified byte for
+# byte; when it cannot be, the table says so.
+CLIP_STATE=none   # none | saved | restored | failed
+CLIP_DETAIL=
+clip_backup() {
+  [ "$CLIP_STATE" = none ] || return 0
+  local msg rc
+  msg=$("$pbtool" save "$tmp/clipboard" 2>&1); rc=$?
+  if [ $rc = 3 ]; then
+    need "The clipboard holds a concealed item (a password manager's copy). Copy something ordinary, or clear the clipboard, then run again: this script overwrites the clipboard during the run and must be able to put it back."
+    print_blocked
+  fi
+  [ $rc = 0 ] || die "could not back up the clipboard ($msg); nothing was changed" 2
+  CLIP_STATE=saved
+  log "clipboard backed up ($msg)"
+}
+clip_restore() {
+  [ "$CLIP_STATE" = saved ] || return 0
+  local msg
+  if msg=$("$pbtool" restore "$tmp/clipboard" 2>&1) && CLIP_DETAIL=$("$pbtool" verify "$tmp/clipboard" 2>&1); then
+    CLIP_STATE=restored
+  else
+    CLIP_STATE=failed; CLIP_DETAIL="${CLIP_DETAIL:-$msg}"
+  fi
+  log "clipboard restore: $CLIP_STATE ($CLIP_DETAIL)"
+}
+
 log_pid=
 sim_udid=
 keep_setting_original=
 cleanup() {
+  clip_restore
   [ -n "$log_pid" ] && kill "$log_pid" 2>/dev/null
   if [ -s "$out/chrome-handles" ]; then
     while IFS= read -r h; do chrome_close "$h"; done < "$out/chrome-handles"
@@ -123,6 +158,7 @@ cleanup() {
     [ -x "$hex" ] && "$hex" quit >/dev/null 2>&1
     [ -n "$sim_udid" ] && xcrun simctl shutdown "$sim_udid" >/dev/null 2>&1
   fi
+  case "$tmp" in */wristper-e2e.*) /usr/bin/trash "$tmp" >/dev/null 2>&1 ;; esac
 }
 trap cleanup EXIT
 
@@ -238,6 +274,16 @@ build_watch_sim() {
   "$root/scripts/watch-sim/build.sh" "$sim" > "$out/build-watch-sim.log" 2>&1 \
     || die "watch-sim build failed; see $out/build-watch-sim.log"
 }
+
+# The clipboard backup tool (scripts/pasteboard-tool): saves and restores every type on the pasteboard.
+build_pbtool() {
+  if [ ! -x "$pbtool" ] || [ "$root/scripts/pasteboard-tool/main.swift" -nt "$pbtool" ]; then
+    mkdir -p "$(dirname "$pbtool")"
+    xcrun swiftc -O -o "$pbtool" "$root/scripts/pasteboard-tool/main.swift" > "$out/build-pasteboard-tool.log" 2>&1 \
+      || die "pasteboard-tool build failed; see $out/build-pasteboard-tool.log"
+  fi
+}
+build_pbtool
 
 [ "$build" = 1 ] && build_mac_app
 [ -x "$hex" ] || die "$app is missing; run without --skip-build" 2
@@ -578,9 +624,9 @@ scenario_clipboard() {
     # the clipboard is never written. This does NOT reach the final focus check
     # (after the clipboard write, right before the paste key): that window is
     # tens of ms and /status reports both refusals the same way (target-changed).
-    set_keep on; printf %s "$sentinel" | pbcopy
+    set_keep on; "$pbtool" set "$sentinel"
     sim_run textedit en --after-focus 'open -a Finder; sleep 2'
-    board=$(pbpaste)
+    board=$("$pbtool" get)
     sim_close textedit
     chk "$(is [ "$(rj '.state')" = target-changed ])" "state is $(rj '.state'), want target-changed"
     chk "$(is [ "$board" = "$sentinel" ])" "clipboard is '${board:0:60}', want the sentinel back"
@@ -590,9 +636,9 @@ scenario_clipboard() {
 
   if want clipboard-keep-paste; then
     # keep_on_clipboard on, no switch: the dictation stays on the clipboard.
-    set_keep on; printf %s "$sentinel" | pbcopy
+    set_keep on; "$pbtool" set "$sentinel"
     sim_run textedit en
-    sleep 5; board=$(pbpaste)
+    sleep 5; board=$("$pbtool" get)
     sim_close textedit
     judged en
     chk "$(is [ "$(judge en "$board")" -ge "$EN_PASS" ])" "clipboard is '${board:0:60}', want the dictation"
@@ -601,9 +647,9 @@ scenario_clipboard() {
 
   if want clipboard-default-restore; then
     # keep_on_clipboard off (the default): the clipboard comes back after the paste.
-    set_keep off; printf %s "$sentinel" | pbcopy
+    set_keep off; "$pbtool" set "$sentinel"
     sim_run textedit en
-    sleep 6; board=$(pbpaste)
+    sleep 6; board=$("$pbtool" get)
     sim_close textedit
     judged en
     chk "$(is [ "$board" = "$sentinel" ])" "clipboard is '${board:0:60}', want the sentinel restored"
@@ -853,6 +899,7 @@ stage4() {
 start_app
 check_permissions
 [ "$preflight_only" = 1 ] && { log "preflight OK"; echo "PREFLIGHT: OK"; exit 0; }
+clip_backup
 select_model "${langs%%,*}"
 wait_listener
 make_fixtures
@@ -861,6 +908,11 @@ stage_on 2 && stage2
 stage_on 3 && stage3
 stage_on 4 && stage4
 
+clip_restore
+case "$CLIP_STATE" in
+  restored) record x clipboard-restored - PASS 100 verified 0 "" "$(jq -cn --arg d "$CLIP_DETAIL" '{detail:$d}')" ;;
+  failed) record x clipboard-restored - FAIL 0 not-restored 0 "" "$(jq -cn --arg d "$CLIP_DETAIL" '{fails:("your clipboard was NOT restored: " + $d)}')" ;;
+esac
 echo
 printf '%-5s %-26s %-4s %-6s %6s %-14s %7s  %s\n' STAGE SCENARIO LANG RESULT MATCH STATE MS "READ BACK"
 jq -r '[.stage,.target,.lang,.result,(.match_percent+"%"),.state,.ms,(.text|.[0:60]),((.detail.fails // "")|tostring)] | @tsv' "$results" |
