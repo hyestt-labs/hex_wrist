@@ -60,20 +60,19 @@ struct WatchSim {
               "mac_device_id": macDeviceId, "encrypted": true, "ms": ms(since: started)])
     }
 
-    /// How much of the expected sentence the read-back holds, ignoring case,
-    /// punctuation, spacing, and Traditional versus Simplified characters.
-    /// Words for Latin text; characters, in order, for CJK.
+    /// How much of the expected sentence the read-back holds, in order: the longest
+    /// common subsequence of its words (Latin text) or characters (CJK) over the
+    /// expected length, ignoring case, punctuation, spacing, and Traditional versus
+    /// Simplified characters. Words that appear out of order do not count. An empty
+    /// read-back, or one with fewer than half the expected units, scores 0 however
+    /// well its few units match.
     static func match(expected: String, actual: String) {
         func fold(_ text: String) -> String {
             let simplified = text.applyingTransform(StringTransform("Hant-Hans"), reverse: false) ?? text
             return simplified.lowercased().unicodeScalars
                 .map { CharacterSet.letters.union(.decimalDigits).contains($0) ? String($0) : " " }.joined()
         }
-        let want = fold(expected), got = fold(actual)
-        let cjk = want.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
-        let score: Double
-        if cjk {
-            let a = Array(want.filter { !$0.isWhitespace }), b = Array(got.filter { !$0.isWhitespace })
+        func lcs<T: Equatable>(_ a: [T], _ b: [T]) -> Int {
             var row = [Int](repeating: 0, count: b.count + 1)
             for x in a {
                 var previous = 0
@@ -83,12 +82,24 @@ struct WatchSim {
                     previous = saved
                 }
             }
-            score = a.isEmpty ? 0 : Double(row[b.count]) / Double(a.count)
-        } else {
-            let words = want.split(separator: " "), present = Set(got.split(separator: " "))
-            score = words.isEmpty ? 0 : Double(words.filter(present.contains).count) / Double(words.count)
+            return row[b.count]
         }
-        emit(["event": "match", "percent": Int((score * 100).rounded()), "mode": cjk ? "cjk-chars" : "words"])
+        let want = fold(expected), got = fold(actual)
+        let cjk = want.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
+        let wantUnits: [String], gotUnits: [String]
+        if cjk {
+            wantUnits = want.filter { !$0.isWhitespace }.map(String.init)
+            gotUnits = got.filter { !$0.isWhitespace }.map(String.init)
+        } else {
+            wantUnits = want.split(separator: " ").map(String.init)
+            gotUnits = got.split(separator: " ").map(String.init)
+        }
+        let tooShort = gotUnits.isEmpty || gotUnits.count * 2 < wantUnits.count
+        let common = tooShort ? 0 : lcs(wantUnits, gotUnits)
+        let score = wantUnits.isEmpty ? 0 : Double(common) / Double(wantUnits.count)
+        emit(["event": "match", "percent": Int((score * 100).rounded()),
+              "mode": cjk ? "ordered-chars" : "ordered-words", "common": common,
+              "expected_units": wantUnits.count, "actual_units": gotUnits.count, "too_short": tooShort])
     }
 
     static func health() async throws {

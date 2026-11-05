@@ -71,6 +71,10 @@ OLD_DATA="$HOME/Library/Application Support/Wristper"
 EN_TEXT=${WATCH_E2E_EN_TEXT:-Please send the quarterly report to the design team before Friday.}
 ZH_TEXT=${WATCH_E2E_ZH_TEXT:-今天下午三點在會議室討論新的產品設計。}
 AGENT_TEXT=${WATCH_E2E_AGENT_TEXT:-Reply with only the word pong.}
+# Pass thresholds for the read-back, in percent. The score is ordered: the longest common
+# subsequence of words (English) or characters (Mandarin) over the expected length
+# (watch-sim match). Words out of order do not count; an empty or too short read-back
+# (fewer than half the expected units) scores 0.
 EN_PASS=${WATCH_E2E_EN_PASS:-80}
 ZH_PASS=${WATCH_E2E_ZH_PASS:-60}
 # A page with no user data: one empty textarea, focused on load. Its input
@@ -978,7 +982,7 @@ stage2() {
     return
   fi
 
-  local container target lang handle readback percent result started ms enter_arg detail
+  local container target lang handle readback percent result started ms enter_arg detail res_line phase mac_state
   container=$(xcrun simctl get_app_container "$sim_udid" "$WATCH_BUNDLE" data) || die "no app container"
   mkdir -p "$container/tmp"
   for lang in ${langs//,/ }; do
@@ -999,11 +1003,19 @@ stage2() {
       readback=$(read_target "$target" "$handle")
       close_target "$target" "$handle"
       detail=$(tail -n +"$start" "$tmp/stage2-watch.log" | grep -E 'E2E (fixture|result|enter)' | jq -R . | jq -sc '{log:.}')
-      percent=$(judge "$lang" "$readback")
-      result=FAIL; [ "${percent:-0}" -ge "$(pass_for "$lang")" ] && result=PASS
-      record 2 "$target" "$lang" "$result" "$percent" \
-        "$(tail -n +"$start" "$tmp/stage2-watch.log" | grep -m1 -oE 'phase=[a-z]+' || echo no-result)" "$ms" \
-        "$(tr '\n' ' ' <<<"$readback" | tail -c 200)" "$detail"
+      percent=$(judge "$lang" "$readback"); percent=${percent:-0}
+      # PASS needs both: the Mac's own final state (from the watch app's E2E result line) and the text.
+      res_line=$(tail -n +"$start" "$tmp/stage2-watch.log" | grep 'E2E result'; true); res_line=${res_line%%$'\n'*}
+      phase=$(sed -nE 's/.*phase=([a-z]+).*/\1/p' <<<"$res_line")
+      mac_state=$(sed -nE 's/.*macState\{state=([a-z-]+).*/\1/p' <<<"$res_line")
+      FAILS=
+      chk "$(is [ "$phase" = finished ])" "watch phase is '${phase:-none}', want finished"
+      case "$mac_state" in pasted|unverified) ;; *) chk bad "Mac state is '${mac_state:-none}', want pasted or unverified" ;; esac
+      chk "$(is [ "$percent" -ge "$(pass_for "$lang")" ])" "read-back matches only ${percent}% (ordered, need $(pass_for "$lang"))"
+      result=PASS; [ -z "$FAILS" ] || result=FAIL
+      record 2 "$target" "$lang" "$result" "$percent" "${mac_state:-no-result}" "$ms" \
+        "$(tr '\r\n' '  ' <<<"$readback" | tail -c 200)" "$(jq -c --arg f "${FAILS#; }" '. + {fails:$f}' <<<"$detail")"
+      FAILS=
     done
   done
 }
