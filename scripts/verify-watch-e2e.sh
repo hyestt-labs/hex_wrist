@@ -346,9 +346,12 @@ stage2() {
   xcrun simctl bootstatus "$sim_udid" -b >/dev/null 2>&1 || die "simulator did not boot"
   local dd="$root/target/watch-e2e/watch-dd" watch_app
   if [ "$build" = 1 ] || [ ! -d "$dd/Build/Products/Debug-watchsimulator/WristperProbe.app" ]; then
+    # Ad hoc signing is required: an unsigned simulator build has no application-identifier,
+    # so its Keychain refuses the pairing key ("Could not securely save the encryption key").
     log "building the watch app (Debug, E2E hooks) from $WRISTPER_HOOKS_SRC"
     xcodebuild -project "$WRISTPER_HOOKS_SRC/WristperProbe.xcodeproj" -scheme WristperProbe -configuration Debug \
-      -destination "id=$sim_udid" -derivedDataPath "$dd" build CODE_SIGNING_ALLOWED=NO > "$out/build-watch.log" 2>&1 \
+      -destination "id=$sim_udid" -derivedDataPath "$dd" build \
+      CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= > "$out/build-watch.log" 2>&1 \
       || die "watch app build failed; see $out/build-watch.log"
   fi
   watch_app="$dd/Build/Products/Debug-watchsimulator/WristperProbe.app"
