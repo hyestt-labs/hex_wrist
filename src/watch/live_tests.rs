@@ -18,7 +18,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryEvent, DeliveryOutcome, DeliveryReport, Job, WatchDelivery};
-use super::desktop::{Desktop, Key, KeyOutcome, Screen};
+use super::desktop::{Desktop, Key, KeyOutcome, Screen, Ticket};
 use super::field::{Expectation, FieldSnapshot, Withheld};
 use super::output::{Delivered, Request, deliver};
 use super::recording::Verification;
@@ -115,10 +115,15 @@ impl Rig {
     fn press(&self, key: Key, expected: &FieldSnapshot) -> KeyOutcome {
         let (done, outcome) = mpsc::channel();
         let valid_until = Instant::now() + Duration::from_secs(5);
-        self.desktop
-            .press(key, expected.clone(), valid_until, move |result| {
+        self.desktop.press(
+            key,
+            expected.clone(),
+            valid_until,
+            Ticket::new(),
+            move |result| {
                 let _ = done.send(result);
-            });
+            },
+        );
         outcome.recv_timeout(Duration::from_secs(6)).unwrap()
     }
 }

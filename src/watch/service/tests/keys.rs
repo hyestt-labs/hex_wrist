@@ -341,3 +341,40 @@ fn a_parked_plaintext_enter_is_refused_once_the_watch_is_encrypted_only() {
     );
     assert!(h.screen.keys().is_empty());
 }
+
+/// Two Enters that arrive before the first key reached the app must press
+/// Return once: in a terminal a second Return runs an extra command.
+#[test]
+fn two_enters_in_flight_press_return_once() {
+    let mut h = harness("enter-twice");
+    let watch = h.pair("watch-1");
+    read_back_paste(&mut h, &watch);
+    h.core.desktop = Desktop::manual(h.screen.clone());
+    h.frames.lock().unwrap().clear();
+    let first = h.query(&watch, "/enter", &[("id", ID)]);
+    let second = h.query(&watch, "/enter", &[("id", ID)]);
+    assert!(first.is_none() && second.is_none(), "both wait on the key");
+    h.core.desktop.run_pending();
+    h.pump();
+    h.core.desktop.run_pending();
+    h.pump();
+    assert_eq!(h.screen.keys(), ["return"], "Return went in once");
+    let frames = h.pending_frame_ids();
+    assert_eq!(frames.len(), 2, "both requests were answered");
+}
+
+/// An Undo behind an Enter that is still in flight sees the Enter's result.
+#[test]
+fn an_undo_behind_an_enter_in_flight_is_refused_as_entered() {
+    let mut h = harness("enter-undo");
+    let watch = h.pair("watch-1");
+    read_back_paste(&mut h, &watch);
+    h.core.desktop = Desktop::manual(h.screen.clone());
+    assert!(h.query(&watch, "/enter", &[("id", ID)]).is_none());
+    assert!(h.query(&watch, "/undo", &[("id", ID)]).is_none());
+    for _ in 0..3 {
+        h.core.desktop.run_pending();
+        h.pump();
+    }
+    assert_eq!(h.screen.keys(), ["return"], "no Command-Z after Enter");
+}

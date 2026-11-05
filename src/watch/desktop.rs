@@ -89,6 +89,27 @@ impl Drop for Held {
 // A job is built, queued, and run once; boxing the snapshot would only add
 // an allocation per key press.
 #[allow(clippy::large_enum_variant)]
+/// One key request's claim on the keyboard. The service cancels it when it
+/// gives up on the request (timeout, a recording that started over), and the
+/// `watch-ax` thread checks it inside the lock, so a key that waited for a
+/// paste's read-back is not pressed for a request that no longer stands.
+#[derive(Clone, Debug)]
+pub(crate) struct Ticket(Arc<std::sync::atomic::AtomicBool>);
+
+impl Ticket {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 enum Job {
     Capture(Done<Option<FieldSnapshot>>),
     Press {
@@ -97,6 +118,7 @@ enum Job {
         /// The reply was given up on at this moment; a key pressed later
         /// would act on a request the watch was told had failed.
         valid_until: Instant,
+        ticket: Ticket,
         done: Done<KeyOutcome>,
     },
 }
@@ -109,6 +131,9 @@ enum Runner {
     /// Drops every job unanswered: an application that never responds.
     #[cfg(test)]
     Silent,
+    /// Holds jobs until `run_pending`: a key that is slow to reach the app.
+    #[cfg(test)]
+    Manual(Mutex<Vec<Job>>),
 }
 
 /// The handle the service, the output worker, and the jobs share. Cloning
@@ -163,6 +188,27 @@ impl Desktop {
     }
 
     #[cfg(test)]
+    pub(crate) fn manual(screen: Arc<dyn Screen>) -> Self {
+        Self {
+            screen,
+            exclusive: Arc::new(Exclusive::default()),
+            runner: Arc::new(Runner::Manual(Mutex::new(Vec::new()))),
+        }
+    }
+
+    /// Runs the jobs a manual desktop held, in order.
+    #[cfg(test)]
+    pub(crate) fn run_pending(&self) {
+        let Runner::Manual(held) = self.runner.as_ref() else {
+            return;
+        };
+        let jobs = std::mem::take(&mut *held.lock().unwrap());
+        for job in jobs {
+            run(self.screen.as_ref(), &self.exclusive, job);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn silent(screen: Arc<dyn Screen>) -> Self {
         Self {
             screen,
@@ -203,12 +249,14 @@ impl Desktop {
         key: Key,
         expected: FieldSnapshot,
         valid_until: Instant,
+        ticket: Ticket,
         done: impl FnOnce(KeyOutcome) + Send + 'static,
     ) {
         self.submit(Job::Press {
             key,
             expected,
             valid_until,
+            ticket,
             done: Box::new(done),
         });
     }
@@ -225,6 +273,8 @@ impl Desktop {
             Runner::Inline => run(self.screen.as_ref(), &self.exclusive, job),
             #[cfg(test)]
             Runner::Silent => drop(job),
+            #[cfg(test)]
+            Runner::Manual(held) => held.lock().unwrap().push(job),
         }
     }
 }
@@ -243,8 +293,16 @@ fn run(screen: &dyn Screen, exclusive: &Arc<Exclusive>, job: Job) {
             key,
             expected,
             valid_until,
+            ticket,
             done,
-        } => done(press(screen, exclusive, key, &expected, valid_until)),
+        } => done(press(
+            screen,
+            exclusive,
+            key,
+            &expected,
+            valid_until,
+            &ticket,
+        )),
     }
 }
 
@@ -256,6 +314,7 @@ fn press(
     key: Key,
     expected: &FieldSnapshot,
     valid_until: Instant,
+    ticket: &Ticket,
 ) -> KeyOutcome {
     if screen.secure_input() {
         return KeyOutcome::Sensitive;
@@ -265,8 +324,8 @@ fn press(
     }
     let _exclusive = exclusive.acquire();
     // The wait for the lock may have outlasted the request.
-    if Instant::now() >= valid_until {
-        return KeyOutcome::Failed("the request timed out before the key was pressed".to_owned());
+    if Instant::now() >= valid_until || !ticket.is_live() {
+        return KeyOutcome::Failed("the request ended before the key was pressed".to_owned());
     }
     let focused = screen.focused();
     let gate = key_gate(

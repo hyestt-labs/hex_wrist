@@ -368,6 +368,10 @@ impl Core {
             updated_at: Timestamp::string(now.wall),
             ..LiveRecord::new(&job.id, &job.device, now).record
         };
+        // A key still on its way belongs to the attempt that is starting over.
+        if let Some(ticket) = live.in_flight.take() {
+            ticket.cancel();
+        }
         live.received_at = Some(now.at);
         live.touched = now.at;
         self.announce(&job.id, now);

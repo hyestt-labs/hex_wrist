@@ -73,6 +73,9 @@ pub(crate) struct LiveRecord {
     pub(crate) touched: Instant,
     /// The field `/focus` locked; `/enter` and `/undo` compare against it.
     pub(crate) field: Option<FieldSnapshot>,
+    /// A key handed to `watch-ax` whose result has not come back: the
+    /// recording takes no other key until it does.
+    pub(crate) in_flight: Option<crate::watch::desktop::Ticket>,
 }
 
 impl LiveRecord {
@@ -100,6 +103,7 @@ impl LiveRecord {
             received_at: None,
             touched: now.at,
             field: None,
+            in_flight: None,
         }
     }
 }
@@ -276,6 +280,7 @@ impl Core {
                     tracing::warn!(id, "the watch-ax thread did not answer a key request");
                     let (status, body) = self.key_timed_out(key);
                     self.answer(reply, status, body);
+                    self.end_key(&id, true, now);
                 }
             }
         }

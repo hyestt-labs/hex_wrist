@@ -57,7 +57,7 @@ impl Core {
             });
             return;
         }
-        self.press_key(key, &id, reply, now);
+        self.press_key(key, &id, (device, inside), reply, now);
     }
 
     fn key_target(&self, body: &[u8], device: &str, now: Now) -> Result<String, Refusal> {
@@ -76,7 +76,32 @@ impl Core {
 
     /// The recording settled (or the wait ran out): check the policy and
     /// hand the key to the `watch-ax` thread.
-    pub(super) fn press_key(&mut self, key: Key, id: &str, reply: Reply, now: Now) {
+    pub(super) fn press_key(
+        &mut self,
+        key: Key,
+        id: &str,
+        caller: (&str, bool),
+        reply: Reply,
+        now: Now,
+    ) {
+        // One key at a time per recording: a second request waits for the
+        // first one's result and is judged against it (a second Enter is a
+        // duplicate, an Undo after an Enter is refused).
+        if self
+            .records
+            .get(id)
+            .is_some_and(|live| live.in_flight.is_some())
+        {
+            self.waiting.push(Waiting::Settle {
+                id: id.to_owned(),
+                key,
+                device: caller.0.to_owned(),
+                inside: caller.1,
+                reply,
+                deadline: now.at + KEY_WAIT,
+            });
+            return;
+        }
         let live = self.records.get(id);
         let record = live.map(|live| &live.record);
         let verdict = match key {
@@ -104,6 +129,10 @@ impl Core {
             return self.answer(reply, status, body);
         };
         let valid_until = now.at + KEY_WAIT;
+        let ticket = crate::watch::desktop::Ticket::new();
+        if let Some(live) = self.records.get_mut(id) {
+            live.in_flight = Some(ticket.clone());
+        }
         self.waiting.push(Waiting::Key {
             id: id.to_owned(),
             key,
@@ -112,9 +141,10 @@ impl Core {
         });
         let inbox = self.inbox.clone();
         let id = id.to_owned();
-        self.desktop.press(key, field, valid_until, move |outcome| {
-            let _ = inbox.send(Message::Keyed { id, key, outcome });
-        });
+        self.desktop
+            .press(key, field, valid_until, ticket, move |outcome| {
+                let _ = inbox.send(Message::Keyed { id, key, outcome });
+            });
     }
 
     /// The `watch-ax` thread pressed the key, or says why it did not.
@@ -129,8 +159,24 @@ impl Core {
         let Waiting::Key { reply, .. } = self.waiting.remove(position) else {
             return;
         };
+        self.end_key(id, false, now);
         let (status, body) = self.keyed(id, key, outcome, now);
         self.answer(reply, status, body);
+        self.release_settled(id, now);
+    }
+
+    /// The key on its way for `id` is over. `cancel` also stops the
+    /// `watch-ax` thread from pressing it late.
+    pub(super) fn end_key(&mut self, id: &str, cancel: bool, now: Now) {
+        if let Some(live) = self.records.get_mut(id)
+            && let Some(ticket) = live.in_flight.take()
+            && cancel
+        {
+            ticket.cancel();
+        }
+        if cancel {
+            self.release_settled(id, now);
+        }
     }
 
     /// The reply at the deadline when the `watch-ax` thread never answered.
@@ -219,7 +265,7 @@ impl Core {
         if !inside && self.paired.requires_e2ee(device) {
             return self.refuse(reply, Refusal::E2eeRequired);
         }
-        self.press_key(key, id, reply, now);
+        self.press_key(key, id, (device, inside), reply, now);
     }
 }
 

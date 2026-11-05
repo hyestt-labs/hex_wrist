@@ -13,7 +13,7 @@ fn desktop(screen: &Arc<FakeScreen>) -> Desktop {
 fn press(desktop: &Desktop, key: Key, expected: FieldSnapshot) -> KeyOutcome {
     let (done, outcome) = mpsc::channel();
     let valid_until = Instant::now() + Duration::from_secs(5);
-    desktop.press(key, expected, valid_until, move |result| {
+    desktop.press(key, expected, valid_until, Ticket::new(), move |result| {
         done.send(result).unwrap();
     });
     outcome.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -146,9 +146,15 @@ fn a_key_waits_for_a_paste_that_holds_the_lock() {
     let guard = desktop.lock();
     let (done, outcome) = mpsc::channel();
     let valid_until = Instant::now() + Duration::from_secs(5);
-    desktop.press(Key::Enter, text_area(7), valid_until, move |result| {
-        done.send(result).unwrap();
-    });
+    desktop.press(
+        Key::Enter,
+        text_area(7),
+        valid_until,
+        Ticket::new(),
+        move |result| {
+            done.send(result).unwrap();
+        },
+    );
     // Held: nothing is pressed yet.
     assert!(outcome.recv_timeout(Duration::from_millis(150)).is_err());
     assert!(screen.keys().is_empty());
@@ -165,9 +171,41 @@ fn a_key_for_a_request_given_up_on_is_not_pressed() {
     let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
     let desktop = desktop(&screen);
     let (done, outcome) = mpsc::channel();
-    desktop.press(Key::Enter, text_area(7), Instant::now(), move |result| {
-        done.send(result).unwrap();
-    });
+    desktop.press(
+        Key::Enter,
+        text_area(7),
+        Instant::now(),
+        Ticket::new(),
+        move |result| {
+            done.send(result).unwrap();
+        },
+    );
+    assert!(matches!(
+        outcome.recv_timeout(Duration::from_secs(2)).unwrap(),
+        KeyOutcome::Failed(_)
+    ));
+    assert!(screen.keys().is_empty());
+}
+
+/// Catches an Enter pressed for a request the service already cancelled
+/// (a recording that started over, a reply given up on).
+#[test]
+fn a_cancelled_ticket_presses_nothing() {
+    let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
+    let desktop = desktop(&screen);
+    let ticket = Ticket::new();
+    ticket.cancel();
+    let (done, outcome) = mpsc::channel();
+    let valid_until = Instant::now() + Duration::from_secs(5);
+    desktop.press(
+        Key::Enter,
+        text_area(7),
+        valid_until,
+        ticket,
+        move |result| {
+            done.send(result).unwrap();
+        },
+    );
     assert!(matches!(
         outcome.recv_timeout(Duration::from_secs(2)).unwrap(),
         KeyOutcome::Failed(_)
