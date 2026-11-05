@@ -68,10 +68,24 @@ pub struct SetupStatus {
 }
 
 impl SetupStatus {
+    /// Mac dictation can run: all three are ready.
     pub fn ready(self) -> bool {
-        self.microphone == PermissionState::Ready
-            && self.accessibility == PermissionState::Ready
-            && self.transcription_model
+        self.microphone == PermissionState::Ready && self.listener_ready()
+    }
+
+    /// The listener can start: it needs Accessibility (the shortcut taps and
+    /// paste) and the model, never the microphone. `DictationAudio` keeps the
+    /// microphone closed until it is granted, so watch recordings transcribe
+    /// and paste without it.
+    pub fn listener_ready(self) -> bool {
+        self.accessibility == PermissionState::Ready && self.transcription_model
+    }
+
+    /// Setup is done: the listener can start and the microphone is granted
+    /// or a watch is paired and will do the dictating.
+    #[cfg_attr(not(test), allow(dead_code))] // fed by the Apple Watch page and the tour (unit C2)
+    pub fn ready_with_watch(self, paired: bool) -> bool {
+        self.listener_ready() && (self.microphone == PermissionState::Ready || paired)
     }
 }
 
@@ -202,6 +216,10 @@ pub enum Input {
     Reopen,
     /// "Restart Hex" once every permission is on and one waits for it.
     Restart,
+    /// Whether a watch is paired (and not needing repair). Setup then does not
+    /// wait for the microphone.
+    #[cfg_attr(not(test), allow(dead_code))] // sent by the Apple Watch view (unit C2)
+    Watch(bool),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,6 +294,8 @@ pub struct Flow {
     advance_due: bool,
     reopen: bool,
     relaunching: bool,
+    /// A watch is paired, so the Mac microphone can wait.
+    watch: bool,
 }
 
 impl Flow {
@@ -301,6 +321,7 @@ impl Flow {
             advance_due: false,
             reopen: false,
             relaunching: false,
+            watch: false,
         };
         // `status` is read fresh at launch, so a tour resumed after macOS's
         // Quit & Reopen passes a setup whose grants are now real, and one
@@ -357,6 +378,7 @@ impl Flow {
                 Effect::Relaunch
             }
             Input::Restart => Effect::None,
+            Input::Watch(paired) => self.set_watch(paired),
         }
     }
 
@@ -392,8 +414,14 @@ impl Flow {
         !self.permissions || !self.practice_step
     }
 
+    /// A paired watch dictates without the Mac microphone: it waits until
+    /// the first Mac dictation asks for it.
+    fn microphone_deferred(&self) -> bool {
+        self.watch && self.status.microphone != PermissionState::Ready
+    }
+
     fn permissions_ready(&self) -> bool {
-        self.status.microphone == PermissionState::Ready
+        (self.microphone_deferred() || self.status.microphone == PermissionState::Ready)
             && self.status.accessibility == PermissionState::Ready
     }
 
@@ -423,9 +451,7 @@ impl Flow {
             self.accessibility_stale = false;
         }
         self.model = model;
-        if self.step == Step::Setup && !was_ready && self.setup_ready() {
-            self.advance_due = true;
-        }
+        self.note_ready_change(was_ready);
         // The download starts the first time the tour sees no model, before
         // any permission is asked, so it runs while the person reads.
         if !status.transcription_model
@@ -443,9 +469,27 @@ impl Flow {
         Effect::None
     }
 
+    /// A tour parked at setup moves on a beat after setup turns ready,
+    /// whether a permission or a watch made it so.
+    fn note_ready_change(&mut self, was_ready: bool) {
+        if self.step == Step::Setup && !was_ready && self.setup_ready() {
+            self.advance_due = true;
+        }
+    }
+
+    fn set_watch(&mut self, paired: bool) -> Effect {
+        let was_ready = self.setup_ready();
+        self.watch = paired;
+        self.note_ready_change(was_ready);
+        if std::mem::take(&mut self.advance_due) && self.step == Step::Setup {
+            return Effect::AdvanceSoon;
+        }
+        Effect::None
+    }
+
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::with_capacity(4);
-        if self.permissions || self.microphone_row {
+        if (self.permissions || self.microphone_row) && !self.microphone_deferred() {
             rows.push(Row {
                 item: SetupItem::Microphone,
                 status: match self.status.microphone {
@@ -497,7 +541,8 @@ impl Flow {
     fn passes(&self, step: Step) -> bool {
         match step {
             Step::Setup => self.setup_ready(),
-            Step::TryIt => !self.practice_step,
+            // The practice presses the Mac shortcut, which needs the microphone.
+            Step::TryIt => !self.practice_step || self.microphone_deferred(),
             _ => false,
         }
     }
@@ -560,10 +605,10 @@ impl Flow {
         }
     }
 
-    /// Once per tour, and only after dictation is ready: before that, the
-    /// listener has not been asked to start.
+    /// Once per tour, and only once the listener can start: before that, it
+    /// has not been asked to.
     fn relaunch(&mut self) -> Effect {
-        if self.relaunching || !self.status.ready() {
+        if self.relaunching || !self.status.listener_ready() {
             return Effect::None;
         }
         self.relaunching = true;
@@ -1570,6 +1615,142 @@ mod tests {
             );
             assert_eq!(Flow::new(step, ready_status(), true, true).step(), step);
         }
+    }
+
+    fn without_microphone() -> SetupStatus {
+        SetupStatus {
+            microphone: PermissionState::NeedsRequest,
+            ..ready_status()
+        }
+    }
+
+    #[test]
+    fn listener_ready_needs_accessibility_and_model_not_the_microphone() {
+        assert!(without_microphone().listener_ready());
+        assert!(
+            !without_microphone().ready(),
+            "Mac dictation still needs it"
+        );
+        for status in [
+            SetupStatus {
+                accessibility: PermissionState::NeedsSettings,
+                ..without_microphone()
+            },
+            SetupStatus {
+                accessibility: PermissionState::NeedsRestart,
+                ..without_microphone()
+            },
+            SetupStatus {
+                transcription_model: false,
+                ..without_microphone()
+            },
+        ] {
+            assert!(!status.listener_ready(), "{status:?}");
+        }
+    }
+
+    #[test]
+    fn a_paired_watch_makes_setup_ready_without_the_microphone() {
+        assert!(without_microphone().ready_with_watch(true));
+        assert!(
+            SetupStatus {
+                microphone: PermissionState::NeedsSettings,
+                ..ready_status()
+            }
+            .ready_with_watch(true),
+            "a refused microphone is no reason to keep the tour open"
+        );
+        let mut flow = Flow::new(Step::Setup, without_microphone(), true, true);
+        assert_eq!(flow.step(), Step::Setup);
+        assert_eq!(flow.on(Input::Watch(true)), Effect::AdvanceSoon);
+        flow.on(Input::Continue);
+        assert_eq!(
+            flow.step(),
+            Step::Done,
+            "the tour finishes: the practice needs the microphone"
+        );
+    }
+
+    #[test]
+    fn without_a_watch_the_microphone_is_still_required() {
+        assert!(!without_microphone().ready_with_watch(false));
+        assert!(ready_status().ready_with_watch(false));
+        let mut flow = Flow::new(Step::Setup, without_microphone(), true, true);
+        assert_eq!(flow.on(Input::Watch(false)), Effect::None);
+        assert!(!flow.view().ready);
+        assert_eq!(flow.on(Input::Continue), Effect::None);
+        assert_eq!(flow.step(), Step::Setup);
+    }
+
+    #[test]
+    fn a_resumed_tour_advances_when_the_watch_input_arrives() {
+        // The watch snapshot comes after `Flow::new`, so the flow cannot know
+        // at construction. It must still leave Setup once told.
+        let mut flow = Flow::new(Step::TryIt, without_microphone(), true, true);
+        assert_eq!(flow.step(), Step::Setup, "held at setup until ready");
+        assert_eq!(flow.on(Input::Watch(true)), Effect::AdvanceSoon);
+        assert_eq!(
+            flow.on(Input::Watch(true)),
+            Effect::None,
+            "only on the change"
+        );
+    }
+
+    #[test]
+    fn a_needs_repair_watch_does_not_count() {
+        // The caller derives `paired` from the snapshot: NeedsRepair is false.
+        let mut flow = Flow::new(Step::Setup, without_microphone(), true, true);
+        assert_eq!(flow.on(Input::Watch(false)), Effect::None);
+        assert!(!without_microphone().ready_with_watch(false));
+    }
+
+    #[test]
+    fn a_keychain_wait_still_counts() {
+        // A watch waiting for the keychain is reported paired (`true`), so a
+        // locked login keychain does not bring the microphone row back.
+        let mut flow = Flow::new(Step::Setup, without_microphone(), true, true);
+        flow.on(Input::Watch(true));
+        assert!(flow.view().ready);
+        assert!(
+            flow.view()
+                .rows
+                .iter()
+                .all(|row| row.item != SetupItem::Microphone)
+        );
+    }
+
+    #[test]
+    fn deferred_microphone_hides_its_row_and_passes_the_practice() {
+        let mut flow = Flow::new(Step::Welcome, without_microphone(), true, true);
+        assert_eq!(
+            statuses(&flow)[0],
+            (SetupItem::Microphone, ItemStatus::Todo, true)
+        );
+        flow.on(Input::Watch(true));
+        assert_eq!(
+            statuses(&flow),
+            [(SetupItem::Accessibility, ItemStatus::Ready, false)],
+            "only Accessibility is asked"
+        );
+        assert!(!flow.view().dictation_ready, "Mac dictation is not ready");
+        let mut resumed = Flow::new(Step::Welcome, without_microphone(), true, true);
+        resumed.on(Input::Watch(true));
+        resumed.on(Input::Continue);
+        assert_eq!(resumed.step(), Step::Done);
+        // The microphone returns to the rows when the watch goes away.
+        flow.on(Input::Watch(false));
+        assert_eq!(statuses(&flow)[0].0, SetupItem::Microphone);
+    }
+
+    #[test]
+    fn the_listener_relaunch_needs_only_the_listener_to_be_startable() {
+        let mut flow = Flow::new(Step::Setup, without_microphone(), true, true);
+        assert_eq!(
+            flow.on(Input::ListenerFailed {
+                relaunch_allowed: true
+            }),
+            Effect::Relaunch
+        );
     }
 
     #[test]
