@@ -278,14 +278,31 @@ impl ModelDefinition {
     pub fn supports_language(&self, language: &str) -> bool {
         if language == AUTO_LANGUAGE {
             self.supports_language_detection
+        } else if language == "yue"
+            && matches!(
+                self.id,
+                TranscriptionModelId::WhisperMedium | TranscriptionModelId::WhisperSmall
+            )
+        {
+            // Their files list no Cantonese token, and the engine fails a
+            // run in a language it can't tag.
+            false
         } else {
             self.languages.contains(&"*") || self.languages.contains(&language)
         }
     }
 
+    /// Whisper files name Filipino `tl`, never `fil`; the engine rejects a
+    /// language its file has no token for.
+    fn is_whisper(&self) -> bool {
+        matches!(self.runtime, ModelRuntime::Gguf(artifact) if artifact.architecture == "whisper")
+    }
+
     pub fn runtime_language<'a>(&self, language: &'a str) -> &'a str {
+        if language == "fil" && self.is_whisper() {
+            return "tl";
+        }
         match self.id {
-            TranscriptionModelId::WhisperLargeV3Turbo if language == "fil" => "tl",
             // Its prompt and advertised languages are locales: `de-DE`.
             TranscriptionModelId::Nemotron35Asr => NEMOTRON_3_5_LOCALES
                 .iter()
@@ -2104,6 +2121,76 @@ mod tests {
             for choice in choices_for_runtime(language) {
                 assert!(!new.contains(&choice.model.id), "{language}");
             }
+        }
+    }
+
+    /// The medium and small GGUF files list no Cantonese token, and the
+    /// engine fails a run in a language it can't tag, so Settings must not
+    /// offer it for them. large-v3 lists it.
+    #[test]
+    fn whisper_medium_and_small_do_not_offer_cantonese() {
+        for id in [
+            TranscriptionModelId::WhisperMedium,
+            TranscriptionModelId::WhisperSmall,
+        ] {
+            let model = definition(id);
+            assert!(!model.supports_language("yue"), "{id:?}");
+            assert!(!model.language_choices().contains(&"yue"), "{id:?}");
+            assert_eq!(model.language_for("yue"), "en", "{id:?}");
+            let selection = TranscriptionSelection {
+                model: id,
+                language: "yue".into(),
+            };
+            assert!(validate(&selection).is_err(), "{id:?}");
+            // Mandarin and the rest of Whisper's list stay.
+            assert!(model.supports_language("zh"), "{id:?}");
+            assert!(model.supports_language("tl"), "{id:?}");
+        }
+        for id in [
+            TranscriptionModelId::WhisperLargeV3,
+            TranscriptionModelId::WhisperLargeV3Turbo,
+        ] {
+            assert!(definition(id).supports_language("yue"), "{id:?}");
+        }
+    }
+
+    /// Settings says `fil`; a Whisper file has the token `tl` and no `fil`,
+    /// so every Whisper that takes any language maps one to the other.
+    #[test]
+    fn every_any_language_whisper_maps_filipino_to_tl() {
+        let whispers: Vec<_> = MODELS
+            .iter()
+            .filter(|model| {
+                model.languages == ["*"]
+                    && matches!(model.runtime, ModelRuntime::Gguf(artifact) if artifact.architecture == "whisper")
+            })
+            .collect();
+        assert_eq!(
+            whispers.iter().map(|model| model.id).collect::<Vec<_>>(),
+            [
+                TranscriptionModelId::WhisperLargeV3Turbo,
+                TranscriptionModelId::WhisperLargeV3,
+                TranscriptionModelId::WhisperMedium,
+                TranscriptionModelId::WhisperSmall,
+            ]
+        );
+        for model in whispers {
+            assert_eq!(model.runtime_language("fil"), "tl", "{:?}", model.id);
+            assert_eq!(
+                model.runtime_language_hint("fil"),
+                Some("tl"),
+                "{:?}",
+                model.id
+            );
+            assert_eq!(model.runtime_language("en"), "en", "{:?}", model.id);
+            assert_eq!(model.runtime_language_hint(AUTO_LANGUAGE), None);
+        }
+        // Qwen3-ASR names Filipino itself.
+        for id in [
+            TranscriptionModelId::Qwen3Asr06B,
+            TranscriptionModelId::Qwen3Asr17B,
+        ] {
+            assert_eq!(definition(id).runtime_language("fil"), "fil", "{id:?}");
         }
     }
 

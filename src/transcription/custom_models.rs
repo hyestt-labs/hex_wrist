@@ -1233,6 +1233,35 @@ mod tests {
         assert!(!takes_language_hint("parakeet"));
     }
 
+    /// A Whisper import that declares `fil` runs with Whisper's `tl`, as
+    /// the catalog's Whisper models do (a behaviour change of Unit F: it
+    /// used to send `fil`, which the engine rejects).
+    #[test]
+    fn a_whisper_import_maps_filipino_to_tl() {
+        let manifest = |architecture: &str, sha256: String| Manifest {
+            name: "Imported".into(),
+            metadata_name: "Imported".into(),
+            architecture: architecture.into(),
+            variant: "whisper-small".into(),
+            languages: vec!["en".into(), "fil".into()],
+            detects_language: true,
+            bytes: 1,
+            sha256,
+            source: "file".into(),
+            license: None,
+            repository: None,
+            imported_at: 0,
+            path: None,
+            origin: None,
+        };
+        let whisper = manifest("whisper", "2b".repeat(32));
+        let whisper = build(CustomModelId::from_sha256(&whisper.sha256), &whisper);
+        assert_eq!(whisper.runtime_language("fil"), "tl");
+        let qwen = manifest("qwen3_asr", "3c".repeat(32));
+        let qwen = build(CustomModelId::from_sha256(&qwen.sha256), &qwen);
+        assert_eq!(qwen.runtime_language("fil"), "fil");
+    }
+
     #[test]
     fn unsupported_files_are_refused_with_a_reason() {
         let reason = |bytes: Vec<u8>| {
