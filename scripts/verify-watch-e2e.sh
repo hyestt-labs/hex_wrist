@@ -74,8 +74,11 @@ ZH_TEXT=${WATCH_E2E_ZH_TEXT:-今天下午三點在會議室討論新的產品設
 AGENT_TEXT=${WATCH_E2E_AGENT_TEXT:-Reply with only the word pong.}
 EN_PASS=${WATCH_E2E_EN_PASS:-80}
 ZH_PASS=${WATCH_E2E_ZH_PASS:-60}
-# A page with no user data: one empty textarea, focused on load.
-CHROME_URL='data:text/html,%3Ctextarea%20id%3Dt%20autofocus%20style%3D%22width%3A90vw%3Bheight%3A80vh%22%3E%3C%2Ftextarea%3E'
+# A page with no user data: one empty textarea, focused on load. Its input
+# handler copies the text into the page title, which the isolated Chrome's
+# remote debugging port lists over plain HTTP (the read-back).
+CHROME_URL='data:text/html,%3Ctextarea%20id%3Dt%20autofocus%20oninput%3D%22document.title%3Dthis.value%22%20style%3D%22width%3A90vw%3Bheight%3A80vh%22%3E%3C%2Ftextarea%3E'
+CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # Where claude and codex start (they ask to trust a folder they have not seen).
 AGENT_DIR=${WATCH_E2E_AGENT_DIR:-$root}
 AGENT_BIN=
@@ -110,6 +113,9 @@ sim_udid=
 keep_setting_original=
 cleanup() {
   [ -n "$log_pid" ] && kill "$log_pid" 2>/dev/null
+  if [ -s "$out/chrome-handles" ]; then
+    while IFS= read -r h; do chrome_close "$h"; done < "$out/chrome-handles"
+  fi
   if [ -n "$keep_setting_original" ] && [ -x "$hex" ]; then
     "$hex" settings set labs.keep_on_clipboard "$keep_setting_original" >/dev/null 2>&1
   fi
@@ -154,32 +160,34 @@ probe_automation() {
   return 1
 }
 
-# The runner needs Accessibility for the B2 live tests and Automation of System Events to prove it.
+# The runner needs Accessibility for the B2 live tests and the Chrome scenario (bringing
+# the throwaway Chrome to the front), and Automation of System Events to prove it.
 probe_runner_accessibility() {
   local err rc runner
   runner=$(runner_app)
   err=$(run_to 25 osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1 >/dev/null); rc=$?
   [ $rc = 0 ] && return 0
   if grep -qi 'assistive' <<<"$err"; then
-    need "Accessibility: in System Settings > Privacy & Security > Accessibility, turn on \"$runner\" (the stage 4 live tests read the focused field through it)."
+    need "Accessibility: in System Settings > Privacy & Security > Accessibility, turn on \"$runner\" (the stage 4 live tests read the focused field through it, and the Chrome scenario brings its throwaway Chrome to the front with it)."
   else
     need "Automation: in System Settings > Privacy & Security > Automation, turn on \"System Events\" under \"$runner\", and in Accessibility turn on \"$runner\". osascript said: ${err:-timed out waiting for the prompt}"
   fi
 }
 
-# Chrome must allow the throwaway page to be read back through AppleScript.
+# The Chromium scenario starts its own Chrome process with a throwaway profile
+# (see chrome_open) and reads it back over its debugging port. It changes nothing
+# in the user's Chrome and sends Chrome no Apple event. It only needs Chrome
+# installed, and (to bring that process to the front) the same System Events
+# access the stage 4 live tests need.
 probe_chrome() {
-  local id err rc
-  [ -d "/Applications/Google Chrome.app" ] || { need "Install Google Chrome (the Chromium read-back scenario opens a throwaway data: page in it)."; return; }
-  probe_automation "Google Chrome" || return
-  id=$(chrome_open) || true
-  if [ -z "$id" ]; then
-    need "Chrome did not open the throwaway page; check Google Chrome starts and no modal dialog is open."
+  local handle
+  [ -x "$CHROME_BIN" ] || { need "Install Google Chrome in /Applications (the Chromium scenario starts a separate Chrome process with a throwaway profile; your own Chrome is not touched)."; return; }
+  handle=$(chrome_open) || true
+  if [ -z "$handle" ]; then
+    need "A separate Chrome process with a throwaway profile did not start (see ${TMPDIR:-/tmp}/wristper-e2e-chrome.*.log); check Google Chrome launches."
     return
   fi
-  err=$(run_to 25 osascript -e "tell application \"Google Chrome\" to execute active tab of window id $id javascript \"1+1\"" 2>&1 >/dev/null); rc=$?
-  chrome_close "$id"
-  [ $rc = 0 ] || need "Chrome: choose View > Developer > Allow JavaScript from Apple Events in Google Chrome (once; the read-back uses it). osascript said: ${err:-timed out}"
+  chrome_close "$handle"
 }
 
 print_blocked() {
@@ -295,10 +303,12 @@ check_permissions() {
   if [ "$ax" != ready ]; then
     need "Accessibility for Wristper Test.app ($ax): System Settings > Privacy & Security > Accessibility, turn on \"Wristper Test\"; if it is not listed click + and add $app. Then run \"$hex\" restart if the status stays needs-restart."
   fi
+  local chrome_wanted=0
+  if stage_on 3 && { [ -z "$only" ] || [[ chrome =~ $only ]]; }; then chrome_wanted=1; fi
+  [ "$chrome_wanted" = 1 ] && probe_chrome
   if ! screen_locked; then
     for t in TextEdit Terminal; do probe_automation "$t"; done
-    if stage_on 3 && { [ -z "$only" ] || [[ chrome =~ $only ]]; }; then probe_chrome; fi
-    if stage_on 4; then probe_runner_accessibility; fi
+    if stage_on 4 || [ "$chrome_wanted" = 1 ]; then probe_runner_accessibility; fi
   fi
   [ ${#blocked[@]} -eq 0 ] || print_blocked
   log "preflight: permissions ready"
@@ -349,12 +359,50 @@ kind_of() {
   esac
 }
 
+# Chrome runs as its own process with a throwaway profile: the user's Chrome,
+# its windows, its profile, and its settings are never used or changed. No
+# Apple event is sent to Chrome at all. The handle is "pid:port:profile-dir".
 chrome_open() {
-  run_to 40 osascript -e 'tell application "Google Chrome"' -e 'activate' \
-    -e 'set w to make new window with properties {mode:"incognito"}' \
-    -e "set URL of active tab of w to \"$CHROME_URL\"" -e 'delay 2' -e 'return id of w' -e 'end tell'
+  local dir port pid i
+  [ -x "$CHROME_BIN" ] || return 1
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/wristper-e2e-chrome.XXXXXX") || return 1
+  port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  # --use-mock-keychain and basic password store: a fresh profile must not touch the login Keychain.
+  "$CHROME_BIN" --user-data-dir="$dir" --remote-debugging-port="$port" --no-first-run --no-default-browser-check \
+    --use-mock-keychain --password-store=basic --disable-extensions --disable-sync --window-size=900,700 \
+    --new-window "$CHROME_URL" > "$dir.log" 2>&1 &
+  pid=$!
+  echo "$pid:$port:$dir" >> "$out/chrome-handles"   # the exit trap closes any that are left
+  for i in $(seq 1 40); do
+    chrome_ready "$port" && { echo "$pid:$port:$dir"; return 0; }
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  chrome_close "$pid:$port:$dir"
+  return 1
 }
-chrome_close() { run_to 20 osascript -e "tell application \"Google Chrome\" to close window id $1" >/dev/null 2>&1; }
+# True once the debugging port lists the throwaway page.
+chrome_ready() {
+  curl -s -m 3 "http://127.0.0.1:$1/json" 2>/dev/null |
+    jq -e 'map(select(.type=="page" and (.url | startswith("data:text/html")))) | length > 0' >/dev/null 2>&1
+}
+# The throwaway page's title as the debugging port lists it ("" until text is typed).
+chrome_page() {
+  curl -s -m 3 "http://127.0.0.1:$1/json" 2>/dev/null |
+    jq -r '[.[] | select(.type=="page")][0] | .title // empty | select(startswith("data:text/html") | not)' 2>/dev/null
+}
+# Stops only the process this script started, then moves its profile to the Trash.
+chrome_close() {
+  local pid=${1%%:*} rest=${1#*:} dir i
+  dir=${rest#*:}
+  # Only a process whose command line carries this throwaway profile: never the user's Chrome.
+  if [[ $(ps -p "$pid" -o command= 2>/dev/null) == *"--user-data-dir=$dir"* ]]; then
+    kill "$pid" 2>/dev/null
+    for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  fi
+  case "$dir" in */wristper-e2e-chrome.*) /usr/bin/trash "$dir" "$dir.log" >/dev/null 2>&1 ;; esac
+}
 
 # Prints a handle for the opened target.
 open_target() {
@@ -385,10 +433,10 @@ focus_target() {
       osascript -e 'tell application "Terminal"' -e 'activate' -e 'repeat with w in windows' \
         -e "if tty of selected tab of w is \"$2\" then set index of w to 1" -e 'end repeat' -e 'end tell' >/dev/null ;;
     chrome)
-      osascript -e 'tell application "Google Chrome"' -e 'activate' \
-        -e "set index of (first window whose id is $2) to 1" -e 'delay 0.5' \
-        -e "execute active tab of window id $2 javascript \"document.getElementById('t').focus()\"" \
-        -e 'end tell' >/dev/null ;;
+      # Bring this Chrome process (by its pid) to the front; it is not the one the user may have open.
+      osascript -e 'tell application "System Events"' \
+        -e "set frontmost of (first process whose unix id is ${2%%:*}) to true" -e 'end tell' >/dev/null
+      sleep 1 ;;
   esac
 }
 
@@ -399,8 +447,7 @@ read_target() {
       osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' \
         -e "if tty of selected tab of w is \"$2\" then return contents of selected tab of w" \
         -e 'end repeat' -e 'end tell' ;;
-    chrome)
-      osascript -e "tell application \"Google Chrome\" to execute active tab of window id $2 javascript \"document.getElementById('t').value\"" ;;
+    chrome) chrome_page "$(cut -d: -f2 <<<"$2")" ;;
   esac
 }
 

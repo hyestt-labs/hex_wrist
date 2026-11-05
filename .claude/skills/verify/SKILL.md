@@ -19,7 +19,7 @@ The script runs four stages:
    - `cat-enter`, `cat-undo`: in Terminal running `cat`, Return makes `cat` echo the line, and Undo is refused.
    - `shell-enter`: in a plain zsh, Return runs the line once (`command not found` appears once).
    - `enter-twice-textedit`, `enter-twice-shell`: two `/enter` calls at the same moment type Return once.
-   - `chrome-textarea`: a throwaway incognito `data:text/html` page with one textarea. The text is pasted and read back through AppleScript JavaScript.
+   - `chrome-textarea`: a throwaway `data:text/html` page with one textarea, in a separate Chrome process that has its own empty profile. The page copies its text into its title, and the script reads the title from that Chrome's remote debugging port (`curl http://127.0.0.1:<port>/json`). Nothing in the user's Chrome is used, opened, or changed, and Chrome gets no Apple event.
    - `agent-claude`, `agent-codex` (only with `--with-agents`): an interactive agent in Terminal receives "Reply with only the word pong." and Return submits it, proven by the agent's reply.
 4. **B2 live tests.** `cargo nextest run --locked --bin hex --run-ignored only -E 'test(watch_live)' -j 1`. They read the focused field through Accessibility in TextEdit, Terminal, and Finder.
 
@@ -33,7 +33,8 @@ The script runs four stages:
 - Everything runs under `Wristper Test` (bundle `dev.wristper.mac.test`, data folder `~/Library/Application Support/Wristper Test`, its own relay room).
 - The script never tries to grant a permission or to unlock the screen.
 - Do not deploy the relay.
-- Never delete with `rm`. Use `/usr/bin/trash`.
+- Delete only with `/usr/bin/trash`. Nothing else deletes anything here.
+- The Chromium scenario starts its own Chrome process (`--user-data-dir=<temp folder>`, `--use-mock-keychain`, `--remote-debugging-port`). It stops only that process, found by its profile folder on the command line, and moves the temp profile to the Trash. It never touches the user's Chrome.
 - The scenarios overwrite the Mac's clipboard and change Labs › Keep dictation on clipboard on the test app. The script restores that setting when it exits. It cannot restore the clipboard.
 
 ## Launch (one command)
@@ -55,7 +56,7 @@ The script uses these exit codes:
 - `0` means every case passed.
 - `1` means a case failed.
 - `2` means bad usage or a missing tool or source tree.
-- `3` means it is blocked on a human. The output prints a `BLOCKED` block that lists every missing click in one go. The causes are a locked screen, Microphone or Accessibility for Wristper Test, Automation for the app that runs the script (to control TextEdit, Terminal, Google Chrome, and System Events), Accessibility for that app (stage 4), and Chrome's "Allow JavaScript from Apple Events".
+- `3` means it is blocked on a human. The output prints a `BLOCKED` block that lists every missing click in one go. The causes are a locked screen, Microphone or Accessibility for Wristper Test, Automation for the app that runs the script (to control TextEdit, Terminal, and System Events), Accessibility for that app (stage 4 and the Chrome scenario, which brings its throwaway Chrome to the front), and Google Chrome missing from `/Applications`.
 
 The last line is `RESULT: PASS` or `RESULT: FAIL`. Before it, a table prints stage, scenario, language, result, match %, state, milliseconds, and the text read back. A failing row has a `└` line with the reasons.
 
@@ -95,9 +96,8 @@ The listener turns watch audio into pasted text. It starts only after Microphone
 1. Run `scripts/verify-watch-e2e.sh --preflight-only`. It exits with `3` and lists the exact steps for this Mac.
 2. Run `"target/app/Wristper Test.app/Contents/MacOS/hex" window show`. In the setup page, click Allow for Microphone.
 3. In System Settings > Privacy & Security > Accessibility, turn on Wristper Test. If it is not listed, add `target/app/Wristper Test.app`. Turn on the app that runs the script too (Terminal, Orca, iTerm) for stage 4.
-4. The first time, macOS asks whether the app that runs the script may control TextEdit, Terminal, System Events, and Google Chrome (Automation). Click OK each time.
-5. In Google Chrome, choose View > Developer > Allow JavaScript from Apple Events. This changes the user's real Chrome until they turn it off again.
-6. Run the script again with `--skip-build`.
+4. The first time, macOS asks whether the app that runs the script may control TextEdit, Terminal, and System Events (Automation). Click OK each time. Chrome needs no setting.
+5. Run the script again with `--skip-build`.
 
 The grants survive rebuilds only while the Developer ID re-sign succeeds. The script logs a WARNING when it does not.
 
@@ -121,7 +121,7 @@ ioreg -n Root -d1 | grep IOConsoleLocked
 
 ## Evidence (what counts as proof)
 
-A case is proof only when the text read back from TextEdit, Terminal, or Chrome matches the spoken sentence. Matching ignores case, punctuation, spacing, and Traditional versus Simplified characters (`watch-sim match`). A 200 reply or a `state` of `unverified` alone is not proof.
+A case is proof only when the text read back from TextEdit, Terminal, or the throwaway Chrome matches the spoken sentence. Matching ignores case, punctuation, spacing, and Traditional versus Simplified characters (`watch-sim match`). A 200 reply or a `state` of `unverified` alone is not proof.
 
 Each run writes `target/watch-e2e/<YYYYmmdd-HHMMSS>/`, and cleanup never removes it. The folder holds these files:
 
@@ -144,7 +144,7 @@ The watch can hold several Macs. Pick the test Mac on the watch while you test, 
 
 ## Cleanup
 
-The script's exit trap restores Labs › Keep dictation on clipboard, quits Wristper Test (`hex quit`), and shuts down the `Wristper E2E` simulator. It does these unless you pass `--keep-running` or the run is blocked. Each case closes the TextEdit document, Terminal window, or Chrome window it opened. It never kills by process name across the system. It stops `cat`, `claude`, and `codex` only on the tty of its own Terminal window. To remove a stale simulator, run `xcrun simctl delete "Wristper E2E"`. To start over from a fresh test data folder, run `/usr/bin/trash ~/Library/Application\ Support/Wristper\ Test`. That also loses the test room and the downloaded test models.
+The script's exit trap restores Labs › Keep dictation on clipboard, quits Wristper Test (`hex quit`), and shuts down the `Wristper E2E` simulator. It does these unless you pass `--keep-running` or the run is blocked. Each case closes the TextEdit document or Terminal window it opened, and stops the throwaway Chrome process it started (the exit trap closes any left over and moves their temp profiles to the Trash). It never kills by process name across the system. It stops `cat`, `claude`, and `codex` only on the tty of its own Terminal window. To remove a stale simulator, run `xcrun simctl delete "Wristper E2E"`. To start over from a fresh test data folder, run `/usr/bin/trash ~/Library/Application\ Support/Wristper\ Test`. That also loses the test room and the downloaded test models.
 
 ## Helpers
 

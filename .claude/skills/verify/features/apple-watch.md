@@ -29,7 +29,7 @@ Preconditions: the baseline in [README.md](./README.md).
 - **Status.** In stage 1 `results.jsonl`, `detail.status` is the decrypted `/status` with `state`, `text`, and `transcribe_ms`.
 - **Enter and Undo.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only 'enter|undo'`. The rows `textedit-enter`, `textedit-undo`, `cat-enter`, `cat-undo`, `shell-enter`, and `enter-twice-*` are PASS. `detail.enter`, `detail.enters`, and `detail.undo` hold the Mac's raw replies. In stage 2, `E2E enter outcome=…` shows the real watch app's result.
 - **Clipboard.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only clipboard`. The three `clipboard-*` rows are PASS (`clipboard-keep-gate-switch` covers the first gate only; see the gap in SKILL.md). `detail.fails` names the clipboard text that was found when one fails.
-- **Chromium.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only chrome`. The `chrome-textarea` rows read the text back from a throwaway incognito page.
+- **Chromium.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only chrome`. The `chrome-textarea` rows read the text back from a throwaway page in a separate Chrome process with an empty profile.
 - **Agents (opt in).** Add `--with-agents`. The `agent-claude` and `agent-codex` rows need those tools logged in and the folder trusted.
 - **Live tests (B2).** Run `scripts/verify-watch-e2e.sh --skip-build --stage 4`. One row per `watch_live_*` test.
 
