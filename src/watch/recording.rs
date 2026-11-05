@@ -240,7 +240,7 @@ pub(crate) struct Record {
     pub(crate) error: Option<String>,
     pub(crate) truncated: bool,
     /// The paired watch whose `/focus` or `/audio` created it; `None` when
-    /// the Mac did, or for a record read back from the dedupe table.
+    /// the Mac did, or for a Swift-written dedupe entry.
     pub(crate) owner: Option<String>,
 }
 
@@ -268,7 +268,7 @@ impl Record {
             paste_reason: None,
             error: None,
             truncated: entry.truncated,
-            owner: None,
+            owner: entry.owner.clone(),
         })
     }
 
@@ -358,14 +358,14 @@ pub(crate) enum Caller<'a> {
 }
 
 /// `notOwnerRefusal`: one watch's token cannot `/focus`, `/enter`, or
-/// `/undo` another watch's live recording. Checked before anything else
-/// about the record; a record without an owner, an unknown id, and the
-/// Mac itself all pass.
-pub(crate) fn refuse_non_owner(record: Option<&Record>, caller: Caller) -> Result<(), Refusal> {
+/// `/undo` another watch's recording. `owner` is the recording's, live or
+/// remembered. Checked before anything else about the record; a record
+/// without an owner, an unknown id, and the Mac itself all pass.
+pub(crate) fn refuse_non_owner(owner: Option<&str>, caller: Caller) -> Result<(), Refusal> {
     let Caller::Device(device) = caller else {
         return Ok(());
     };
-    match record.and_then(|record| record.owner.as_deref()) {
+    match owner {
         Some(owner) if !device.is_empty() && !owner.is_empty() && owner != device => {
             Err(Refusal::NotOwner)
         }
@@ -787,14 +787,20 @@ mod tests {
     #[test]
     fn only_the_owning_watch_or_the_mac_may_act_on_a_live_recording() {
         let owned = record(read_back(false), Some(at(0)));
-        let refused = refuse_non_owner(Some(&owned), Caller::Device("w2")).unwrap_err();
+        let refused = refuse_non_owner(owned.owner.as_deref(), Caller::Device("w2")).unwrap_err();
         assert_eq!(refused, Refusal::NotOwner);
         assert_eq!(refused.status(), 403);
         assert_eq!(refused.body(), json!({ "ok": false, "error": "not-owner" }));
-        assert_eq!(refuse_non_owner(Some(&owned), Caller::Device("w1")), Ok(()));
-        assert_eq!(refuse_non_owner(Some(&owned), Caller::Master), Ok(()));
         assert_eq!(
-            refuse_non_owner(Some(&owned), Caller::Device("")),
+            refuse_non_owner(owned.owner.as_deref(), Caller::Device("w1")),
+            Ok(())
+        );
+        assert_eq!(
+            refuse_non_owner(owned.owner.as_deref(), Caller::Master),
+            Ok(())
+        );
+        assert_eq!(
+            refuse_non_owner(owned.owner.as_deref(), Caller::Device("")),
             Ok(()),
             "an empty device id is no device (`deviceID(of:)`)"
         );
@@ -807,7 +813,7 @@ mod tests {
             let mut unowned = owned.clone();
             unowned.owner = legacy;
             assert_eq!(
-                refuse_non_owner(Some(&unowned), Caller::Device("w2")),
+                refuse_non_owner(unowned.owner.as_deref(), Caller::Device("w2")),
                 Ok(()),
                 "a record without an owner stays open, as in Swift"
             );
@@ -825,13 +831,14 @@ mod tests {
             entered: true,
             completed_at: Some("completed".into()),
             recorded_at: "recorded".into(),
+            owner: None,
         };
         let with = Record::from_delivered(&entry).unwrap();
         assert_eq!(with.updated_at, "completed");
         assert_eq!(with.completed_at.as_deref(), Some("completed"));
         assert!(with.truncated && with.paste.entered);
         assert_eq!((with.text.as_str(), with.language.as_str()), ("", ""));
-        assert_eq!(with.owner, None, "the dedupe table keeps no owner");
+        assert_eq!(with.owner, None, "a Swift-written entry has no owner");
         entry.completed_at = None;
         let without = Record::from_delivered(&entry).unwrap();
         assert_eq!(without.updated_at, "recorded");

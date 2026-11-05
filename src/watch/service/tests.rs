@@ -980,6 +980,68 @@ fn duplicate_answers_come_only_after_token_and_owner_checks() {
     assert_eq!(h.jobs.lock().unwrap().len(), 1);
 }
 
+/// Once the live record is pruned or Hex restarts, the dedupe table still
+/// names the owner, so another watch gets neither a duplicate nor a status.
+/// An entry Swift wrote has no owner and answers any watch, as before.
+#[test]
+fn ownership_survives_in_the_dedupe_table() {
+    let mut h = harness("dedupe-owner");
+    let owner = h.pair("watch-1");
+    let other = h.pair("watch-2");
+    let index = h.start_recording(&owner, ID);
+    h.deliver(index, report(DeliveryOutcome::Copied, "mine"));
+    h.frames.lock().unwrap().clear();
+    h.core.records.clear();
+    h.core.nonces = e2ee::NonceCache::default();
+    h.core.delivered = crate::watch::delivered::load(&h.dir.join(DELIVERED_FILE));
+
+    let status = h.query(&other, "/status", &[("id", ID)]).unwrap();
+    assert_eq!(
+        (status.status, status.body["error"].as_str()),
+        (404, Some("unknown-id"))
+    );
+    let resend = audio_head(&other, ID, "current", h.now.epoch());
+    let mut late = resend.clone();
+    late.background = Some(true);
+    for head in [&resend, &late] {
+        let answer = h.send_audio(&other, head, M4A).unwrap();
+        assert_eq!(
+            (answer.status, answer.body["error"].as_str()),
+            (403, Some("not-owner")),
+            "{}",
+            answer.body
+        );
+    }
+    let focus = format!(r#"{{"id":"{ID}"}}"#);
+    let headers = h.device_headers(&other);
+    let (code, body) = h
+        .request("POST", "/focus", &[], &headers, focus.as_bytes())
+        .unwrap();
+    assert_eq!((code, body["error"].as_str()), (403, Some("not-owner")));
+
+    let mine = h.query(&owner, "/status", &[("id", ID)]).unwrap();
+    assert_eq!(
+        (mine.status, mine.body["state"].as_str()),
+        (200, Some("copied"))
+    );
+    let again = audio_head(&owner, ID, "current", h.now.epoch());
+    let duplicate = h.send_audio(&owner, &again, M4A).unwrap();
+    assert_eq!(duplicate.body["duplicate"], true);
+    assert_eq!(h.jobs.lock().unwrap().len(), 1);
+
+    let swift = format!(
+        r#"[{{"id":"{OTHER_ID}","state":"pasted","verified":true,"verification":"read-back",
+            "truncated":false,"entered":false,"recorded_at":"{}"}}]"#,
+        crate::watch::Timestamp::string(h.now.wall)
+    );
+    h.core.delivered = crate::watch::delivered::DeliveredIds::from_json(swift.as_bytes());
+    let open = h.query(&other, "/status", &[("id", OTHER_ID)]).unwrap();
+    assert_eq!(
+        (open.status, open.body["state"].as_str()),
+        (200, Some("pasted"))
+    );
+}
+
 #[test]
 fn a_duplicate_waits_for_the_first_copy_then_answers_from_it() {
     let mut h = harness("duplicate");

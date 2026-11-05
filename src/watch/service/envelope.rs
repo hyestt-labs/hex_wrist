@@ -247,8 +247,7 @@ impl Core {
             Some("current") => false,
             _ => return self.refuse(reply, Refusal::InvalidMetadata),
         };
-        let live = self.records.get(id).map(|live| &live.record);
-        if let Err(refusal) = refuse_non_owner(live, Caller::Device(&device)) {
+        if let Err(refusal) = refuse_non_owner(self.owner_of(id, now), Caller::Device(&device)) {
             return self.refuse(reply, refusal);
         }
         // Nonces live in memory and get pushed out; a background upload may
@@ -279,10 +278,11 @@ impl Core {
         may_wait_for_focus: bool,
         now: Now,
     ) {
-        let live = self.records.get(&job.id).map(|live| &live.record);
-        if let Err(refusal) = refuse_non_owner(live, Caller::Device(&job.device)) {
+        let owner = self.owner_of(&job.id, now);
+        if let Err(refusal) = refuse_non_owner(owner, Caller::Device(&job.device)) {
             return self.refuse(reply, refusal);
         }
+        let live = self.records.get(&job.id).map(|live| &live.record);
         match live {
             Some(record) if record.state == State::Transcribing => {
                 self.waiting.push(Waiting::Duplicate {

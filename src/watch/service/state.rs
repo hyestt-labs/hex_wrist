@@ -397,6 +397,15 @@ impl Core {
         }
     }
 
+    /// The watch `id` belongs to: the live record's, else the dedupe
+    /// table's, so ownership outlives pruning and restarts.
+    pub(super) fn owner_of(&self, id: &str, now: Now) -> Option<&str> {
+        match self.records.get(id) {
+            Some(live) => live.record.owner.as_deref(),
+            None => self.delivered.get(id, now.wall)?.owner.as_deref(),
+        }
+    }
+
     /// Writes `id`'s live state into the dedupe table, so a resend after
     /// the live record is gone still reads `duplicate`.
     pub(super) fn remember_handled(&mut self, id: &str, now: Now) {
@@ -406,6 +415,7 @@ impl Core {
         let record = &live.record;
         self.delivered.record(
             id,
+            record.owner.as_deref(),
             record.state,
             record.paste,
             record.truncated,

@@ -200,8 +200,7 @@ impl Core {
         if !is_valid_recording_id(id) {
             return Err(Refusal::InvalidId);
         }
-        let live = self.records.get(id).map(|live| &live.record);
-        if refuse_non_owner(live, Caller::Device(device)).is_err() {
+        if refuse_non_owner(self.owner_of(id, now), Caller::Device(device)).is_err() {
             return Err(Refusal::UnknownId);
         }
         let channel = if inside {
@@ -228,8 +227,8 @@ impl Core {
         if !is_valid_recording_id(&id) {
             return Err(Refusal::InvalidId);
         }
+        refuse_non_owner(self.owner_of(&id, now), Caller::Device(device))?;
         let existing = self.records.get(&id).map(|live| &live.record);
-        refuse_non_owner(existing, Caller::Device(device))?;
         if let Some(record) = existing
             && record.state != State::AwaitingAudio
         {
