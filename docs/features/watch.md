@@ -68,7 +68,12 @@ Apple Watch                               // watch.pair, watch.dictate
   relay's 60 s never 504s; the watch re-queries `/status`.
 - **Idempotency.** The recording id is the key: in-flight duplicates wait up
   to 45 s; delivered ones answer from the live record, or from
-  `delivered-ids.json` (24 h, 5000 entries) once the record is gone. Audio
+  `delivered-ids.json` (24 h, 5000 entries) once the record is gone. Each
+  entry Hex writes names its watch, so another watch gets neither a
+  duplicate answer nor the status (404 `unknown-id`). Known limit: the old
+  Swift app drops that `owner` key if it rewrites the file, which only
+  happens when both apps run against one data folder; they share a bundle
+  id, so installing Wristper replaces the Swift app. Audio
   marked `focus: requested` that beats its `/focus` waits 2 s, then proceeds
   (B1 pastes at the current cursor either way; B2 withholds as
   `target-changed` once snapshots exist).

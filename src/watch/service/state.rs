@@ -280,6 +280,14 @@ impl Core {
                 let Some(claim) = self.take_claim(&code) else {
                     return;
                 };
+                if claim.deadline <= now.at {
+                    tracing::info!(
+                        code,
+                        "a pairing claim was answered after its caller gave up"
+                    );
+                    let _ = claim.reply.try_send(Err(ClaimError::Timeout));
+                    return;
+                }
                 self.requests.approve(&device_id, now.at);
                 let _ = claim.reply.try_send(Ok(ClaimOk {
                     device_id,

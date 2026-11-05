@@ -1498,6 +1498,39 @@ fn a_claim_is_never_sent_after_its_caller_gave_up() {
 }
 
 #[test]
+fn a_claim_answer_handled_after_the_deadline_approves_no_watch() {
+    let mut h = harness("claim-late-answer");
+    h.core.handle(
+        Message::Relay(RelayEvent::State(RelayState::Connected)),
+        h.now,
+    );
+    let (reply, answer) = mpsc::sync_channel(1);
+    h.core.handle(
+        Message::Claim {
+            code: "123456".to_owned(),
+            reply,
+            deadline: h.now.at + CLAIM_TIMEOUT,
+        },
+        h.now,
+    );
+    assert_eq!(h.frames.lock().unwrap().len(), 1, "the claim went out");
+    h.advance(CLAIM_TIMEOUT + Duration::from_millis(1));
+    h.core.handle(
+        Message::Relay(RelayEvent::Inbound(Inbound::ClaimOk {
+            code: "123456".to_owned(),
+            device_id: "watch-9".to_owned(),
+            device_name: "Series 9".to_owned(),
+        })),
+        h.now,
+    );
+    assert_eq!(answer.try_recv().unwrap(), Err(ClaimError::Timeout));
+    assert!(
+        h.core.requests.window_remaining(h.now.at).is_zero(),
+        "an answer handled past the deadline approves no watch"
+    );
+}
+
+#[test]
 fn a_background_upload_replayed_a_day_later_reads_duplicate() {
     let mut h = harness("background");
     let watch = h.pair("watch-1");
