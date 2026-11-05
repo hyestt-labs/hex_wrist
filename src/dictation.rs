@@ -362,8 +362,9 @@ impl DictationClip {
         self.source.as_deref()
     }
 
-    #[cfg(test)]
-    pub fn for_test(samples: Vec<f32>) -> Self {
+    /// A clip recorded elsewhere (the watch): 16 kHz mono samples with no
+    /// pre-roll, tail, live stream, or capture marker.
+    pub fn external(samples: Vec<f32>) -> Self {
         Self {
             samples,
             tail_samples: 0,
@@ -374,6 +375,11 @@ impl DictationClip {
             #[cfg(target_os = "macos")]
             capture: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn for_test(samples: Vec<f32>) -> Self {
+        Self::external(samples)
     }
 
     /// The captured audio through the release (before the tail and any

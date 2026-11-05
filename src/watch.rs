@@ -7,6 +7,7 @@
 //!
 //! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
 //! - `relay`: the relay WebSocket client on its own thread.
+//! - `delivery`: the handle a recording travels with through the dictation worker.
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
 //! - `pairing`: paired watches, their tokens and keys, and the claim approval.
@@ -19,6 +20,7 @@
 
 pub(crate) mod audio;
 pub(crate) mod delivered;
+pub(crate) mod delivery;
 pub(crate) mod e2ee;
 pub(crate) mod frame;
 pub(crate) mod pairing;
