@@ -70,6 +70,8 @@ while [ $# -gt 0 ]; do
     --selftest) mode=selftest; shift ;;
     # Internal: the gate watch-sim runs between /focus and /e2ee (and before /enter and /undo).
     --front-check) mode=front-check; fc_kind=${2:-}; fc_handle=${3:-}; shift 3 ;;
+    # Internal: the registered switch-away action (needs this run's registry, found through WATCH_E2E_TMP).
+    --switch-away) mode=switch-away; shift ;;
     -h|--help) sed -n 2,36p "$0"; echo; usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -148,7 +150,8 @@ real_path() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "
 #   testdata  key = one allowlisted file in Wristper Test's data folder (relay room reset)
 #   wt        key = pid of the Wristper Test this run started, extra = its executable
 #   sim       key = udid of the simulator this run created, extra = its name
-#   ran       key = textedit | terminal | chrome, extra = running|not-running at the start (written to the log only; it decides nothing)
+#   switch    key = finder (the one app this run may bring to the front on purpose, in the app-switch scenario)
+#   ran       key = app name, extra = running|not-running at the start (written to the log only; it decides nothing)
 
 reg_add() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$tmp/registry.tsv"; }
 reg_has() { [ -f "$tmp/registry.tsv" ] && awk -F'\t' -v k="$1" -v v="$2" '$1==k && $2==v {f=1} END{exit !f}' "$tmp/registry.tsv"; }
@@ -317,6 +320,8 @@ win_extra() { # kind handle: what the registry holds for this window
 win_live() { # kind handle
   local kind=$1 h=$2 id got
   [ "$(reg_get window "$(win_key "$kind" "$h")")" = "$(win_extra "$kind" "$h")" ] || return 1
+  # Asking an app that is not running would launch it again: the person may have quit it meanwhile.
+  case "$kind" in textedit) app_running TextEdit || return 1 ;; terminal) app_running Terminal || return 1 ;; esac
   case "$kind" in
     textedit)
       id=${h%%|*}
@@ -349,6 +354,9 @@ front_check() {
     *) return 1 ;;
   esac
 }
+# The one sanctioned way to move focus off the target: bring Finder to the front (the app-switch scenario).
+# It is registered at init and run through the gate like everything else.
+act_switch_away() { open -a Finder && sleep 2; }
 # The gate command watch-sim runs between /focus and /e2ee, and before /enter and /undo.
 front_hook() { printf '%q ' /bin/bash "$self" --front-check "$1" "$2"; }
 
@@ -655,6 +663,8 @@ init() { # prefix
   tmp_real=$(real_path "$tmp")
   : > "$tmp/registry.tsv"; : > "$out/refusals.tsv"; : > "$tmp/row-refused"
   reg_add path "$tmp" root
+  reg_add switch finder "the app-switch scenario"
+  export WATCH_E2E_TMP="$tmp" WATCH_E2E_OUT="$out"   # the gate's helper commands find the registry through these
   SC_FILE="$out/readback.txt"
   trap cleanup EXIT
   # A signal must still run the cleanup (it stops what this run started).
@@ -892,11 +902,20 @@ check_permissions() {
   if stage_on 3 && { [ -z "$only" ] || [[ chrome =~ $only ]]; }; then chrome_wanted=1; fi
   [ "$chrome_wanted" = 1 ] && probe_chrome
   if ! screen_locked; then
-    for t in TextEdit Terminal; do probe_automation "$t"; done
+    uses_app TextEdit && probe_automation TextEdit
+    uses_app Terminal && probe_automation Terminal
     if stage_on 4 || [ "$chrome_wanted" = 1 ]; then probe_runner_accessibility; fi
   fi
   [ ${#blocked[@]} -eq 0 ] || print_blocked
   log "preflight: permissions ready"
+}
+
+# Does this run drive that app? (Probing launches it, so only the apps in use are probed.)
+uses_app() {
+  case "$1" in
+    TextEdit) stage_on 3 || stage_on 4 || { { stage_on 1 || stage_on 2; } && [[ ",$targets," == *,textedit,* ]]; } ;;
+    Terminal) stage_on 3 || stage_on 4 || { { stage_on 1 || stage_on 2; } && [[ ",$targets," == *,terminal,* ]]; } ;;
+  esac
 }
 
 wait_listener() {
@@ -1000,7 +1019,7 @@ act_sim_deliver() {
   after=$before
   # The app-switch scenario: verify the target is in front, then move away on purpose, so the audio meets
   # the first gate with another app in front and must be withheld.
-  [ "$SC_SWITCH" = 1 ] && after="$before && open -a Finder && sleep 2"
+  [ "$SC_SWITCH" = 1 ] && after="$before && $(printf '%q ' /bin/bash "$self" --switch-away)"
   owned_fg watch-sim "$sim" deliver --audio "$out/$audio.m4a" --timeout 90 --after-focus "$after" --before-action "$before" "$@"
 }
 sim_deliver() { # kind handle audio args...
@@ -1516,6 +1535,13 @@ main() {
   done
   log "apps running before this run (information only): $(reg_list ran | tr '\t\n' ': ' | sed 's/:$//')"
 
+  # An app that was already running is never stopped, reset, driven, or rebuilt underneath: refuse before
+  # anything else (the build below would overwrite and re-sign its bundle).
+  if wt_running; then
+    need "Wristper Test is already running (pid $(wt_pids | tr '\n' ' ')). This script only builds, stops, and resets a Wristper Test that it started itself, so it refuses. Quit it yourself (\"$hex\" quit), then run again. Nothing was built, stopped, or reset."
+    print_blocked
+  fi
+
   # A locked screen hides every window from Accessibility and AppleScript. It is only recorded here: the
   # build below still runs, and check_permissions then reports it with everything else. Nothing unlocks it.
   if screen_locked; then
@@ -1583,7 +1609,7 @@ case "$args" in
     [ "$w" = ok ] && echo "101|Untitled 9" || echo "999|Elsewhere"; exit 0 ;;
   *"make new document"*) echo "101|Untitled 9" ;;
   *"name of document of window id 101"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo "Untitled 9" || echo "" ;;
-  *"is running"*) echo false ;;
+  *"is running"*) cat "$STUB_DIR/running" ;;
   *) : ;;
 esac
 EOF
@@ -1608,7 +1634,9 @@ else
   echo '{"event":"delivered","e2ee_sent":false,"aborted":"after-focus gate failed"}'
 fi
 EOF
-  chmod +x "$tmp/bin/osascript" "$tmp/bin/lsappinfo" "$tmp/fake-sim"
+  # open stand-in: the switch-away action runs `open -a Finder`.
+  printf '#!/bin/bash\necho "open $*" >> "$STUB_DIR/open.log"\n' > "$tmp/bin/open"
+  chmod +x "$tmp/bin/osascript" "$tmp/bin/lsappinfo" "$tmp/fake-sim" "$tmp/bin/open"
 }
 st_set() { printf '%s\n' "$2" > "$STUB_DIR/$1"; }
 st_not() { ! "$@"; }
@@ -1619,6 +1647,7 @@ selftest_main() {
   init "selftest-"
   STUB_DIR="$tmp/stub"; mkdir -p "$STUB_DIR"
   export STUB_DIR
+  st_set running true
   st_shims
   PATH="$tmp/bin:$PATH"; export PATH
   sim="$tmp/fake-sim"
@@ -1703,7 +1732,36 @@ selftest_main() {
     echo "  (skipped: $real_sim is not built; run the script once without --skip-build)"
   fi
 
-  echo "[7] the clipboard cannot be put back: its backup stays, the other secrets go, the gate refuses nothing"
+  echo "[7] the one process in a Terminal window: only that pid, only on that tty"
+  st_reset
+  owned_bg sleep sleep 120 > /dev/null 2>&1
+  pid=$OWNED_PID
+  reg_del pid "$pid"; reg_add tty-proc "$pid" /dev/ttys999
+  owned tty-proc "$pid" act_stop_tty_proc "$pid" /dev/ttys999
+  st_check "a process that is not on the registered tty is refused" row_refused
+  st_check "…and it is still running" kill -0 "$pid"
+  reg_del tty-proc "$pid"; reg_add pid "$pid" sleep
+  stop_pid "$pid"
+  st_check "(test cleanup) the process is stopped" bash -c "! kill -0 $pid 2>/dev/null"
+
+  echo "[8] an app the person quit is not launched again by the cleanup"
+  st_reset; st_set running false
+  reg_add window textedit:202 "Untitled 5"
+  close_target textedit "202|Untitled 5"
+  st_check "no window command was sent to the quit TextEdit" bash -c "! grep -q 'tell application \"TextEdit\"' '$STUB_DIR/asc.log'"
+  st_set running true
+
+  echo "[9] the switch-away action is a registered action"
+  : > "$STUB_DIR/open.log"
+  /bin/bash "$self" --switch-away
+  st_check "registered: Finder is brought to the front" grep -q "open -a Finder" "$STUB_DIR/open.log"
+  reg_del switch finder
+  : > "$STUB_DIR/open.log"
+  /bin/bash "$self" --switch-away
+  st_check "unregistered: nothing is opened" bash -c "[ ! -s '$STUB_DIR/open.log' ]"
+  reg_add switch finder "restored"
+
+  echo "[10] the clipboard cannot be put back: its backup stays, the other secrets go, the gate refuses nothing"
   mkdir -p "$tmp/clipboard"; echo '{"items":[]}' > "$tmp/clipboard/manifest.json"
   mkdir -p "$tmp/watch-sim-state"; echo "private key" > "$tmp/watch-sim-state/watch-state.json"
   printf '#!/bin/sh\nexit 1\n' > "$tmp/failing-pbtool"; chmod +x "$tmp/failing-pbtool"
@@ -1727,6 +1785,8 @@ selftest_main() {
 # =============================================================================
 case "$mode" in
   front-check) front_check "$fc_kind" "$fc_handle"; exit $? ;;
+  switch-away) tmp=${WATCH_E2E_TMP:-}; out=${WATCH_E2E_OUT:-}; [ -f "$tmp/registry.tsv" ] || exit 1
+               owned switch finder act_switch_away; exit $? ;;
   selftest) selftest_main; exit $? ;;
   *) main ;;
 esac
