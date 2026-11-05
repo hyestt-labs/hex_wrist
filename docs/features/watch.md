@@ -59,7 +59,11 @@ Apple Watch                               // watch.pair, watch.dictate
 - **Delivery.** The m4a is decoded (`watch::audio`, symphonia) to 16 kHz mono
   and submitted as `TranscriptionTarget::Watch` on the running listener's
   `DictationWorker`: same engine, same ordered output, same Paster, the Output
-  pane's processing, History kind Dictation, and Paste Last. The reply to
+  pane's processing, History kind Dictation, and Paste Last. Its inference
+  is a foreground engine job, not yielding background work: a watch
+  recording is the user's own dictation, so a Mac shortcut dictation
+  released while it transcribes waits its turn in submission order, and
+  capture itself is never blocked. The reply to
   `/e2ee` waits for the result up to 50 s, then answers `transcribing` so the
   relay's 60 s never 504s; the watch re-queries `/status`.
 - **Idempotency.** The recording id is the key: in-flight duplicates wait up

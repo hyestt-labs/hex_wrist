@@ -1212,7 +1212,9 @@ CoreAudio formats, AppleScript details, or event serialization.
 - A watch recording is a dictation: it goes through the one
   `DictationWorker` and the one Paster as `TranscriptionTarget::Watch`, in
   submission order with every shortcut dictation, with the Output pane's
-  steps, and into History as a dictation. Hex never loads a second model or
+  steps, and into History as a dictation. Its inference is a foreground
+  engine job, so a later shortcut dictation's transcription waits behind
+  it, while capture never does. Hex never loads a second model or
   starts a second Paster for it, and never transcribes it through
   `local_api`. ⌘V is not a confirmation, so until the read-back lands the
   watch reads `unverified`; an empty transcript reads `suspect`; a decode,
