@@ -63,6 +63,7 @@ mod screenshots;
 mod suppression;
 mod transcription;
 mod updater;
+mod watch;
 #[cfg(target_os = "windows")]
 mod windows;
 
