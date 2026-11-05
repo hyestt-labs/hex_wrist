@@ -53,11 +53,11 @@
 - 只在 `caps.watch`（macOS）出現。Linux、Windows 照舊。
 - tour 的 `Step`（`onboarding.rs:113-118`）不增加。watch 頁和示範一樣只是 story 頁，tour 停在 Setup。
 - `first_run_next`（`stories.rs:785-800`）：`Pick|Started` 放行後進 `Watch` 並回 `None`，等使用者動作。
-- 頁面上兩個動作：「Pair later」（Secondary），以及配對完成後的 Continue（Primary，`.default_button()`）。兩者都進示範頁。Back 照既有規則回到模型清單（只在模型步驟出現過時）。
+- 頁面內容：手錶 App 連結和 6 位數輸入欄，跟設定頁共用 `watch_pane::pairing()`（輸入欄、狀態行、連結），不另做一份。動作：「Pair later」（Secondary）；配對完成後出現 Continue（Primary，`.default_button()`）。兩者都進示範頁。Back 照既有規則回到模型清單（只在模型步驟出現過時）。
 - watch 頁不是 `optional()`，沒有 Skip。AGENTS.md「Skip 只在示範與練習」不變。「Pair later」不記錄完成。
 
 ### 「已配對」與「就緒」
-- 已配對：快照裡至少一支手錶的 `DeviceStatus` 不是 `NeedsRepair`（`src/watch/pairing.rs:216-227`）。`SecretsUnavailable` 算已配對，避免登入時鑰匙圈還鎖著就把麥克風列叫回來。
+- 已配對：快照裡至少一支手錶的 `DeviceStatus` 不是 `NeedsRepair`（`src/watch/pairing.rs:216-227`）。`SecretsUnavailable` 算已配對，避免登入時鑰匙圈還鎖著就把麥克風列叫回來。`WatchView` 有「還沒收到快照」狀態：這時算「未知」，不送 `Input::Watch`，續跑的頁面選擇也等第一份快照。
 - `SetupStatus::ready_with_watch(paired)`：輔助使用與模型 Ready，而且麥克風 Ready 或 `paired` 為真。
 - `Flow` 加 `watch: bool`，由新的 `Input::Watch(bool)` 更新。它和 `Input::Status` 共用同一段「未就緒→就緒」判斷（`onboarding.rs:418-441`），所以停在 Setup 的 tour 會收到 `AdvanceSoon`。不用 `set_accessibility_stale` 那種旁路 setter。原因：`Flow::new` 不知道手錶狀態，會把續跑的 tour 退回 Setup（`:308`）。
 - `麥克風延後 = watch && microphone != Ready`。這時：
@@ -128,6 +128,7 @@
      - 沒有手錶時用 `placeholder` 顯示 "No watches paired yet"。
   4. **Status and paste**：三個 `toggle_row`，key 分別是 `watch-status-capsule`、`watch-capsule-pointer`、`watch-keep-on-clipboard`。`terminal_apps` 這次只做 CLI。
   5. 服務沒啟動（沒有快照）：整頁用 `message` 顯示 "The Apple Watch service isn't running"。
+- General 的「Permissions needed」卡（`platform_settings.rs:83`）：`permission_warnings` 加 `paired` 參數，已配對時不列麥克風。選單列沒有權限提醒（已 grep `status_item.rs`）。
 - 錯誤文案由 pane 用 `tr` 對應每個 `ClaimError`（`service.rs:132-170`）。CLI 的 `message()` 不變。等手錶完成逾時：顯示 "The watch didn't finish pairing. Update Wristper on the watch and try again"。
 - 新字串在五種語言檔都要補（`desktop/i18n/*.rs`）。`i18n.rs` 本身只剩約 42 行，不要動。
 - QR：`Cargo.lock` 裡查過 `qr`、`qrcode`、`fast_qr`，都沒有，所以只放文字連結。
@@ -171,7 +172,7 @@
 7. **Apple Watch 頁與場景**（`watch_pane.rs`、`sidebar.rs`、`scenes.rs`、i18n）。Linux 測試，加在 `tests/panes.rs`：
    - `six_digits_send_one_pair_request`、`each_claim_error_shows_its_message`、`remove_needs_two_presses`。
    - `every_watch_control_has_a_name`、`linux_and_windows_sidebars_have_no_watch`。
-   - 檢查：本機 `--snap` 兩種主題逐張看，加上 `every_translated_string_has_every_language`。
+   - 把九個 `mac-watch*` 場景加進 `panes.rs:1587` 的 `check_golden` 清單。檢查：本機 `--snap` 兩種主題逐張看，加上 `every_translated_string_has_every_language`。
 8. **引導頁**（`stories.rs`、`live.rs`、`permissions.rs`、`first_run.rs`）：
    - 先讓 `fixture_resume` 把 watch 頁當成按了 Pair later 通過。檢查：現有 `mac-onboarding-*` 的 `--snap` 和改之前逐位元相同。
    - 再加新頁與新場景。Linux 測試：`pair_later_goes_to_the_demo_and_records_nothing`、`watch_only_permissions_ask_only_for_accessibility`、`watch_only_finishes_without_the_practice`。
@@ -182,7 +183,7 @@
 
 給協調者的 golden 清單：
 - 新增：第 4 節列的 12 個場景，各有 light 和 dark。
-- 會變：側欄多一項，所以 `panes.rs:1587` 起的 `mac-*` 和 `goldens()` 裡的 `mac-labs-link` 都會變。
+- 會變：側欄多一項，所以 `panes.rs:1587` 起的 `mac-*` 和 `goldens()` 裡的 `mac-labs-link` 都會變。`mac-settings-permissions` 不變（它的手錶快照是空的）。macOS 的 ⌘2 起往後移一格；`tests/panes.rs` 沒有依賴順序的斷言。
 - 不可變：所有 Linux 與 Windows 的 golden，以及現有的 `mac-onboarding-*`。
 
 不在範圍內，各自列為待決問題：`hex watch list` 與 `revoke`；`terminal_apps` 的 UI 編輯器；選單列「Pair Apple Watch…」；引導完成時登記登入項目；用手錶做練習；QR code；426 `watch_outdated` 顯示在 Mac UI；授權與額度（單元 D、E）；膠囊的其他語言；Windows 與 Linux。
