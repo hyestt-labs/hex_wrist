@@ -1,0 +1,36 @@
+{
+  "audio" : {
+    "audio_hex" : "00000020667479704d3441200000000000006d7034326973366d0000000866726565",
+    "ciphertext_and_tag_base64" : "r3hyW97YIC4lZhfNPGhUmzjB1VYH2RrmGtWeg2guPbSjUU7cSuc7GRaCiChQ8egalswfucRfnpVYdlMIOgzxy27bouJ2pRY338xgKYpi8wqePlvyhK/f2vW8uB/0tCGUwBXRxpJyKGp8FuMRFW1VbgFo4r+VufgYuwRnU0dl2gDiserIRL1TbACACuYJ2uEr1A3kELu+vrprfu29MINWbdCHkbYrg5p6H+Z+JjTB7v5vouTaqY6gNlbT1/BRG84TYAvz5OYPBqD4RCONHscrrHogUn9lTHSRjjelryoAUfvCsR+ssewSmd/IegNQKwC3iUcCsj7eOQJALY1cUtp9UVD/AKvkxXg=",
+    "device_id" : "watch-device-7f3e",
+    "head_json" : "{\"background\":true,\"focus\":\"requested\",\"id\":\"6F9619FF-8B86-D011-B42D-00C04FC964FF\",\"language\":\"zh\",\"requires_e2ee\":true,\"sent_at\":1762259696.5,\"token\":\"QmFzZTY0VXJsVG9rZW5PZjMyQnl0ZXNfLV8tXy0tXy0\",\"version\":1}",
+    "nonce_base64" : "ICEiIyQlJicoKSor",
+    "plaintext_base64" : "AAAA0XsiYmFja2dyb3VuZCI6dHJ1ZSwiZm9jdXMiOiJyZXF1ZXN0ZWQiLCJpZCI6IjZGOTYxOUZGLThCODYtRDAxMS1CNDJELTAwQzA0RkM5NjRGRiIsImxhbmd1YWdlIjoiemgiLCJyZXF1aXJlc19lMmVlIjp0cnVlLCJzZW50X2F0IjoxNzYyMjU5Njk2LjUsInRva2VuIjoiUW1GelpUWTBWWEpzVkc5clpXNVBaak15UW5sMFpYTmZMVjh0WHkwdFh5MCIsInZlcnNpb24iOjF9AAAAIGZ0eXBNNEEgAAAAAAAAbXA0MmlzNm0AAAAIZnJlZQ=="
+  },
+  "mac_private_key_hex" : "a1a2a3a4a5a6a7a8a9b0b1b2b3b4b5b6b7b8b9c0c1c2c3c4c5c6c7c8c9d0d1d2",
+  "mac_public_key_x963_base64" : "BBKBb0mW23vIETqvw864eblk7D1+CdpIfajM6W5EVySg1Gb6XJ0z7NAIpSr8By2b6gj5XorpzgObKpYrli6NWsk=",
+  "pairing_result" : {
+    "combined_base64" : "CgsMDQ4PEBESExQVF3dz2aNmT6LZCFb0VvPYvGSm29VwWfZKXvqIIqIwUYz/ZkSLNkWMKZb+Oxo/37gM24XL5+Pss19oYSY=",
+    "nonce_hex" : "0a0b0c0d0e0f101112131415",
+    "request_id" : "3f2a9c1e0b7d4e8fa6c5d4b3a2910f8e",
+    "token" : "QmFzZTY0VXJsVG9rZW5PZjMyQnl0ZXNfLV8tXy0tXy0"
+  },
+  "query" : {
+    "ciphertext_and_tag_base64" : "LDKr2R+4Gh4q+b1k2CtyHs7xT+dwMYS+Z+OHvxmY78gfbkTgyA5xiREKc7v9PkXTlVJPsjBTTniJv5pw1enmmMuJ1XPK/BXLtLWd0dr8EHLGVMcvXtOGd1/G7tsny63PAWq4pToRaQoeCDx/JjuY2To6BcKhgAuxxttzEdkMT1u4oyKimjvtOar53e23rEcl0MW4tRQmm7Zup89Y7K2ZY+RycXmGUuB3RhYBHb8EogaxK3c=",
+    "device_id" : "watch-device-7f3e",
+    "nonce_base64" : "MDEyMzQ1Njc4OTo7",
+    "plaintext" : "{\"path\":\"\\/status\",\"query\":{\"id\":\"6F9619FF-8B86-D011-B42D-00C04FC964FF\"},\"sent_at\":1762259700.25,\"token\":\"QmFzZTY0VXJsVG9rZW5PZjMyQnl0ZXNfLV8tXy0tXy0\",\"version\":1}"
+  },
+  "response" : {
+    "ciphertext_base64" : "GWhNzqRx3KWe3eEPyoJbrQioD4fDli4ElVZvt8Ys3lZDWtXapSv+gO6Rhae9s9ahygGTHLDDml4siaN72clqkRkQoAkqHVMDrWRYt0H2tSr1TbE+zA==",
+    "device_id" : "watch-device-7f3e",
+    "nonce_base64" : "QEFCQ0RFRkdISUpL",
+    "plaintext" : "{\"e2ee_actions\":true,\"ok\":true,\"state\":\"unverified\",\"verified\":false}",
+    "request_nonce_base64" : "ICEiIyQlJicoKSor",
+    "status" : 200
+  },
+  "shared_key_base64" : "w9fFiEsXKqe7xFZ8w+SKs5nTn9bYRhMYXEOB17J8uO0=",
+  "shared_key_hex" : "c3d7c5884b172aa7bbc4567cc3e48ab399d39fd6d84613185c4381d7b27cb8ed",
+  "watch_private_key_hex" : "0102030405060708091011121314151617181920212223242526272829303132",
+  "watch_public_key_x963_base64" : "BMEk8b9ECa4OIVg2z/MbX7IiXp2LpDsuQJkFIQyUn446uc4auEyG6fzk13rCCD7dnV85d6uI6UP9LkdP73RxFGM="
+}

@@ -46,6 +46,10 @@ transcribe-cpp = { git = "https://github.com/anomalyco/transcribe.cpp", rev = "2
 transcribe-cpp-sys = { git = "https://github.com/anomalyco/transcribe.cpp", rev = "2778ae4bf5ca5f394d129a39467f4ad9552dc34f" }
 
 [dependencies]
+# The watch protocol (`watch`): Wristper's P-256 ECDH + HKDF pairing key and
+# AES-256-GCM envelopes, and its text rules.
+aes-gcm = "0.11"
+base64 = "0.22"
 clap = { version = "4.6.7", features = ["derive"] }
 color-eyre = "0.6.5"
 cpal = "0.18.2"
@@ -53,6 +57,7 @@ ctrlc = "3.5.2"
 dirs = "7.0.0"
 fs2 = "0.4.3"
 getrandom = "0.4.3"
+hkdf = "0.13"
 hound = "3.5.1"
 libc = "0.2.189"
 oxc_allocator = "0.156.0"
@@ -60,6 +65,7 @@ oxc_ast = "0.156.0"
 oxc_ast_visit = "0.156.0"
 oxc_parser = "0.156.0"
 oxc_span = "0.156.0"
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "std"] }
 regex = "1.13.1"
 rquickjs = { version = "0.14.0", default-features = false, features = ["std", "loader"] }
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3"] }
@@ -68,11 +74,14 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_path_to_error = "0.1"
 sha2 = "0.11.0"
+subtle = "2.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 transcribe-cpp = "=0.4.1"
 transcribe-rs = { git = "https://github.com/cjpais/transcribe-rs", rev = "e37c66b6df43af51fde8dec34f98a07aaf09564c", features = ["onnx"], optional = true }
+unicode-general-category = "1.1"
 unicode-normalization = "0.1.25"
+unicode-script = "0.5"
 unicode-segmentation = "1.13.3"
 url = "2.5.8"
 # Hex's HTTPS (`net`): model downloads, update checks, and transformation
@@ -98,6 +107,7 @@ objc2-quartz-core = { version = "0.3.2", features = ["CALayer"] }
 objc2-service-management = { version = "0.3.2", features = ["SMAppService"] }
 ratatui = "0.30.2"
 screencapturekit = { version = "=11.0.0", features = ["macos_15_0"] }
+security-framework = "3.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
