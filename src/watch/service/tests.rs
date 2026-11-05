@@ -1353,6 +1353,7 @@ fn claims_answer_ok_failed_timeout_and_offline() {
             Message::Claim {
                 code: code.to_owned(),
                 reply,
+                deadline: h.now.at + CLAIM_TIMEOUT,
             },
             h.now,
         );
@@ -1439,6 +1440,61 @@ fn claims_answer_ok_failed_timeout_and_offline() {
     h.connected.store(false, Ordering::SeqCst);
     let unsent = claim(&mut h, "777777");
     assert_eq!(unsent.try_recv().unwrap(), Err(ClaimError::RelayOffline));
+}
+
+/// A claim is bounded by its caller's deadline, not by when the thread
+/// got to it: one that waited in the inbox past it never reaches the
+/// relay, and one that waited part of it gets only the rest.
+#[test]
+fn a_claim_is_never_sent_after_its_caller_gave_up() {
+    let mut h = harness("claim-deadline");
+    h.core.handle(
+        Message::Relay(RelayEvent::State(RelayState::Connected)),
+        h.now,
+    );
+    let claim = |h: &mut Harness, code: &str, queued: Duration| {
+        let (reply, answer) = mpsc::sync_channel(1);
+        let deadline = h.now.at + CLAIM_TIMEOUT;
+        h.advance(queued);
+        h.core.handle(
+            Message::Claim {
+                code: code.to_owned(),
+                reply,
+                deadline,
+            },
+            h.now,
+        );
+        answer
+    };
+
+    let expired = claim(&mut h, "123456", CLAIM_WAIT);
+    assert!(
+        h.frames.lock().unwrap().is_empty(),
+        "no claim frame went out"
+    );
+    assert_eq!(expired.try_recv().unwrap(), Err(ClaimError::Timeout));
+    h.core.handle(
+        Message::Relay(RelayEvent::Inbound(Inbound::ClaimOk {
+            code: "123456".to_owned(),
+            device_id: "watch-9".to_owned(),
+            device_name: "Series 9".to_owned(),
+        })),
+        h.now,
+    );
+    assert!(
+        h.core.requests.window_remaining(h.now.at).is_zero(),
+        "a late answer approves no watch"
+    );
+
+    let late = claim(&mut h, "654321", Duration::from_secs(4));
+    assert_eq!(h.frames.lock().unwrap().len(), 1, "the claim went out");
+    h.advance(CLAIM_TIMEOUT - Duration::from_secs(4));
+    h.core.tick(h.now);
+    assert_eq!(
+        late.try_recv().unwrap(),
+        Err(ClaimError::Timeout),
+        "the relay wait ends at the caller's deadline"
+    );
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use super::pending::{Outbound, Reply, Waiting};
-use super::{CLAIM_TIMEOUT, ClaimError, ClaimOk, Dictation, Message, WatchSnapshot};
+use super::{ClaimError, ClaimOk, Dictation, Message, WatchSnapshot};
 use crate::watch::Timestamp;
 use crate::watch::delivered::DeliveredIds;
 use crate::watch::delivery::{DeliveryOutcome, DeliveryReport};
@@ -154,7 +154,11 @@ impl Core {
         match message {
             Message::Relay(event) => self.on_relay(event, now),
             Message::Delivered { id, report } => self.on_delivered(&id, report, now),
-            Message::Claim { code, reply } => self.on_claim(code, reply, now),
+            Message::Claim {
+                code,
+                reply,
+                deadline,
+            } => self.on_claim(code, reply, deadline, now),
             Message::Snapshot { reply } => {
                 let _ = reply.try_send(WatchSnapshot {
                     relay: self.relay_state,
@@ -305,7 +309,21 @@ impl Core {
         position.map(|position| self.claims.remove(position))
     }
 
-    fn on_claim(&mut self, code: String, reply: SyncSender<Result<ClaimOk, ClaimError>>, now: Now) {
+    /// Sends the claim and waits for the relay until `deadline`, the
+    /// caller's. A claim that sat in the inbox past it is dropped unsent,
+    /// so no watch is approved for a caller that already gave up.
+    fn on_claim(
+        &mut self,
+        code: String,
+        reply: SyncSender<Result<ClaimOk, ClaimError>>,
+        deadline: Instant,
+        now: Now,
+    ) {
+        if deadline <= now.at {
+            tracing::info!(code, "a pairing claim expired before it was sent");
+            let _ = reply.try_send(Err(ClaimError::Timeout));
+            return;
+        }
         if self.relay_state != RelayState::Connected {
             let _ = reply.try_send(Err(ClaimError::RelayOffline));
             return;
@@ -325,7 +343,7 @@ impl Core {
         self.claims.push(PendingClaim {
             code,
             reply,
-            deadline: now.at + CLAIM_TIMEOUT,
+            deadline,
         });
     }
 

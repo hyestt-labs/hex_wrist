@@ -20,7 +20,7 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::delivery::{DeliveryReport, WatchDelivery};
 use super::pairing::{self, PairedDevices, SecretStore};
@@ -28,10 +28,11 @@ use super::relay::{NotConnected, Relay, RelayConfig, RelayEvent, RelayTiming};
 use crate::recognition::RecognitionControl;
 use state::{Core, Flow, Identity, Now};
 
-/// How long `claim` waits for the relay's `claim_ok` or `claim_failed`.
+/// How long a claim may take from `claim`'s call to the relay's
+/// `claim_ok` or `claim_failed`, time in the inbox included.
 pub(crate) const CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long `claim` waits for the `watch` thread, which answers
-/// `CLAIM_TIMEOUT` after the claim at the latest.
+/// How long `claim` waits for the `watch` thread, which answers by the
+/// claim's deadline, `CLAIM_TIMEOUT` after the call.
 pub(crate) const CLAIM_WAIT: Duration = CLAIM_TIMEOUT.saturating_add(Duration::from_secs(1));
 /// The loop wakes at least this often, so bookkeeping never waits on a frame.
 const TICK: Duration = Duration::from_secs(1);
@@ -177,6 +178,9 @@ pub(crate) enum Message {
     Claim {
         code: String,
         reply: mpsc::SyncSender<Result<ClaimOk, ClaimError>>,
+        /// When the caller stops waiting, less the margin; a claim still in
+        /// the inbox then is never sent.
+        deadline: Instant,
     },
     Snapshot {
         reply: mpsc::SyncSender<WatchSnapshot>,
@@ -265,6 +269,7 @@ impl WatchService {
             .send(Message::Claim {
                 code: code.to_owned(),
                 reply,
+                deadline: Instant::now() + CLAIM_TIMEOUT,
             })
             .is_err()
         {
