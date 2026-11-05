@@ -11,6 +11,8 @@ name: Compile
 # cache saved by a pull request is visible to that pull request alone, so
 # without it every new pull request compiled from nothing. Pull requests
 # restore dev's cache and save none, which keeps them out of the 10 GB quota.
+# A failed run saves nothing: a cache saved before the build got far is never
+# replaced while its key still matches exactly.
 # Only code paths trigger it; a docs-only change runs nothing. No check here
 # is required, so a skipped run blocks no merge; making one required needs a
 # job that always reports first.
@@ -74,7 +76,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
       - name: Install native libraries
         run: |
           sudo apt-get update
@@ -109,7 +110,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
       - name: Install the Metal toolchain
         run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
       - run: cargo clippy --locked --bin hex -- -D warnings
@@ -132,7 +132,6 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
       - name: Install the Vulkan SDK
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
         with:
