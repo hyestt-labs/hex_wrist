@@ -84,9 +84,6 @@ impl Drop for Held {
     }
 }
 
-// A job is built, queued, and run once; boxing the snapshot would only add
-// an allocation per key press.
-#[allow(clippy::large_enum_variant)]
 /// One key request's claim on the keyboard. The service cancels it when it
 /// gives up on the request (timeout, a recording that started over), and the
 /// `watch-ax` thread checks it inside the lock, so a key that waited for a
@@ -108,6 +105,9 @@ impl Ticket {
     }
 }
 
+// A job is built, queued, and run once; boxing the snapshot would only add
+// an allocation per key press.
+#[allow(clippy::large_enum_variant)]
 enum Job {
     Capture(Done<Option<FieldSnapshot>>),
     Press {
