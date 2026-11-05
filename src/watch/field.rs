@@ -67,7 +67,14 @@ impl FieldSnapshot {
             return false;
         }
         if !self.identifier.is_empty() && !other.identifier.is_empty() {
-            return self.identifier == other.identifier;
+            // An identifier names a field within its window: another window
+            // of the app can hold one with the same name. Without a window
+            // on both sides the field's own frame has to agree.
+            return self.identifier == other.identifier
+                && match (&self.window, &other.window) {
+                    (Some(window), Some(other_window)) => window.near(other_window),
+                    _ => self.frame.near(&other.frame),
+                };
         }
         if !self.title.is_empty() && !other.title.is_empty() && self.title != other.title {
             return false;
@@ -380,6 +387,44 @@ mod tests {
         other.identifier.clear();
         // One side without an identifier falls back on the frame.
         assert!(!expected.matches(&other));
+    }
+
+    /// Catches a paste into another window of the same app that holds a
+    /// field with the same identifier (two windows of one editor).
+    #[test]
+    fn an_equal_identifier_in_another_window_does_not_match_for_a_paste() {
+        let mut expected = text_area();
+        expected.identifier = "message".into();
+        let mut other = expected.clone();
+        assert!(expected.matches(&other));
+        other.window = Some(Rect {
+            x: 900.0,
+            ..expected.window.unwrap()
+        });
+        assert!(!expected.matches(&other));
+        // The field moving inside its own window is still the field.
+        let mut moved = expected.clone();
+        moved.frame.x += 500.0;
+        assert!(expected.matches(&moved));
+    }
+
+    /// Without a readable window on both sides an identifier alone proves
+    /// nothing, so the field's own frame has to agree.
+    #[test]
+    fn an_identifier_without_a_window_falls_back_on_the_frame() {
+        let mut expected = text_area();
+        expected.identifier = "message".into();
+        expected.window = None;
+        let mut near = expected.clone();
+        near.frame.x += 10.0;
+        assert!(expected.matches(&near));
+        let mut far = expected.clone();
+        far.frame.x += 500.0;
+        assert!(!expected.matches(&far));
+        let mut with_window = expected.clone();
+        with_window.window = text_area().window;
+        with_window.frame.x += 500.0;
+        assert!(!expected.matches(&with_window));
     }
 
     #[test]

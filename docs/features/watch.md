@@ -188,13 +188,21 @@ Apple Watch                               // watch.pair, watch.dictate
   for it reads `target-changed`, as in Wristper.
 - The capsule is on the primary screen, not on the one under the pointer, and
   speaks only Traditional Chinese and English.
-- Enter and Undo compare stricter than Wristper's `sameFieldAfterTyping`:
-  same process, role, subrole, and window (both windows must be readable),
-  the identifier, and without one the title, description, and role
-  description plus a frame that still overlaps the original. A terminal whose
-  prompt frame jumps clear of the original, or whose tab switch changes only
-  what AX does not expose, reads `target-changed` or goes to the other tab;
-  this needs the live Terminal, Orca, and Ghostty check.
+- Field matching is a best effort over what Accessibility exposes, not proof
+  of identity. Paste: same process and role, the identifier when both sides
+  have one (and then the window rectangle must agree too, or the field's frame
+  when a window cannot be read), else titles that do not conflict and a frame
+  within 48 points. Enter and Undo are stricter than Wristper's
+  `sameFieldAfterTyping`: same process, role, subrole, and window rectangle
+  (both readable), the identifier, and without one the title, description,
+  and role description plus a frame that still overlaps the original. Known
+  limits, not excluded: two windows of one app with the same position and size
+  (within 48 points) and the same identifiers or names look identical, as do
+  two tabs of one terminal window, two fields of one window with the same
+  names and overlapping frames, and a window moved by less than the
+  tolerance. A terminal whose prompt frame jumps clear of the original reads
+  `target-changed`. The Terminal, Orca, and Ghostty live check shows how often
+  these happen.
 - Focus is judged more than once, and a window remains. Paste: the gate reads
   and judges the focus, reads the field's text, then inside the Paster, after
   the clipboard snapshot and write (the slow steps, tens of ms; hundreds if
