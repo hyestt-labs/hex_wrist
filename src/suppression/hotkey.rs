@@ -200,7 +200,6 @@ impl DictationHotkey {
 
     /// Recording hands-free: locked by a double tap, a Toggle release, or
     /// `hex dictation start`.
-    #[cfg(test)]
     pub fn is_locked(&self) -> bool {
         matches!(self.state, State::Locked)
     }
@@ -555,22 +554,30 @@ impl DictationHotkey {
         due
     }
 
+    /// Whether the press in flight is still waiting for its owned moment
+    /// ([`Self::break_chord`]): the hold threshold, Toggle's grace.
+    pub fn owned_pending(&self) -> bool {
+        self.chord_break_at.is_some()
+    }
+
     /// Posts the chord breaker the held press is due, if exactly its modifiers
     /// are still physically down; any other modifier already breaks the tap.
     /// The posted key carries Hex's marker, so neither shortcut machine sees
-    /// it, and the key tap drops it before the focused app.
-    pub fn break_chord(&mut self, now: CaptureInstant) {
+    /// it, and the key tap drops it before the focused app. Returns whether
+    /// Hex owns the press now: it was due with exactly its modifiers down.
+    pub fn break_chord(&mut self, now: CaptureInstant) -> bool {
         if !self.take_chord_break(now) {
-            return;
+            return false;
         }
         // SAFETY: A read-only query of the documented HID system state.
         let flags = unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) };
         if !self.binding.exact_modifiers(flags) {
-            return;
+            return false;
         }
         if let Err(error) = crate::keyboard::post_chord_breaker(flags) {
             tracing::warn!(shortcut = "dictation", %error, "chord breaker failed");
         }
+        true
     }
 
     fn process_event(&mut self, event: InputEvent, now: CaptureInstant) -> Option<HotkeyAction> {

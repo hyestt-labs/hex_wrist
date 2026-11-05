@@ -64,10 +64,11 @@ Apple Watch                               // watch.pair, watch.dictate
   refuses a recording at once with the reason (`watch::listener_ready`), and
   the watch reads the existing 500 `failed`. The Mac microphone stays closed
   (`dictation::microphone_access`, held by the `DictationAudio` owner): the
-  first shortcut, `hex dictation`, or `/dictations` start asks macOS once (or
-  plays the error tone and opens Settings once, when the permission was
-  already refused or waits for a restart), then every later refused start is
-  silent. A granted permission restores the saved Release-while-idle policy
+  shortcut start itself is silent (Option+e and a click start the machine too);
+  only an owned press (held past the threshold, Toggle's start after 40 ms, a
+  lock), `hex dictation`, or `/dictations` is a try: macOS's prompt once, then
+  the error tone on each try after a refusal and the Settings window once per
+  launch. A granted permission restores the saved Release-while-idle policy
   after the first capture, which opens cold like a released microphone. A
   Mac-only user whose microphone was revoked after setup now meets this at the
   shortcut instead of a window at launch. Every real stream open logs
@@ -188,9 +189,12 @@ Apple Watch                               // watch.pair, watch.dictate
 - `control::` covers `watch-pair` on the wire and `unsupported` on Linux and
   Windows hosts; `platform::parity_tests` records the `watch` difference.
 - C1: `dictation::microphone_access` covers the gate (a refused start
-  records nothing and opens nothing; the first press asks once, later presses
-  are silent; a grant restores the saved policy; a revoke closes the warm
-  input) and `no_open_path_opens_the_microphone_without_permission` drives
+  records nothing, opens nothing, and says nothing; an intentional try asks
+  once, then sounds; a grant restores the saved policy; a revoke closes the
+  warm input) and `recognition::gated_press` drives the real shortcut machine
+  with no permission (Option+e, click, drag, short tap, an early chord: no
+  prompt, tone, or window; a hold past the threshold or Toggle's grace: one
+  try) and `no_open_path_opens_the_microphone_without_permission` drives
   startup, settings reloads, route and device changes, selection changes,
   retry time, and every kind of start with a stream counter at zero.
   `dictation::audio` adds the interrupted-stream path and the one stated

@@ -689,11 +689,13 @@ Release when idle -> Press shortcut                   // dictate.cold-microphone
 Microphone not allowed (macOS)                        // dictate.microphone-gate
   -> The listener still starts (Accessibility and the model are all it needs)
      so Apple Watch recordings transcribe; the audio owner opens no stream
-  -> Press shortcut, `hex dictation start`, or `/dictations` start -> records nothing
-     ├── Never asked -> macOS's prompt, once
-     ├── Refused, or granted and waiting for a restart -> error tone and the Settings
-     │   window, once; `hex dictation start` answers busy "the microphone is not allowed"
-     └── Every later refused press -> silent: no tone, window, or stream
+  -> Press shortcut -> records nothing and says nothing  // Option+e, a click, a short tap
+     └── Held past the threshold (Toggle: 40 ms), or a lock -> an intentional try
+         ├── Never asked -> macOS's prompt, once
+         └── Refused, or granted and waiting for a restart -> error tone on each try;
+             the Settings window once per launch
+  -> `hex dictation start` and `/dictations` -> intentional at once; `hex dictation start`
+     answers busy "the microphone is not allowed"
   -> Allowed later -> the first capture opens cold (no pre-roll), then the saved
      Release-while-idle policy applies; revoked later -> the warm stream closes
      once idle; the log line `microphone stream opened` marks each real open

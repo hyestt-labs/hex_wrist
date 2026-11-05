@@ -25,6 +25,8 @@ use crate::parakeet::{
 };
 use crate::suppression::{DictationHotkey, DiscardCause, HotkeyAction, InputEvent, InputMonitor};
 
+mod gated_press;
+
 enum FinishResult {
     Discarded,
     Silent,
@@ -232,10 +234,16 @@ impl Hotkeys {
             .for_each(DictationHotkey::recover_stale_keys);
     }
 
-    fn break_chords(&mut self, now: CaptureInstant) {
-        for machine in self.machines() {
-            machine.break_chord(now);
-        }
+    /// Posts each machine's due chord breaker; the shortcuts whose press Hex
+    /// owns now, or that a double tap or a Toggle release just locked.
+    fn break_chords(&mut self, now: CaptureInstant) -> Vec<Shortcut> {
+        Shortcut::ALL
+            .into_iter()
+            .filter(|shortcut| {
+                self.machine_mut(*shortcut)
+                    .is_some_and(|machine| machine.break_chord(now) || machine.is_locked())
+            })
+            .collect()
     }
 
     /// Applies the saved shortcut options. Unbinding the raw or second
@@ -933,7 +941,7 @@ pub fn listen(
                     input.starts_cold(microphone_policy.release_while_idle),
                 )?;
                 if !accepted {
-                    hotkeys.suspend(shortcut);
+                    gated_press::start_refused(&mut hotkeys, shortcut, &input);
                 }
             }
         }
@@ -955,7 +963,9 @@ pub fn listen(
         // Only once every queued edge is handled, so a release already seen
         // ends the press first.
         if !hotkey_capture_suspended && input_monitor.pending_events().oldest().is_none() {
-            hotkeys.break_chords(CaptureInstant::now());
+            for shortcut in hotkeys.break_chords(CaptureInstant::now()) {
+                gated_press::owned(&mut hotkeys, shortcut, &input);
+            }
         }
         let mut received_worker_event = false;
         while let Some(event) = dictation_worker.try_recv() {
@@ -1266,6 +1276,9 @@ fn handle_hotkey_action(
     indicator: Option<&DictationIndicatorSender>,
     release_while_idle: bool,
 ) -> Result<bool> {
+    if gated_press::ends_nothing(action, dictation) {
+        return Ok(true);
+    }
     match action {
         HotkeyAction::Start => {
             if !dictation.start(action_at)? {
@@ -1512,7 +1525,9 @@ fn control_dictation(
                 ControlReply::done("Recording; `hex dictation stop` or the shortcut finishes")
             } else {
                 hotkeys.dictation.suspend();
-                if input.starts_cold(false) {
+                if input.microphone_gated() {
+                    // `hex dictation start` is an intentional try.
+                    input.press_owned();
                     ControlReply::error(
                         "busy",
                         "the microphone is not allowed; allow it in System Settings",

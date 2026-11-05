@@ -2,19 +2,23 @@
 //!
 //! The listener starts without the Microphone permission, so Apple Watch
 //! recordings transcribe and paste on a Mac that never granted it. The audio
-//! owner therefore holds the input closed until macOS says Ready: a dictation
-//! start records nothing, and asks once.
+//! owner therefore holds the input closed until macOS says Ready, and a
+//! dictation start records nothing and says nothing: Option+e or a click
+//! starts the shortcut machine too. Only a press Hex owns (held past the
+//! hold threshold, Toggle's grace, `hex dictation`, `/dictations`) is an
+//! intentional try, and only then does [`MicrophoneAccess::intentional`] ask.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::desktop::onboarding::{self, PermissionState};
 use crate::feedback::{self, Tone};
 
-/// Set when a refused dictation start wants the Settings window; the main
-/// thread's pump takes it.
+/// Set when an intentional try found the microphone refused and the Settings
+/// window has not opened yet this launch; the main thread's pump takes it.
 static SETTINGS_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Whether a refused start asked for the Settings window since the last call.
+/// Whether an intentional try asked for the Settings window since the last
+/// call.
 pub(crate) fn take_settings_request() -> bool {
     SETTINGS_REQUESTED.swap(false, Ordering::AcqRel)
 }
@@ -24,8 +28,10 @@ pub(crate) trait Permission: Send {
     fn state(&self) -> PermissionState;
     /// macOS's own prompt. It opens no stream.
     fn ask(&self);
-    /// The permission was refused or waits for a restart: say so once.
-    fn tell(&self);
+    /// The error tone: this try cannot record.
+    fn tone(&self);
+    /// Ask the main thread to open Settings.
+    fn show_settings(&self);
 }
 
 /// The running Mac's permission. `HEX_AUDIO_FIXTURE` reads as granted.
@@ -40,8 +46,11 @@ impl Permission for System {
         onboarding::request_microphone();
     }
 
-    fn tell(&self) {
+    fn tone(&self) {
         feedback::play(Tone::Error);
+    }
+
+    fn show_settings(&self) {
         SETTINGS_REQUESTED.store(true, Ordering::Release);
     }
 }
@@ -51,10 +60,10 @@ impl Permission for System {
 pub(crate) struct MicrophoneAccess {
     permission: Box<dyn Permission>,
     wanted: bool,
-    /// A start already asked or told since the permission last read Ready.
-    /// Every later refused start stays quiet: watch-only users press the
-    /// shortcut for other reasons, and a tone each time would be noise.
-    spoke: bool,
+    /// macOS's prompt was shown this launch.
+    asked: bool,
+    /// The Settings window was requested this launch: at most once.
+    window_requested: bool,
 }
 
 impl MicrophoneAccess {
@@ -66,7 +75,8 @@ impl MicrophoneAccess {
         Self {
             permission,
             wanted,
-            spoke: false,
+            asked: false,
+            window_requested: false,
         }
     }
 
@@ -84,32 +94,30 @@ impl MicrophoneAccess {
         self.wanted || !self.granted()
     }
 
-    /// Whether a dictation start may open the microphone. When it may not,
-    /// the first refusal asks (macOS's prompt) or tells (the error tone and
-    /// the Settings window), and the next ones do nothing.
-    pub(crate) fn admit(&mut self) -> bool {
+    /// Whether a dictation start may open the microphone. A refusal is
+    /// silent: the start may be a chord, a click, or typing.
+    pub(crate) fn admit(&self) -> bool {
+        self.granted()
+    }
+
+    /// The person meant to dictate and cannot. macOS's prompt the first time;
+    /// after a refusal (or while a grant waits for a restart) the error tone
+    /// on every try, and the Settings window once per launch.
+    pub(crate) fn intentional(&mut self) {
         match self.permission.state() {
-            PermissionState::Ready => {
-                self.spoke = false;
-                true
+            PermissionState::Ready => {}
+            PermissionState::NeedsRequest => {
+                if !std::mem::replace(&mut self.asked, true) {
+                    tracing::info!("dictation tried: asking macOS for the microphone");
+                    self.permission.ask();
+                }
             }
             state => {
-                if !std::mem::replace(&mut self.spoke, true) {
-                    tracing::info!(
-                        ?state,
-                        "dictation start refused: the microphone is not allowed"
-                    );
-                    match state {
-                        PermissionState::NeedsRequest => self.permission.ask(),
-                        _ => self.permission.tell(),
-                    }
-                } else {
-                    tracing::debug!(
-                        ?state,
-                        "dictation start ignored: the microphone is not allowed"
-                    );
+                tracing::info!(?state, "dictation tried: the microphone is not allowed");
+                self.permission.tone();
+                if !std::mem::replace(&mut self.window_requested, true) {
+                    self.permission.show_settings();
                 }
-                false
             }
         }
     }
@@ -127,7 +135,9 @@ impl Permission for Granted {
 
     fn ask(&self) {}
 
-    fn tell(&self) {}
+    fn tone(&self) {}
+
+    fn show_settings(&self) {}
 }
 
 #[cfg(test)]
@@ -153,7 +163,8 @@ pub(crate) mod fakes {
     pub(crate) struct Fake {
         state: Arc<Mutex<PermissionState>>,
         asked: Arc<AtomicUsize>,
-        told: Arc<AtomicUsize>,
+        tones: Arc<AtomicUsize>,
+        windows: Arc<AtomicUsize>,
     }
 
     impl Fake {
@@ -161,7 +172,8 @@ pub(crate) mod fakes {
             Self {
                 state: Arc::new(Mutex::new(state)),
                 asked: Arc::default(),
-                told: Arc::default(),
+                tones: Arc::default(),
+                windows: Arc::default(),
             }
         }
 
@@ -173,8 +185,17 @@ pub(crate) mod fakes {
             self.asked.load(Ordering::SeqCst)
         }
 
-        pub(crate) fn told(&self) -> usize {
-            self.told.load(Ordering::SeqCst)
+        pub(crate) fn tones(&self) -> usize {
+            self.tones.load(Ordering::SeqCst)
+        }
+
+        pub(crate) fn windows(&self) -> usize {
+            self.windows.load(Ordering::SeqCst)
+        }
+
+        /// Prompts, tones, and windows: everything the person could notice.
+        pub(crate) fn noticed(&self) -> (usize, usize, usize) {
+            (self.asked(), self.tones(), self.windows())
         }
     }
 
@@ -187,8 +208,12 @@ pub(crate) mod fakes {
             self.asked.fetch_add(1, Ordering::SeqCst);
         }
 
-        fn tell(&self) {
-            self.told.fetch_add(1, Ordering::SeqCst);
+        fn tone(&self) {
+            self.tones.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn show_settings(&self) {
+            self.windows.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -217,28 +242,17 @@ pub(crate) mod fakes {
             self.count.load(Ordering::SeqCst)
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
-
-    use super::fakes::{Fake, Opens};
-    use super::*;
-    use crate::audio::CaptureInstant;
-    use crate::audio::recording_environment::RecordingEnvironmentController;
-    use crate::dictation::Finish;
-    use crate::dictation::audio::DictationAudio;
-    use crate::suppression::PendingInputEvents;
-
-    fn at() -> CaptureInstant {
-        CaptureInstant::from_nanos(60_000_000_000)
-    }
-
-    fn open_audio(permission: &Fake, opens: &Opens, wanted: bool) -> DictationAudio {
-        DictationAudio::open_through(
-            MicrophoneAccess::with_permission(Box::new(permission.clone()), wanted),
+    /// A dictation owner on the fake permission and the counting opener.
+    pub(crate) fn open_audio(
+        permission: &Fake,
+        opens: &Opens,
+        wanted: bool,
+    ) -> crate::dictation::audio::DictationAudio {
+        use crate::audio::recording_environment::RecordingEnvironmentController;
+        use crate::suppression::PendingInputEvents;
+        crate::dictation::audio::DictationAudio::open_through(
+            super::MicrophoneAccess::with_permission(Box::new(permission.clone()), wanted),
             opens.opener(),
             None,
             0,
@@ -248,6 +262,22 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::fakes::{Fake, Opens, open_audio};
+    use super::*;
+    use crate::audio::CaptureInstant;
+    use crate::dictation::Finish;
+    use crate::dictation::audio::DictationAudio;
+
+    fn at() -> CaptureInstant {
+        CaptureInstant::from_nanos(60_000_000_000)
     }
 
     /// Everything queued before has been handled by the owner.
@@ -278,6 +308,7 @@ mod tests {
                 let audio = open_audio(&permission, &opens, wanted);
 
                 assert!(!audio.start(at()).unwrap(), "{state:?} wanted {wanted}");
+                assert_eq!(permission.noticed(), (0, 0, 0), "a start says nothing");
                 assert!(!audio.is_recording());
                 assert_eq!(
                     audio.capture_generation(),
@@ -378,76 +409,84 @@ mod tests {
         }
     }
 
+    /// A start is silent whatever the permission; only an owned press or a
+    /// programmatic start is an intentional try.
     #[test]
-    fn the_first_refusal_asks_and_a_denied_one_wants_settings() {
-        let permission = Fake::new(PermissionState::NeedsRequest);
-        let audio = open_audio(&permission, &Opens::default(), false);
-        assert!(!audio.start(at()).unwrap());
-        assert_eq!(
-            (permission.asked(), permission.told()),
-            (1, 0),
-            "the system prompt"
-        );
-
-        let permission = Fake::new(PermissionState::NeedsSettings);
-        let audio = open_audio(&permission, &Opens::default(), false);
-        assert!(!audio.start(at()).unwrap());
-        assert_eq!(
-            (permission.asked(), permission.told()),
-            (0, 1),
-            "already refused"
-        );
-
-        let permission = Fake::new(PermissionState::NeedsRestart);
-        let audio = open_audio(&permission, &Opens::default(), false);
-        assert!(!audio.start(at()).unwrap());
-        assert_eq!(
-            (permission.asked(), permission.told()),
-            (0, 1),
-            "waits for a restart"
-        );
+    fn a_start_alone_asks_and_sounds_nothing() {
+        for state in REFUSED {
+            let permission = Fake::new(state);
+            let audio = open_audio(&permission, &Opens::default(), false);
+            for _ in 0..3 {
+                assert!(!audio.start(at()).unwrap());
+                audio.cancel().unwrap();
+            }
+            settle(&audio);
+            assert_eq!(permission.noticed(), (0, 0, 0), "{state:?}");
+        }
     }
 
-    /// Watch-only users press the shortcut for other reasons. After the first
-    /// ask, every refused press is silent: no tone, no window, no stream.
     #[test]
-    fn a_refused_microphone_stays_quiet_on_every_later_press() {
+    fn the_first_intentional_try_asks_and_a_refused_one_sounds_every_time() {
         let permission = Fake::new(PermissionState::NeedsRequest);
-        let opens = Opens::default();
-        let audio = open_audio(&permission, &opens, false);
-        assert!(!audio.start(at()).unwrap());
-        assert_eq!((permission.asked(), permission.told()), (1, 0));
+        let audio = open_audio(&permission, &Opens::default(), false);
+        for _ in 0..3 {
+            audio.press_owned();
+        }
+        settle(&audio);
+        assert_eq!(permission.noticed(), (1, 0, 0), "the system prompt, once");
 
-        // The person refuses the prompt.
+        // The person refuses it. Each later try sounds; Settings opens once.
         permission.set(PermissionState::NeedsSettings);
         for _ in 0..3 {
-            assert!(!audio.start(at()).unwrap());
-            assert!(!audio.is_recording());
+            audio.press_owned();
         }
-        assert_eq!(
-            (permission.asked(), permission.told(), opens.count()),
-            (1, 0, 0),
-            "the second and third presses ask nothing, tell nothing, open nothing"
-        );
+        settle(&audio);
+        assert_eq!(permission.noticed(), (1, 3, 1));
 
-        // A press that finds it refused from the start tells once, then stops.
+        for state in [
+            PermissionState::NeedsSettings,
+            PermissionState::NeedsRestart,
+        ] {
+            let permission = Fake::new(state);
+            let audio = open_audio(&permission, &Opens::default(), false);
+            for _ in 0..3 {
+                audio.press_owned();
+            }
+            settle(&audio);
+            assert_eq!(permission.noticed(), (0, 3, 1), "{state:?}");
+        }
+    }
+
+    /// `/dictations` is intentional by nature: its refused start tries at once.
+    #[test]
+    fn a_programmatic_start_is_an_intentional_try() {
+        let permission = Fake::new(PermissionState::NeedsRequest);
+        let audio = open_audio(&permission, &Opens::default(), false);
+        assert!(audio.start_programmatic(at()).is_err());
+        assert_eq!(permission.noticed(), (1, 0, 0));
+        permission.set(PermissionState::NeedsSettings);
+        for _ in 0..2 {
+            assert!(audio.start_programmatic(at()).is_err());
+        }
+        assert_eq!(permission.noticed(), (1, 2, 1));
+    }
+
+    /// A grant then a revoke is one more refusal, not a new window.
+    #[test]
+    fn granting_then_revoking_keeps_the_window_to_once_per_launch() {
         let permission = Fake::new(PermissionState::NeedsSettings);
+        let opens = Opens::default();
         let audio = open_audio(&permission, &opens, false);
-        for _ in 0..4 {
-            assert!(!audio.start(at()).unwrap());
-        }
-        assert_eq!((permission.asked(), permission.told()), (0, 1));
-
-        // Granting and revoking later earns one new notice, not one per press.
+        audio.press_owned();
+        settle(&audio);
         permission.set(PermissionState::Ready);
         assert!(audio.start(at()).unwrap());
         wait_until_open(&audio);
         audio.cancel().unwrap();
         permission.set(PermissionState::NeedsSettings);
-        for _ in 0..3 {
-            assert!(!audio.start(at()).unwrap());
-        }
-        assert_eq!(permission.told(), 2);
+        audio.press_owned();
+        settle(&audio);
+        assert_eq!(permission.noticed(), (0, 2, 1));
     }
 
     /// Every way the listener's microphone could open after `listen()`, driven

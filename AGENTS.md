@@ -651,9 +651,13 @@ CoreAudio formats, AppleScript details, or event serialization.
 - The listener starts once Accessibility and the selected model are ready, so
   watch recordings transcribe and paste without the Microphone. Until the
   Microphone is granted, `DictationAudio` never opens it: a dictation start
-  (shortcut, `hex dictation`, `/dictations`) records nothing and asks: macOS's
-  prompt the first time, the Settings window once refused. A window no longer
-  opens at launch only because the Microphone is missing. Hex never asks for
+  (shortcut, `hex dictation`, `/dictations`) records nothing and says nothing,
+  since Option+e and a click start the shortcut machine too. Only a press Hex
+  owns (past the hold threshold, Toggle's start after its grace, a lock),
+  `hex dictation`, or `/dictations` is a try: macOS's prompt the first time;
+  once refused, the error tone on each try and the Settings window once per
+  launch. A window no longer opens at launch only because the Microphone is
+  missing. Hex never asks for
   Input Monitoring: Accessibility also grants the listen-event access its
   shortcut taps need (measured on macOS 26 and 27).
 - The dictation shortcut defaults to Option but supports modifier-only,
@@ -768,9 +772,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   against the thresholds.
 - When enabled, a second shortcut tap within 300 ms locks dictation. Press the
   shortcut again to finish.
-- Recording audio behavior and idle-sleep prevention begin only after the
-  intentional-hold threshold. Ordinary shortcut chords must not mute output,
-  pause media, or prevent sleep.
+- Recording audio behavior, idle-sleep prevention, and the microphone
+  permission prompt begin only after the intentional-hold threshold. Ordinary
+  shortcut chords must not mute output, pause media, prevent sleep, or ask for
+  the Microphone.
 - A modifier-only shortcut (not Globe/Fn) passes through, so once Hex owns
   the press (hold past the threshold, Toggle start after the 40 ms chord
   grace, lock-finishing press) it posts one marked press of unassigned key

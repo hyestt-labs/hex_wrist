@@ -139,6 +139,8 @@ enum Command {
         device: Option<String>,
     },
     SetReleaseWhileIdle(bool),
+    /// Hex owns a press the closed microphone could not start.
+    PressOwned,
     Shutdown,
     #[cfg(test)]
     InvalidateRecognition {
@@ -342,9 +344,15 @@ impl DictationAudio {
         release_while_idle || self.state.gated.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
     pub fn microphone_gated(&self) -> bool {
         self.state.gated.load(Ordering::Acquire)
+    }
+
+    /// Hex owns the press that a refused start left unrecorded (held past the
+    /// threshold, Toggle's grace) or a `hex dictation` start was refused: the
+    /// first intentional try asks, later ones sound. A start itself is silent.
+    pub fn press_owned(&self) {
+        let _ = self.commands.send(Command::PressOwned);
     }
 
     /// `release` is the saved policy; the owner applies it once the
@@ -643,13 +651,17 @@ impl Owner {
     fn handle(&mut self, command: Command) -> bool {
         match command {
             Command::Start { at, kind, reply } => {
-                // No permission: record nothing and open nothing. The first
-                // refusal asks or tells; the next ones are quiet.
+                // No permission: record nothing, open nothing, say nothing. The
+                // start may be an Option+e or a click; `PressOwned` says when
+                // the person meant it. A programmatic start always does.
                 if !self.access.admit() {
                     // A revoked permission closes a warm input here, when no
                     // capture depends on it.
                     if self.input_idle() {
                         self.follow_permission();
+                    }
+                    if matches!(kind, CaptureKind::Programmatic) {
+                        self.access.intentional();
                     }
                     let _ = reply.send(false);
                     return true;
@@ -754,6 +766,7 @@ impl Owner {
                     .gated
                     .store(!self.access.granted(), Ordering::Release);
             }
+            Command::PressOwned => self.access.intentional(),
             #[cfg(test)]
             Command::InvalidateRecognition { reply } => {
                 let _ = reply.send(self.next_recognition_generation());
