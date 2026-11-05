@@ -11,9 +11,9 @@ use crate::audio::voice_filter::{
 };
 
 const HEX_MICROPHONE_NAME: &str = "Hex Microphone";
-const HEX_MICROPHONE_UID: &str = "anomaly.hex.microphone";
+const HEX_MICROPHONE_UID: &str = "dev.wristper.mac.microphone";
 const HEX_MICROPHONE_SINK_NAME: &str = "Hex Microphone (Internal Sink)";
-const HEX_MICROPHONE_SINK_UID: &str = "anomaly.hex.microphone.sink";
+const HEX_MICROPHONE_SINK_UID: &str = "dev.wristper.mac.microphone.sink";
 const HEX_MICROPHONE_SAMPLE_RATE: u32 = 48_000;
 
 /// Capacity of the lock-free capture-to-sink ring buffer in 48 kHz mono samples (~341 ms).
@@ -542,7 +542,7 @@ impl LinearResampler {
 // ── Status, Bundled Driver Discovery, and Privileged Install/Uninstall ──────
 
 const INSTALLED_DRIVER_PATH: &str = "/Library/Audio/Plug-Ins/HAL/HexMicrophone.driver";
-const EXPECTED_DRIVER_BUNDLE_ID: &str = "anomaly.hex.microphone.driver";
+const EXPECTED_DRIVER_BUNDLE_ID: &str = "dev.wristper.mac.microphone.driver";
 
 /// Fixed AppleScript for driver installation. No user input is ever interpolated
 /// into this script; `osascript` receives the verified bundled `.driver` path

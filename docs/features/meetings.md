@@ -27,7 +27,7 @@ Labs > Meetings switch (macOS)                       // meetings.opt-in; off by 
 │   │   │   (`AudioCapture` reset on running bundle + retired IDs, re-prompt / guide)
 │   │   └── Granted -> the Allow pill morphs into a green Allowed; moves to Advanced
 │   ├── Advanced -> Show recording indicator (on by default; corner-snapping capsule),
-│   │   Transcript folder (~/Documents/Hex Meetings; Reveal / choose; an error opens
+│   │   Transcript folder (~/Documents/Hex Meetings, Wristper Meetings on macOS; Reveal / choose; an error opens
 │   │   Advanced), Summarize with Apple Intelligence (on by default), Summarize
 │   │   with OpenCode (off by default; when Apple Intelligence is off or missing),
 │   │   then with Labs › Choose meeting summary model on, Summary model: a

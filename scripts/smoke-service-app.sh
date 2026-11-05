@@ -13,7 +13,7 @@ installed="$version_dir/HEX Service.app"
 runtime="$install_root/runtime"
 staging="$install_root/.staging-$version-$$"
 expected_team=${HEX_TEAM_ID:?Set HEX_TEAM_ID to the Apple Developer signing team}
-expected_identifier=anomaly.hex.service
+expected_identifier=dev.wristper.mac.service
 pid=
 
 cleanup() {

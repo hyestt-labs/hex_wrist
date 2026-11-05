@@ -497,7 +497,7 @@ const KEYS: &[Key] = &[
     optional(
         "meetings.output_folder",
         Kind::Path,
-        "Folder for meeting Markdown; none uses ~/Documents/Hex Meetings",
+        "Folder for meeting Markdown; none uses ~/Documents/Hex Meetings (macOS: Wristper Meetings)",
     ),
     key(
         "meetings.summarize_with_apple_intelligence",

@@ -22,9 +22,9 @@ pub fn is_macos_test_build() -> bool {
 #[cfg(target_os = "macos")]
 pub fn app_name() -> &'static str {
     if is_macos_test_build() {
-        "Hex Test"
+        "Wristper Test"
     } else {
-        "Hex"
+        "Wristper"
     }
 }
 
@@ -34,10 +34,10 @@ pub fn support_dir() -> Result<PathBuf> {
     }
     let data =
         dirs::data_dir().ok_or_else(|| eyre!("application data directory is unavailable"))?;
-    let folder = if is_macos_test_build() {
-        "hex-test"
-    } else {
-        "hex"
+    let folder = match (cfg!(target_os = "macos"), is_macos_test_build()) {
+        (true, true) => "Wristper Test",
+        (true, false) => "Wristper",
+        (false, _) => "hex",
     };
     Ok(data.join(folder))
 }
@@ -104,7 +104,7 @@ pub fn personal_commands_workspace() -> Result<PathBuf> {
     user_config_dir()
 }
 
-/// The per-user config folder holding `hex.config.ts` on every OS: `~/.config/hex`, or `~/.config/hex-test` for `Hex Test.app`.
+/// The per-user config folder holding `hex.config.ts` on every OS: `~/.config/hex` (macOS: `~/.config/wristper`, or `~/.config/wristper-test` for a test build).
 fn user_config_dir() -> Result<PathBuf> {
     let home = home_dir().ok_or_else(|| eyre!("home directory is unavailable"))?;
     Ok(user_config_dir_in(&home, is_macos_test_build()))
@@ -157,8 +157,12 @@ pub fn document_dir() -> Option<PathBuf> {
 }
 
 fn user_config_dir_in(home: &std::path::Path, test_build: bool) -> PathBuf {
-    home.join(".config")
-        .join(if test_build { "hex-test" } else { "hex" })
+    let folder = match (cfg!(target_os = "macos"), test_build) {
+        (true, true) => "wristper-test",
+        (true, false) => "wristper",
+        (false, _) => "hex",
+    };
+    home.join(".config").join(folder)
 }
 
 #[cfg(test)]
@@ -168,13 +172,18 @@ mod tests {
     #[test]
     fn each_build_has_its_own_config_folder() {
         let home = std::path::Path::new("/Users/kit");
+        let (plain, test) = if cfg!(target_os = "macos") {
+            ("wristper", "wristper-test")
+        } else {
+            ("hex", "hex")
+        };
         assert_eq!(
             user_config_dir_in(home, false),
-            home.join(".config").join("hex")
+            home.join(".config").join(plain)
         );
         assert_eq!(
             user_config_dir_in(home, true),
-            home.join(".config").join("hex-test")
+            home.join(".config").join(test)
         );
     }
 }

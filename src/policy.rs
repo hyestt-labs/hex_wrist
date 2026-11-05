@@ -1,5 +1,5 @@
 //! Feature locks an organization sets through managed preferences (macOS
-//! configuration profiles) in the `anomaly.hex` domain: `DisableMeetings`,
+//! configuration profiles) in the `dev.wristper.mac` domain: `DisableMeetings`,
 //! `DisableAnnotate`, `DisableOpenCodeProcessing`, `DisableTransforms`, and
 //! `DisableLabs`, plus `RestrictTransformsToLoopback`, which keeps
 //! transformations on but holds their `fetch` to this computer and runs no
@@ -47,7 +47,7 @@ impl Lock {
         Self::LoopbackTransforms,
     ];
 
-    /// Its key in the `anomaly.hex` managed preferences.
+    /// Its key in the `dev.wristper.mac` managed preferences.
     pub const fn key(self) -> &'static str {
         match self {
             Self::Meetings => "DisableMeetings",
@@ -187,7 +187,7 @@ mod platform {
         CFPreferencesAppValueIsForced, CFPreferencesGetAppBooleanValue, CFString,
     };
 
-    const DOMAIN: &str = "anomaly.hex";
+    const DOMAIN: &str = "dev.wristper.mac";
 
     /// Whether a configuration profile forces `key` to true.
     pub fn forced(key: &str) -> bool {
