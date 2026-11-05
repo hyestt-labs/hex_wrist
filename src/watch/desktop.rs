@@ -327,16 +327,26 @@ fn press(
     if Instant::now() >= valid_until || !ticket.is_live() {
         return KeyOutcome::Failed("the request ended before the key was pressed".to_owned());
     }
-    let focused = screen.focused();
-    let gate = key_gate(
-        &Expectation::Field(expected.clone()),
-        focused.as_ref().map(|focused| &focused.field),
-        screen.secure_input(),
-    );
-    match gate {
-        KeyGate::TargetChanged => return KeyOutcome::TargetChanged,
-        KeyGate::Sensitive => return KeyOutcome::Sensitive,
-        KeyGate::Press => {}
+    // Read twice: reading the focus can be slow, and the user may have
+    // switched apps meanwhile. The second read, the deadline, and the ticket
+    // are all checked right before the key, as close as the API allows (a
+    // switch inside those few microseconds is still possible).
+    let live = || Instant::now() < valid_until && ticket.is_live();
+    for _ in 0..2 {
+        let focused = screen.focused();
+        let gate = key_gate(
+            &Expectation::Field(expected.clone()),
+            focused.as_ref().map(|focused| &focused.field),
+            screen.secure_input(),
+        );
+        match gate {
+            KeyGate::TargetChanged => return KeyOutcome::TargetChanged,
+            KeyGate::Sensitive => return KeyOutcome::Sensitive,
+            KeyGate::Press => {}
+        }
+        if !live() {
+            return KeyOutcome::Failed("the request ended before the key was pressed".to_owned());
+        }
     }
     let sent = match key {
         Key::Enter => screen.press_return(),

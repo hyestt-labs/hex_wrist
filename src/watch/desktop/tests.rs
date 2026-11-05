@@ -212,3 +212,45 @@ fn a_cancelled_ticket_presses_nothing() {
     ));
     assert!(screen.keys().is_empty());
 }
+
+/// Catches a Return sent to the app the user switched to while the focus
+/// was being read: the target is read again right before the key.
+#[test]
+fn the_target_is_read_again_right_before_the_key() {
+    let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(8)))));
+    screen
+        .focus_script
+        .lock()
+        .unwrap()
+        .push_back(Some(editable(text_area(7))));
+    assert_eq!(
+        press(&desktop(&screen), Key::Enter, text_area(7)),
+        KeyOutcome::TargetChanged
+    );
+    assert!(screen.keys().is_empty());
+}
+
+/// Catches a Return sent after the reply was given up on because reading
+/// the focus took longer than the request had left.
+#[test]
+fn a_slow_focus_read_does_not_press_after_the_deadline() {
+    let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
+    *screen.focus_delay.lock().unwrap() = Duration::from_millis(120);
+    let desktop = desktop(&screen);
+    let (done, outcome) = mpsc::channel();
+    let valid_until = Instant::now() + Duration::from_millis(100);
+    desktop.press(
+        Key::Enter,
+        text_area(7),
+        valid_until,
+        Ticket::new(),
+        move |result| {
+            done.send(result).unwrap();
+        },
+    );
+    assert!(matches!(
+        outcome.recv_timeout(Duration::from_secs(2)).unwrap(),
+        KeyOutcome::Failed(_)
+    ));
+    assert!(screen.keys().is_empty());
+}

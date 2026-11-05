@@ -13,6 +13,11 @@ pub(crate) struct FakeScreen {
     pub(crate) secure: AtomicBool,
     pub(crate) fail_keys: AtomicBool,
     pub(crate) focus: Mutex<Option<Focused>>,
+    /// Answers for the next `focused` calls, one each, before `focus`
+    /// takes over: a user who switches apps between two reads.
+    pub(crate) focus_script: Mutex<VecDeque<Option<Focused>>>,
+    /// How long each `focused` read takes.
+    pub(crate) focus_delay: Mutex<std::time::Duration>,
     /// What `value` answers, one entry per call; the last repeats.
     pub(crate) values: Mutex<VecDeque<Option<String>>>,
     /// The keys pressed: `return` or `undo`.
@@ -53,6 +58,13 @@ impl Screen for FakeScreen {
     }
 
     fn focused(&self) -> Option<Focused> {
+        let delay = *self.focus_delay.lock().unwrap();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        if let Some(scripted) = self.focus_script.lock().unwrap().pop_front() {
+            return scripted;
+        }
         self.focus.lock().unwrap().clone()
     }
 

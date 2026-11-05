@@ -195,6 +195,11 @@ Apple Watch                               // watch.pair, watch.dictate
   prompt frame jumps clear of the original, or whose tab switch changes only
   what AX does not expose, reads `target-changed` or goes to the other tab;
   this needs the live Terminal, Orca, and Ghostty check.
+- A small race remains by design: the focus is read and judged twice (the
+  second time right before ⌘V, Return, or ⌘Z), the key's 5 s deadline and
+  cancellation are checked after both reads, but Accessibility cannot pin the
+  target, so a switch of app inside those last microseconds still sends the
+  key to the new app. Needs the live check to size it.
 - The read-back reads the focused element of the app in front, not the
   original element object Wristper kept; an app that moves focus inside its
   own window right after ⌘V stays `unverified`.

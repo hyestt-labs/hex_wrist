@@ -481,3 +481,42 @@ fn the_confirmation_goes_out_before_the_keyboard_is_released() {
     delivered.follow_up.unwrap().run(&delivery, |_| {});
     assert_eq!(waiter.join().unwrap(), [true]);
 }
+
+/// The user switched apps after the gate read the focus and before ⌘V:
+/// the focus is read again right before the paste.
+#[test]
+fn the_focus_is_read_again_right_before_the_paste() {
+    let mut rig = in_field();
+    rig.screen
+        .focus_script
+        .lock()
+        .unwrap()
+        .push_back(Some(editable(text_area(7))));
+    rig.screen.set_focus(Some(editable(text_area(8))));
+    let delivered = say(&mut rig, "hello there");
+    assert_eq!(
+        delivered.outcome,
+        DeliveryOutcome::Withheld(Withheld::TargetChanged)
+    );
+    assert!(rig.inserter.inserted.is_empty());
+    assert!(delivered.follow_up.is_none());
+}
+
+/// Moving between two fields of the same app counts too.
+#[test]
+fn a_switch_to_a_password_field_before_the_paste_is_sensitive() {
+    let mut rig = in_field();
+    let mut password = text_area(7);
+    password.role = "AXSecureTextField".into();
+    rig.screen
+        .focus_script
+        .lock()
+        .unwrap()
+        .push_back(Some(editable(text_area(7))));
+    rig.screen.set_focus(Some(editable(password)));
+    assert_eq!(
+        say(&mut rig, "hunter2").outcome,
+        DeliveryOutcome::Withheld(Withheld::PasswordField)
+    );
+    assert!(rig.inserter.inserted.is_empty());
+}

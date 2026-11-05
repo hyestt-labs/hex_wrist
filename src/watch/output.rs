@@ -204,22 +204,40 @@ pub(crate) fn deliver(
     let held = desktop.lock();
     let screen = desktop.screen();
     let focused = screen.focused();
-    match gate(&job.expectation, focused.as_ref(), screen.secure_input()) {
-        Gate::Withhold(withheld) => done(DeliveryOutcome::Withheld(withheld), None),
-        Gate::Copy => {
+    let first = gate(&job.expectation, focused.as_ref(), screen.secure_input());
+    // Reading the field's text and preparing the clipboard take time, and
+    // the user may switch apps meanwhile: the focus is read and judged
+    // again right before ⌘V. A switch inside the last few microseconds is
+    // still possible; AX offers no way to pin the target.
+    let decision = match first {
+        Gate::Paste { target, .. } => {
+            let before = screen.value(target.pid);
+            let again = screen.focused();
+            let second = gate(&job.expectation, again.as_ref(), screen.secure_input());
+            let before = match &second {
+                Gate::Paste { target: now, .. } if now.pid == target.pid => before,
+                Gate::Paste { target: now, .. } => screen.value(now.pid),
+                _ => None,
+            };
+            (second, before)
+        }
+        other => (other, None),
+    };
+    match decision {
+        (Gate::Withhold(withheld), _) => done(DeliveryOutcome::Withheld(withheld), None),
+        (Gate::Copy, _) => {
             inserter.copy(&text, commit)?;
             done(DeliveryOutcome::Copied, None)
         }
-        Gate::Paste {
-            target,
-            verification,
-        } => {
+        (
+            Gate::Paste {
+                target,
+                verification,
+            },
+            before,
+        ) => {
             let terminal = verification == Verification::Terminal;
-            let before = if terminal {
-                None
-            } else {
-                screen.value(target.pid)
-            };
+            let before = if terminal { None } else { before };
             let inserted = inserter.insert(&text, commit)?;
             let follow_up = FollowUp {
                 held,
