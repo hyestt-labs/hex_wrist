@@ -31,6 +31,7 @@ pub(crate) mod refusal;
 pub(crate) mod relay;
 pub(crate) mod service;
 pub(crate) mod suspect;
+pub(crate) mod zh;
 
 use std::io::{self, Write};
 use std::path::Path;
