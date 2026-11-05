@@ -5,6 +5,8 @@
 //! threads, no UI, no engine. The relay WebSocket client, the HTTP handlers,
 //! and the paste pipeline sit on top in later units.
 //!
+//! - `audio`: the watch's AAC `.m4a` decoded into the engine's samples.
+//! - `relay`: the relay WebSocket client on its own thread.
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
 //! - `pairing`: paired watches, their tokens and keys, and the claim approval.
@@ -15,12 +17,14 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod audio;
 pub(crate) mod delivered;
 pub(crate) mod e2ee;
 pub(crate) mod frame;
 pub(crate) mod pairing;
 pub(crate) mod recording;
 pub(crate) mod refusal;
+pub(crate) mod relay;
 pub(crate) mod suspect;
 
 use std::io::{self, Write};
