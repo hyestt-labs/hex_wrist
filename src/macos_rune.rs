@@ -330,6 +330,9 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
     let (developer_sender, developer_receiver) = mpsc::sync_channel(8);
     let (control_sender, control_receiver) = mpsc::sync_channel(8);
     let (recognition_controls, recognition_control_receiver) = mpsc::sync_channel(8);
+    // The Apple Watch receiver: on by default, before the listener, so a
+    // watch that reconnects at launch is answered as soon as the relay is.
+    let watch_service = crate::watch::start_in_app(recognition_controls.clone());
     let mut local_api = crate::local_api::LocalApi::start(
         event_log.clone(),
         crate::local_api::LocalApiOptions {
@@ -550,6 +553,9 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
         }
         drop(requests);
         local_api.shutdown();
+        if let Some(watch) = &watch_service {
+            watch.stop();
+        }
         // The listener owns the transcription engine; joining it frees the
         // model after its last use.
         for (name, worker) in [

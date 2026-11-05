@@ -59,8 +59,15 @@ struct Slot {
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        if let Some(reply) = self.reply.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
-            reply(DeliveryReport::failed("dictation was dropped before it finished"));
+        if let Some(reply) = self
+            .reply
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            reply(DeliveryReport::failed(
+                "dictation was dropped before it finished",
+            ));
         }
     }
 }
@@ -129,7 +136,10 @@ mod tests {
         let report = receiver.recv().unwrap();
         assert_eq!(report.outcome, DeliveryOutcome::Unverified);
         assert_eq!(report.text, "hello");
-        assert!(receiver.try_recv().is_err(), "only the first report arrives");
+        assert!(
+            receiver.try_recv().is_err(),
+            "only the first report arrives"
+        );
     }
 
     #[test]

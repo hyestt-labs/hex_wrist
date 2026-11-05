@@ -3,17 +3,37 @@
 //! cache, live recordings) and answers the relay's requests. The relay
 //! thread only moves frames; the dictation worker only transcribes and
 //! pastes; both talk to this thread through channels.
+//!
+//! - `state`: `Core`, the thread's state, and the non-request messages.
+//! - `routes`: dispatch, authentication, and the handlers that answer at once.
+//! - `envelope`: `/e2ee`, `/e2ee/query`, and the recording path.
+//! - `pending`: replies held for a delivery, a duplicate, or a `/focus`.
 
-use std::path::PathBuf;
-use std::sync::mpsc;
+mod envelope;
+#[cfg(test)]
+mod integration;
+mod pending;
+mod routes;
+mod state;
+#[cfg(test)]
+mod tests;
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::Duration;
 
-use super::delivery::WatchDelivery;
-use super::pairing::SecretStore;
-use super::relay::RelayTiming;
+use super::delivery::{DeliveryReport, WatchDelivery};
+use super::pairing::{self, PairedDevices, SecretStore};
+use super::relay::{NotConnected, Relay, RelayConfig, RelayEvent, RelayTiming};
+use crate::recognition::RecognitionControl;
+use state::{Core, Flow, Identity, Now};
 
 /// How long `claim` waits for the relay's `claim_ok` or `claim_failed`.
 pub(crate) const CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
+/// The loop wakes at least this often, so bookkeeping never waits on a frame.
+const TICK: Duration = Duration::from_secs(1);
+const DEVICE_ID_FILE: &str = "device-id";
+const DELIVERED_FILE: &str = "delivered-ids.json";
 
 /// Where the service's files live and who this Mac says it is.
 pub(crate) struct WatchConfig {
@@ -28,6 +48,15 @@ pub(crate) struct WatchConfig {
     pub(crate) timing: RelayTiming,
 }
 
+/// The speech model as `/health` names it (Swift's `ReceiverModels`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModelInfo {
+    /// `missing` (nothing installed), `cold` (installed), or `warm` (loaded).
+    pub(crate) state: &'static str,
+    pub(crate) id: String,
+    pub(crate) name: String,
+}
+
 /// Hands a decoded recording to the dictation pipeline. The app sends
 /// `RecognitionControl::WatchTranscribe`; tests answer at once.
 pub(crate) trait Dictation: Send {
@@ -35,6 +64,47 @@ pub(crate) trait Dictation: Send {
     /// running, its queue is full); the delivery is then never answered by
     /// the pipeline.
     fn transcribe(&self, samples: Vec<f32>, delivery: WatchDelivery) -> Result<(), String>;
+
+    fn model(&self) -> ModelInfo;
+}
+
+/// The app's `Dictation`: the listener's control queue.
+pub(crate) struct ListenerDictation {
+    controls: SyncSender<RecognitionControl>,
+}
+
+impl ListenerDictation {
+    pub(crate) fn new(controls: SyncSender<RecognitionControl>) -> Self {
+        Self { controls }
+    }
+}
+
+impl Dictation for ListenerDictation {
+    fn transcribe(&self, samples: Vec<f32>, delivery: WatchDelivery) -> Result<(), String> {
+        self.controls
+            .try_send(RecognitionControl::WatchTranscribe { samples, delivery })
+            .map_err(|error| match error {
+                TrySendError::Full(_) => "the dictation queue is full".to_owned(),
+                TrySendError::Disconnected(_) => "the listener is not running".to_owned(),
+            })
+    }
+
+    /// The saved selection; whether the engine holds it is not asked here,
+    /// so an installed model reads `cold`.
+    fn model(&self) -> ModelInfo {
+        use crate::transcription::models::{definition, is_installed};
+        let (_, selection) = crate::app_settings::transcription_selection();
+        let model = definition(selection.model);
+        ModelInfo {
+            state: if is_installed(model, &selection.language) {
+                "cold"
+            } else {
+                "missing"
+            },
+            id: selection.model.as_str().to_owned(),
+            name: model.name.to_owned(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,7 +145,9 @@ impl ClaimError {
     pub(crate) fn message(&self) -> String {
         match self {
             Self::InvalidCode => "the pairing code is the six digits the watch shows".into(),
-            Self::RelayOffline => "the relay is not connected; check the network and try again".into(),
+            Self::RelayOffline => {
+                "the relay is not connected; check the network and try again".into()
+            }
             Self::Timeout => "the relay did not answer within 10 s".into(),
             Self::CodeNotFound => "no watch is showing that code; it may have expired".into(),
             Self::TooManyAttempts => "too many wrong codes; wait 10 minutes".into(),
@@ -107,17 +179,76 @@ pub(crate) enum Message {
         reply: mpsc::SyncSender<WatchSnapshot>,
     },
     Stop,
+    Relay(RelayEvent),
+    /// The dictation worker finished recording `id`.
+    Delivered {
+        id: String,
+        report: DeliveryReport,
+    },
 }
 
 impl WatchService {
     /// Starts the relay and the `watch` thread. Fails only when the room
     /// files cannot be created.
     pub(crate) fn start(
-        _config: WatchConfig,
-        _dictation: Box<dyn Dictation>,
-        _store: Box<dyn SecretStore + Send>,
+        config: WatchConfig,
+        dictation: Box<dyn Dictation>,
+        store: Box<dyn SecretStore + Send>,
     ) -> std::io::Result<Self> {
-        Err(std::io::Error::other("the watch service is not implemented yet"))
+        let room = super::relay::read_or_create_room(&config.support_dir)?;
+        let mac_id = read_or_create_device_id(&config.support_dir.join(DEVICE_ID_FILE))?;
+        let (inbox, messages) = mpsc::channel();
+        let (events, relay_events) = mpsc::channel();
+        let relay = Relay::start(
+            RelayConfig {
+                base: config.relay_base,
+                room,
+                timing: config.timing,
+            },
+            events,
+        );
+        let forward = inbox.clone();
+        std::thread::Builder::new()
+            .name("watch-relay-events".to_owned())
+            .spawn(move || {
+                for event in relay_events {
+                    if forward.send(Message::Relay(event)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(std::io::Error::other)?;
+        let identity = Identity {
+            mac_id,
+            mac_name: config.mac_name,
+            app_version: config.app_version,
+        };
+        let support_dir = config.support_dir;
+        let core_inbox = inbox.clone();
+        // `PairedDevices` holds the store, which is not `Send` once boxed
+        // without the bound, so the thread builds the core itself.
+        std::thread::Builder::new()
+            .name("watch".to_owned())
+            .spawn(move || {
+                let paired = PairedDevices::load(&support_dir.join(pairing::FILE_NAME), store);
+                for note in &paired.notes {
+                    tracing::info!(note, "paired watches");
+                }
+                let delivered_path = support_dir.join(DELIVERED_FILE);
+                let delivered = super::delivered::load(&delivered_path);
+                let core = Core::new(
+                    identity,
+                    paired,
+                    delivered,
+                    delivered_path,
+                    Box::new(relay),
+                    dictation,
+                    core_inbox,
+                );
+                run(core, messages);
+            })
+            .map_err(std::io::Error::other)?;
+        Ok(Self { inbox })
     }
 
     /// Claims `code` through the relay, waiting at most `CLAIM_TIMEOUT`.
@@ -150,4 +281,70 @@ impl WatchService {
     pub(crate) fn stop(&self) {
         let _ = self.inbox.send(Message::Stop);
     }
+}
+
+/// The `watch` thread: one inbox, woken by the nearest deadline.
+fn run(mut core: Core, messages: mpsc::Receiver<Message>) {
+    loop {
+        let now = Now::current();
+        let wait = core
+            .next_deadline()
+            .map_or(TICK, |deadline| deadline.saturating_duration_since(now.at))
+            .min(TICK);
+        match messages.recv_timeout(wait) {
+            Ok(message) => {
+                if let Flow::Exit = core.handle(message, Now::current()) {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => core.tick(Now::current()),
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    core.shutdown();
+}
+
+impl pending::Outbound for Relay {
+    fn send(&mut self, text: String) -> Result<(), NotConnected> {
+        Relay::send(self, text)
+    }
+
+    fn stop(self: Box<Self>) {
+        Relay::stop(*self);
+    }
+}
+
+/// `device-id`: this Mac's id as the watch stores it, a lower-case UUID
+/// (`EmbeddedReceiver.readOrCreate`). A file Wristper wrote is kept.
+fn read_or_create_device_id(path: &Path) -> std::io::Result<String> {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        let trimmed = text.trim();
+        if is_uuid(trimmed) {
+            return Ok(trimmed.to_owned());
+        }
+    }
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let id = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    super::write_owner_only(path, format!("{id}\n").as_bytes())?;
+    Ok(id)
+}
+
+/// `UUID(uuidString:)` accepts either case; the file keeps what it holds.
+fn is_uuid(text: &str) -> bool {
+    text.len() == 36
+        && text.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
