@@ -43,6 +43,47 @@ fn login_item_launch_starts_without_the_window() {
     }
 }
 
+/// Characterization for the Mac-only user (no paired watch, microphone
+/// granted): the launch decision follows `SetupStatus::ready()` and the
+/// onboarding record exactly as before the watch work.
+#[test]
+fn a_mac_only_launch_decision_follows_setup_status() {
+    use crate::desktop::onboarding::{PermissionState, SetupStatus};
+    for accessibility in [
+        PermissionState::Ready,
+        PermissionState::NeedsRequest,
+        PermissionState::NeedsSettings,
+        PermissionState::NeedsRestart,
+    ] {
+        for transcription_model in [false, true] {
+            let status = SetupStatus {
+                microphone: PermissionState::Ready,
+                accessibility,
+                transcription_model,
+            };
+            let expected_ready = accessibility == PermissionState::Ready && transcription_model;
+            for onboarding_completed in [false, true] {
+                for show_dock_icon in [false, true] {
+                    let launch = LaunchWindow::decide(
+                        show_dock_icon,
+                        status.ready(),
+                        onboarding_completed,
+                        true,
+                    );
+                    let expected = if !expected_ready || !onboarding_completed {
+                        LaunchWindow::Open
+                    } else if show_dock_icon {
+                        LaunchWindow::OpenUnlessLoginItem
+                    } else {
+                        LaunchWindow::Quiet
+                    };
+                    assert_eq!(launch, expected, "{status:?} dock {show_dock_icon}");
+                }
+            }
+        }
+    }
+}
+
 /// Hold each preparation until released, observing its exact request and cancellation.
 struct Fixture {
     runtime: Runtime,

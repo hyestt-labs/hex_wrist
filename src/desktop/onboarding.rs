@@ -1484,6 +1484,94 @@ mod tests {
         assert_eq!(flow.on(Input::Continue), Effect::Finish);
     }
 
+    /// Characterization for the Mac-only user (no paired watch, microphone
+    /// granted): the watch work must leave `ready()`, the tour's steps, its
+    /// rows and its effects exactly as they were.
+    #[test]
+    fn a_mac_only_setup_with_the_microphone_ready_is_unchanged() {
+        let accessibility_states = [
+            PermissionState::Ready,
+            PermissionState::NeedsRequest,
+            PermissionState::NeedsSettings,
+            PermissionState::NeedsRestart,
+        ];
+        for accessibility in accessibility_states {
+            for model in [false, true] {
+                let status = SetupStatus {
+                    microphone: PermissionState::Ready,
+                    accessibility,
+                    transcription_model: model,
+                };
+                assert_eq!(
+                    status.ready(),
+                    accessibility == PermissionState::Ready && model,
+                    "{status:?}"
+                );
+            }
+        }
+
+        let mut flow = Flow::new(Step::Welcome, permissions_only(), true, true);
+        let status = SetupStatus {
+            accessibility: PermissionState::NeedsSettings,
+            ..permissions_only()
+        };
+        assert_eq!(
+            flow.on(Input::Status(status, ModelProgress::default())),
+            Effect::DownloadModel
+        );
+        assert_eq!(flow.on(Input::Continue), Effect::None);
+        assert_eq!(flow.step(), Step::Setup);
+        assert_eq!(
+            statuses(&flow),
+            [
+                (SetupItem::Microphone, ItemStatus::Ready, false),
+                (SetupItem::Accessibility, ItemStatus::Todo, true),
+            ]
+        );
+        let view = flow.view();
+        assert!(!view.ready && !view.dictation_ready && !view.restart);
+        assert_eq!(flow.on(Input::Continue), Effect::None, "setup is not ready");
+        assert_eq!(
+            flow.on(Input::Grant(SetupItem::Accessibility)),
+            Effect::ShowGuide(PermissionKind::Accessibility)
+        );
+        assert_eq!(
+            flow.on(Input::Status(permissions_only(), downloading(0.5))),
+            Effect::AdvanceSoon
+        );
+        let view = flow.view();
+        assert!(
+            view.ready && !view.dictation_ready,
+            "the model is still coming"
+        );
+        assert_eq!(flow.on(Input::Continue), Effect::None);
+        assert_eq!(flow.step(), Step::TryIt);
+        assert_eq!(flow.on(Input::Continue), Effect::None, "practice first");
+        flow.on(Input::Status(ready_status(), installed()));
+        assert!(flow.view().dictation_ready);
+        flow.on(Input::Dictation(Observation::Pasted));
+        assert_eq!(flow.on(Input::Continue), Effect::None);
+        assert_eq!(flow.step(), Step::Done);
+        assert_eq!(flow.on(Input::Continue), Effect::Finish);
+
+        // The listener relaunch needs dictation itself ready.
+        let mut waiting = Flow::new(Step::Setup, permissions_only(), true, true);
+        assert_eq!(
+            waiting.on(Input::ListenerFailed {
+                relaunch_allowed: true
+            }),
+            Effect::None
+        );
+        // A tour resumed past setup is held at setup until setup is ready.
+        for step in [Step::TryIt, Step::Done] {
+            assert_eq!(
+                Flow::new(step, fresh_status(), true, true).step(),
+                Step::Setup
+            );
+            assert_eq!(Flow::new(step, ready_status(), true, true).step(), step);
+        }
+    }
+
     #[test]
     fn the_model_downloads_as_soon_as_the_tour_opens() {
         let mut flow = Flow::new(Step::Welcome, fresh_status(), true, true);
