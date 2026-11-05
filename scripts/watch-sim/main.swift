@@ -14,9 +14,10 @@ struct WatchSim {
             case "deliver": try await deliver(args)
             case "health": try await health()
             case "action": try await action(args)
+            case "selftest-gate": selftestGate(args)
             case "match": match(expected: option(args, "--expected") ?? "", actual: option(args, "--actual") ?? "")
             default:
-                emit(["event": "usage", "usage": "watch-sim pair [--timeout s] | deliver --audio <m4a> [--language auto] [--after-focus <sh>] [--enter] [--enter-twice] [--undo] [--timeout s] | action --path /enter|/undo --id <uuid> | health | match --expected <text> --actual <text>"])
+                emit(["event": "usage", "usage": "watch-sim pair [--timeout s] | deliver --audio <m4a> [--language auto] [--after-focus <sh>] [--before-action <sh>] [--enter] [--enter-twice] [--undo] [--timeout s] | action --path /enter|/undo --id <uuid> | selftest-gate --hook <sh> | health | match --expected <text> --actual <text>"])
                 exit(2)
             }
         } catch {
@@ -33,6 +34,27 @@ struct WatchSim {
     static func emit(_ object: [String: Any]) {
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
         FileHandle.standardOutput.write(data + Data("\n".utf8))
+    }
+
+    /// Runs a gate command (`/bin/sh -c`) and reports whether it passed. The script uses it to check that
+    /// the app in front is the test target at the moment audio or a key would go out; a failed gate means
+    /// nothing is sent.
+    static func gate(_ command: String?) -> Bool {
+        guard let command else { return false }   // no gate given: fail closed, send nothing
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", command]
+        do { try task.run() } catch { return false }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    /// `selftest-gate --hook <sh>`: the same gate with no network, for the script's offline self-test.
+    /// Prints whether audio would be sent, and exits 0 only when the gate passed.
+    static func selftestGate(_ args: [String]) {
+        let passed = gate(option(args, "--hook"))
+        emit(["event": "selftest-gate", "e2ee_sent": passed, "gate_passed": passed])
+        exit(passed ? 0 : 1)
     }
 
     static func ms(since start: Date) -> Int { Int(Date().timeIntervalSince(start) * 1000) }
@@ -162,15 +184,20 @@ struct WatchSim {
         let refusal = await WatchMacStatus.captureFocus(target: target, id: id)
         report["focus_ms"] = ms(since: started)
         report["focus_refusal"] = refusal.map { "\($0)" } as Any
-        if let hook = option(args, "--after-focus") {
-            // The person switches app between starting the recording and its audio arriving.
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/bin/sh")
-            task.arguments = ["-c", hook]
-            try task.run()
-            task.waitUntilExit()
-            report["after_focus_exit"] = Int(task.terminationStatus)
+        // The person's app may change between starting the recording and its audio arriving. This gate runs
+        // after /focus and before /e2ee. If it fails, nothing is sent: no audio, so no dictation.
+        do {
+            let passed = gate(option(args, "--after-focus"))
+            report["after_focus_passed"] = passed
+            if !passed {
+                report["aborted"] = "after-focus gate failed"
+                report["e2ee_sent"] = false
+                report["ok"] = false
+                emit(report)
+                exit(1)
+            }
         }
+        report["e2ee_sent"] = true
 
         let sendStart = Date()
         let result = try await WatchMacBridge.send(audio: audio, id: id, room: target.room, token: target.token,
@@ -194,21 +221,27 @@ struct WatchSim {
         report["state"] = last.state as Any
         report["terminal"] = last.state.map(terminal.contains) ?? false
 
+        // /enter and /undo make the Mac press Return and Command-Z: the gate must pass before each.
+        let beforeAction = option(args, "--before-action")
         if args.contains("--enter") {
             let enterStart = Date()
-            report["enter"] = await rawAction(target, "/enter", id: id)
+            report["enter"] = gate(beforeAction) ? await rawAction(target, "/enter", id: id) : ["aborted": "before-action gate failed"]
             report["enter_ms"] = ms(since: enterStart)
         }
         if args.contains("--enter-twice") {
-            // Two /enter calls at the same moment, as a watch double tap or a retry would send them.
-            async let first = rawAction(target, "/enter", id: id)
-            async let second = rawAction(target, "/enter", id: id)
-            report["enters"] = await [first, second]
+            if gate(beforeAction) {
+                // Two /enter calls at the same moment, as a watch double tap or a retry would send them.
+                async let first = rawAction(target, "/enter", id: id)
+                async let second = rawAction(target, "/enter", id: id)
+                report["enters"] = await [first, second]
+            } else {
+                report["enters"] = [["aborted": "before-action gate failed"]]
+            }
         }
         if args.contains("--undo") {
             // Undo needs the read-back to have confirmed the paste (up to 1 s after it).
             try await Task.sleep(for: .seconds(2))
-            report["undo"] = await rawAction(target, "/undo", id: id)
+            report["undo"] = gate(beforeAction) ? await rawAction(target, "/undo", id: id) : ["aborted": "before-action gate failed"]
         }
         report["total_ms"] = ms(since: started)
         report["ok"] = report["terminal"] as? Bool ?? false
