@@ -107,17 +107,7 @@ impl Core {
             request_nonce_base64: opened.nonce_base64,
         });
         self.ratchet(audio_head.requires_e2ee, &opened.device, &audio_head.token);
-        // Nonces live in memory and get pushed out; a background upload may
-        // outlive them, so the recording's own state stops its replay.
-        if audio_head.may_arrive_late()
-            && let Some(state) = self.handled_state(&audio_head.id, now)
-        {
-            return self.answer(
-                reply,
-                200,
-                json!({"ok": true, "duplicate": true, "state": state}),
-            );
-        }
+        let late_upload = audio_head.may_arrive_late();
         let mut headers = BTreeMap::from([
             (TOKEN_HEADER.to_owned(), audio_head.token),
             (ID_HEADER.to_owned(), audio_head.id),
@@ -145,7 +135,7 @@ impl Core {
             headers,
             body_len: audio_bytes.len(),
         };
-        self.dispatch(inner, audio_bytes.to_vec(), reply, now);
+        self.dispatch(inner, audio_bytes.to_vec(), reply, late_upload, now);
     }
 
     pub(super) fn encrypted_query(
@@ -204,7 +194,7 @@ impl Core {
             headers,
             body_len: body.len(),
         };
-        self.dispatch(inner, body, reply, now);
+        self.dispatch(inner, body, reply, false, now);
     }
 
     /// Only a field inside the ciphertext proves the watch wants the
@@ -231,13 +221,15 @@ impl Core {
     }
 
     /// The inner `/audio`, reached only through `/e2ee` (plaintext `/audio`
-    /// is refused before any body is read).
+    /// is refused before any body is read) and only once its token and
+    /// envelope agree.
     pub(super) fn audio(
         &mut self,
         head: &RequestHead,
         body: Vec<u8>,
         device: String,
         reply: Reply,
+        late_upload: bool,
         now: Now,
     ) {
         let id = head.header(ID_HEADER).unwrap_or("");
@@ -255,6 +247,19 @@ impl Core {
             Some("current") => false,
             _ => return self.refuse(reply, Refusal::InvalidMetadata),
         };
+        let live = self.records.get(id).map(|live| &live.record);
+        if let Err(refusal) = refuse_non_owner(live, Caller::Device(&device)) {
+            return self.refuse(reply, refusal);
+        }
+        // Nonces live in memory and get pushed out; a background upload may
+        // outlive them, so the recording's own state stops its replay.
+        if late_upload && let Some(state) = self.handled_state(id, now) {
+            return self.answer(
+                reply,
+                200,
+                json!({"ok": true, "duplicate": true, "state": state}),
+            );
+        }
         let job = AudioJob {
             device,
             id: id.to_owned(),
@@ -264,8 +269,9 @@ impl Core {
         self.accept_audio(job, reply, focus_requested, now);
     }
 
-    /// Idempotency, ownership, and the wait for `/focus`, in Swift's order;
-    /// then the transcription starts.
+    /// Ownership, idempotency, and the wait for `/focus`; then the
+    /// transcription starts. Ownership comes first so a duplicate answer
+    /// never reaches another watch.
     pub(super) fn accept_audio(
         &mut self,
         job: AudioJob,
@@ -274,6 +280,9 @@ impl Core {
         now: Now,
     ) {
         let live = self.records.get(&job.id).map(|live| &live.record);
+        if let Err(refusal) = refuse_non_owner(live, Caller::Device(&job.device)) {
+            return self.refuse(reply, refusal);
+        }
         match live {
             Some(record) if record.state == State::Transcribing => {
                 self.waiting.push(Waiting::Duplicate {
@@ -297,9 +306,6 @@ impl Core {
                     return self.answer(reply, 200, record.duplicate_json());
                 }
             }
-        }
-        if let Err(refusal) = refuse_non_owner(live, Caller::Device(&job.device)) {
-            return self.refuse(reply, refusal);
         }
         if may_wait_for_focus && live.is_none() {
             self.waiting.push(Waiting::Focus {

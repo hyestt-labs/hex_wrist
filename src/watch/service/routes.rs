@@ -54,11 +54,20 @@ impl Core {
     /// A request the relay forwarded.
     pub(crate) fn on_request(&mut self, head: RequestHead, body: Vec<u8>, now: Now) {
         let reply = Reply::new(&head.id, &head.method, &head.path);
-        self.dispatch(head, body, reply, now);
+        self.dispatch(head, body, reply, false, now);
     }
 
-    /// A request an envelope carried has a sealed `reply`.
-    pub(super) fn dispatch(&mut self, head: RequestHead, body: Vec<u8>, reply: Reply, now: Now) {
+    /// A request an envelope carried has a sealed `reply`. `late_upload`
+    /// marks `/audio` from a background upload, which reads `duplicate` for
+    /// any recording already handled.
+    pub(super) fn dispatch(
+        &mut self,
+        head: RequestHead,
+        body: Vec<u8>,
+        reply: Reply,
+        late_upload: bool,
+        now: Now,
+    ) {
         let Some(route) = cloud_route(&head.method, &head.path) else {
             return self.refuse(reply, Refusal::NotFound);
         };
@@ -85,7 +94,9 @@ impl Core {
             ("POST", "/ping") => Ok(ping(&head, now)),
             ("POST", "/pairing/request") => self.pairing_request(&body, now),
             ("GET", "/pairing/result") => self.pairing_result(&head.query, now),
-            ("POST", "/audio") => return self.audio(&head, body, device, reply, now),
+            ("POST", "/audio") => {
+                return self.audio(&head, body, device, reply, late_upload, now);
+            }
             ("POST", E2EE_PATH) => return self.encrypted_audio(&head, &body, reply, now),
             ("POST", E2EE_QUERY_PATH) => return self.encrypted_query(&head, &body, reply, now),
             _ => Err(Refusal::NotFound),

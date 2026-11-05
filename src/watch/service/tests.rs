@@ -910,6 +910,47 @@ fn a_recording_is_transcribed_delivered_and_readable_through_status() {
     assert_eq!(entry.state, "unverified");
 }
 
+/// Token, envelope, and owner are checked before any duplicate answer, so
+/// another watch learns nothing from a recording id it guessed.
+#[test]
+fn duplicate_answers_come_only_after_token_and_owner_checks() {
+    let mut h = harness("duplicate-owner");
+    let owner = h.pair("watch-1");
+    let other = h.pair("watch-2");
+    let index = h.start_recording(&owner, ID);
+    let resend = audio_head(&other, ID, "current", h.now.epoch());
+    let while_transcribing = h.send_audio(&other, &resend, M4A).unwrap();
+    assert_eq!(
+        (
+            while_transcribing.status,
+            while_transcribing.body["error"].as_str()
+        ),
+        (403, Some("not-owner"))
+    );
+
+    h.deliver(index, report(DeliveryOutcome::Copied, "mine"));
+    let delivered = h.send_audio(&other, &resend, M4A).unwrap();
+    assert_eq!(
+        (delivered.status, delivered.body["error"].as_str()),
+        (403, Some("not-owner"))
+    );
+
+    let mut late = resend.clone();
+    late.background = Some(true);
+    let late_other = h.send_audio(&other, &late, M4A).unwrap();
+    assert_eq!(
+        (late_other.status, late_other.body["error"].as_str()),
+        (403, Some("not-owner"))
+    );
+    late.token = "not-a-token".to_owned();
+    let late_unknown = h.send_audio(&other, &late, M4A).unwrap();
+    assert_eq!(
+        (late_unknown.status, late_unknown.body["error"].as_str()),
+        (403, Some("forbidden"))
+    );
+    assert_eq!(h.jobs.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn a_duplicate_waits_for_the_first_copy_then_answers_from_it() {
     let mut h = harness("duplicate");
