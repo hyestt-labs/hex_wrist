@@ -25,6 +25,7 @@ use crate::watch::relay::{NotConnected, RelayEvent, RelayState};
 use crate::watch::suspect::SuspectReason;
 use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
 
+mod capsule;
 mod field;
 mod keys;
 

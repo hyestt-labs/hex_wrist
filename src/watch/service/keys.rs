@@ -150,6 +150,7 @@ impl Core {
                     live.touched = now.at;
                 }
                 self.remember_handled(id, now);
+                self.announce(id, now);
                 (200, EnterReply::Entered.json())
             }
             (Key::Undo, KeyOutcome::Pressed) => {
@@ -159,6 +160,7 @@ impl Core {
                     live.touched = now.at;
                 }
                 self.remember_handled(id, now);
+                self.announce(id, now);
                 (200, UndoReply::Undone.json())
             }
             (Key::Enter, KeyOutcome::TargetChanged) => enter_refused(EnterRefusal::TargetChanged),

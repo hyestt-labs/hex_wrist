@@ -36,6 +36,7 @@ pub(crate) mod relay;
 #[cfg(target_os = "macos")]
 pub(crate) mod screen;
 pub(crate) mod service;
+pub(crate) mod status;
 pub(crate) mod suspect;
 pub(crate) mod zh;
 

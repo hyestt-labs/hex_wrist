@@ -9,6 +9,7 @@
 //! - `envelope`: `/e2ee`, `/e2ee/query`, and the recording path.
 //! - `pending`: replies held for a delivery, a duplicate, or a `/focus`.
 
+mod capsule;
 mod envelope;
 #[cfg(test)]
 mod integration;

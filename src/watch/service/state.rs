@@ -129,6 +129,9 @@ pub(crate) struct Core {
     pub(super) outbound: Box<dyn Outbound>,
     pub(super) dictation: Box<dyn Dictation>,
     pub(super) desktop: Desktop,
+    /// Where status capsules go; the registered overlays in the app.
+    pub(super) status: crate::watch::status::Sink,
+    pub(super) capsule: super::capsule::Timers,
     /// Deliveries come back through here.
     pub(super) inbox: mpsc::Sender<Message>,
 }
@@ -158,6 +161,8 @@ impl Core {
             outbound,
             dictation,
             desktop,
+            status: std::sync::Arc::new(crate::watch::status::publish),
+            capsule: Default::default(),
             inbox,
         }
     }
@@ -185,7 +190,8 @@ impl Core {
         Flow::Continue
     }
 
-    pub(crate) fn shutdown(self) {
+    pub(crate) fn shutdown(mut self) {
+        self.hide_capsule();
         for waiting in self.waiting {
             match waiting {
                 Waiting::Transcript { reply, .. }
@@ -205,6 +211,7 @@ impl Core {
             .iter()
             .map(Waiting::deadline)
             .chain(self.claims.iter().map(|claim| claim.deadline))
+            .chain(self.capsule.next_deadline())
             .min()
     }
 
@@ -256,6 +263,7 @@ impl Core {
             }
         }
         self.prune_records(now);
+        self.tick_capsule(now);
     }
 
     fn prune_records(&mut self, now: Now) {
@@ -457,6 +465,7 @@ impl Core {
         let (status, body) = transcript_reply(record);
         let duplicate = record.duplicate_json();
         self.remember_handled(id, now);
+        self.announce(id, now);
         let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting)
             .into_iter()
             .partition(|waiting| {
@@ -535,6 +544,9 @@ impl Core {
             200,
             json!({"ok": true, "captured": role.is_some(), "role": role.unwrap_or_default()}),
         );
+        // After the snapshot: a capsule that took focus first would change
+        // the very field it reports on.
+        self.announce(id, now);
         self.release_focus_wait(id, now);
     }
 
@@ -554,6 +566,7 @@ impl Core {
         record.updated_at = Timestamp::string(now.wall);
         live.touched = now.at;
         self.remember_handled(id, now);
+        self.announce(id, now);
     }
 
     /// The watch `id` belongs to: the live record's, else the dedupe
@@ -597,6 +610,7 @@ impl Core {
         live.record.updated_at = Timestamp::string(now.wall);
         live.touched = now.at;
         self.remember_handled(id, now);
+        self.announce(id, now);
         self.release_settled(id, now);
         Refusal::Failed { error }
     }

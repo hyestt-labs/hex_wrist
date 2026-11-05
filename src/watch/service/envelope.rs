@@ -369,6 +369,7 @@ impl Core {
         };
         live.received_at = Some(now.at);
         live.touched = now.at;
+        self.announce(&job.id, now);
         let inbox = self.inbox.clone();
         let id = job.id.clone();
         let delivery = WatchDelivery::new(
