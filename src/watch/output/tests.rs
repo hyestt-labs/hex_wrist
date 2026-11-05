@@ -567,3 +567,21 @@ fn the_read_back_confirms_when_the_pasted_element_shows_the_words() {
     delivered.follow_up.unwrap().run(&rig.delivery, |_| {});
     assert_eq!(confirmations(&rig), [true]);
 }
+
+/// Catches the deferred clipboard restore being dropped with the read-back
+/// thread that could not start: the transcript would stay on the clipboard.
+#[test]
+fn a_read_back_that_cannot_start_still_restores_the_clipboard() {
+    let mut rig = in_field();
+    let delivered = say(&mut rig, "hello there");
+    let desktop = rig.delivery.job().desktop.clone();
+    delivered
+        .follow_up
+        .unwrap()
+        .spawn_with(rig.delivery.clone(), |_job| {
+            Err(std::io::Error::other("no threads left"))
+        });
+    assert_eq!(*rig.inserter.restores.lock().unwrap(), [Duration::ZERO]);
+    // The keyboard is free again.
+    drop(desktop.lock());
+}

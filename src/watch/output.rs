@@ -79,11 +79,43 @@ impl FollowUp {
     /// `WatchDelivery::deliver`: a confirmation only refines a report that
     /// already went out.
     pub(crate) fn spawn(self, delivery: WatchDelivery) {
-        let started = std::thread::Builder::new()
-            .name("watch-readback".to_owned())
-            .spawn(move || self.run(&delivery, std::thread::sleep));
-        if let Err(error) = started {
-            tracing::warn!(%error, "the paste read-back could not start");
+        self.spawn_with(delivery, |job| {
+            std::thread::Builder::new()
+                .name("watch-readback".to_owned())
+                .spawn(job)
+                .map(drop)
+        });
+    }
+
+    /// `start` runs the job somewhere else; when it cannot, the clipboard
+    /// still comes back at once, never staying with the transcript.
+    fn spawn_with(
+        self,
+        delivery: WatchDelivery,
+        start: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    ) {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(self)));
+        let handoff = std::sync::Arc::clone(&slot);
+        let job = Box::new(move || {
+            let follow_up = handoff.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(follow_up) = follow_up {
+                follow_up.run(&delivery, std::thread::sleep);
+            }
+        });
+        if let Err(error) = start(job) {
+            tracing::warn!(%error, "the paste read-back could not start; restoring the clipboard now");
+            let follow_up = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(follow_up) = follow_up {
+                follow_up.abandon();
+            }
+        }
+    }
+
+    /// No read-back will run: free the keyboard and put the clipboard back.
+    fn abandon(self) {
+        drop(self.held);
+        if let Some(restore) = self.restore {
+            restore(Duration::ZERO);
         }
     }
 
@@ -205,26 +237,12 @@ pub(crate) fn deliver(
     // still possible; AX offers no way to pin the target.
     let decision = match first {
         Gate::Paste { .. } => {
-            let element = focused.as_ref().and_then(|focused| focused.element.clone());
-            let before = element.as_ref().and_then(|element| element.0.value());
             let again = screen.focused();
             let second = gate(&job.expectation, again.as_ref(), screen.secure_input());
-            // The read-back follows the element focused now, which the second
-            // gate just judged; `before` comes from the same element.
-            let now = again.as_ref().and_then(|focused| focused.element.clone());
-            let same = match (&element, &now) {
-                (Some(first), Some(second)) => first == second,
-                (None, None) => true,
-                _ => false,
-            };
-            let (element, before) = match (&second, same) {
-                (Gate::Paste { .. }, true) => (element, before),
-                (Gate::Paste { .. }, false) => {
-                    let before = now.as_ref().and_then(|element| element.0.value());
-                    (now, before)
-                }
-                _ => (None, None),
-            };
+            // The read-back follows the element the second gate just
+            // judged, and `before` is that element's text.
+            let element = again.as_ref().and_then(|focused| focused.element.clone());
+            let before = element.as_ref().and_then(|element| element.0.value());
             (second, element, before)
         }
         other => (other, None, None),
