@@ -1726,6 +1726,7 @@ fn device_id_file_is_a_lowercase_uuid_kept_across_runs() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn listener_dictation_names_a_full_queue_and_a_gone_listener() {
     let (controls, queue) = mpsc::sync_channel(1);
