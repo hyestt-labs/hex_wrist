@@ -145,6 +145,8 @@ pub(crate) struct Core {
     pub(super) capsule: super::capsule::Timers,
     /// Deliveries come back through here.
     pub(super) inbox: mpsc::Sender<Message>,
+    /// The next key operation's number.
+    pub(super) next_op: u64,
 }
 
 impl Core {
@@ -178,6 +180,7 @@ impl Core {
             status: std::sync::Arc::new(crate::watch::status::publish),
             capsule: Default::default(),
             inbox,
+            next_op: 1,
         }
     }
 
@@ -187,7 +190,12 @@ impl Core {
             Message::Delivered { id, report } => self.on_delivered(&id, report, now),
             Message::Confirmed { id, verified } => self.on_confirmed(&id, verified, now),
             Message::Captured { id, field } => self.on_captured(&id, field, now),
-            Message::Keyed { id, key, outcome } => self.on_keyed(&id, key, outcome, now),
+            Message::Keyed {
+                id,
+                key,
+                op,
+                outcome,
+            } => self.on_keyed(&id, key, op, outcome, now),
             Message::Claim {
                 code,
                 reply,
@@ -276,11 +284,13 @@ impl Core {
                     reply,
                     ..
                 } => self.resume_settled(key, &id, &device, inside, reply, now),
-                Waiting::Key { id, key, reply, .. } => {
+                Waiting::Key {
+                    id, key, op, reply, ..
+                } => {
                     tracing::warn!(id, "the watch-ax thread did not answer a key request");
                     let (status, body) = self.key_timed_out(key);
                     self.answer(reply, status, body);
-                    self.end_key(&id, true, now);
+                    self.end_key(&id, op, true, now);
                 }
             }
         }

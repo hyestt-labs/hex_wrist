@@ -89,19 +89,30 @@ impl Drop for Held {
 /// `watch-ax` thread checks it inside the lock, so a key that waited for a
 /// paste's read-back is not pressed for a request that no longer stands.
 #[derive(Clone, Debug)]
-pub(crate) struct Ticket(Arc<std::sync::atomic::AtomicBool>);
+pub(crate) struct Ticket {
+    /// Which operation this is, so an answer is matched to its own request.
+    op: u64,
+    live: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl Ticket {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    pub(crate) fn new(op: u64) -> Self {
+        Self {
+            op,
+            live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
+    pub(crate) fn op(&self) -> u64 {
+        self.op
     }
 
     pub(crate) fn cancel(&self) {
-        self.0.store(false, std::sync::atomic::Ordering::Release);
+        self.live.store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn is_live(&self) -> bool {
-        self.0.load(std::sync::atomic::Ordering::Acquire)
+        self.live.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

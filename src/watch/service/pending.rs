@@ -180,6 +180,8 @@ pub(crate) enum Waiting {
     Key {
         id: String,
         key: Key,
+        /// The operation number its answer carries.
+        op: u64,
         reply: Reply,
         deadline: Instant,
     },

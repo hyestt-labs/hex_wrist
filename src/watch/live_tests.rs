@@ -128,7 +128,7 @@ impl Rig {
             key,
             expected.clone(),
             valid_until,
-            Ticket::new(),
+            Ticket::new(0),
             move |result| {
                 let _ = done.send(result);
             },

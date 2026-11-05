@@ -205,6 +205,9 @@ pub(crate) enum Message {
     Keyed {
         id: String,
         key: super::desktop::Key,
+        /// Which request this answers; an answer to a request already
+        /// given up on frees nothing of a later one's.
+        op: u64,
         outcome: super::desktop::KeyOutcome,
     },
     /// The dictation worker finished recording `id`.

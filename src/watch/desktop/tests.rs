@@ -13,7 +13,7 @@ fn desktop(screen: &Arc<FakeScreen>) -> Desktop {
 fn press(desktop: &Desktop, key: Key, expected: FieldSnapshot) -> KeyOutcome {
     let (done, outcome) = mpsc::channel();
     let valid_until = Instant::now() + Duration::from_secs(5);
-    desktop.press(key, expected, valid_until, Ticket::new(), move |result| {
+    desktop.press(key, expected, valid_until, Ticket::new(0), move |result| {
         done.send(result).unwrap();
     });
     outcome.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -150,7 +150,7 @@ fn a_key_waits_for_a_paste_that_holds_the_lock() {
         Key::Enter,
         text_area(7),
         valid_until,
-        Ticket::new(),
+        Ticket::new(0),
         move |result| {
             done.send(result).unwrap();
         },
@@ -175,7 +175,7 @@ fn a_key_for_a_request_given_up_on_is_not_pressed() {
         Key::Enter,
         text_area(7),
         Instant::now(),
-        Ticket::new(),
+        Ticket::new(0),
         move |result| {
             done.send(result).unwrap();
         },
@@ -193,7 +193,7 @@ fn a_key_for_a_request_given_up_on_is_not_pressed() {
 fn a_cancelled_ticket_presses_nothing() {
     let screen = Arc::new(FakeScreen::trusted_with(Some(editable(text_area(7)))));
     let desktop = desktop(&screen);
-    let ticket = Ticket::new();
+    let ticket = Ticket::new(0);
     ticket.cancel();
     let (done, outcome) = mpsc::channel();
     let valid_until = Instant::now() + Duration::from_secs(5);
@@ -243,7 +243,7 @@ fn a_slow_focus_read_does_not_press_after_the_deadline() {
         Key::Enter,
         text_area(7),
         valid_until,
-        Ticket::new(),
+        Ticket::new(0),
         move |result| {
             done.send(result).unwrap();
         },

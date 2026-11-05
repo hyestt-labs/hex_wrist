@@ -5,6 +5,7 @@
 use super::*;
 use crate::watch::desktop::fake::{editable, text_area};
 use crate::watch::recording::{ENTER_WAIT_SECONDS, UNDO_WINDOW_SECONDS};
+use crate::watch::service::keys::KEY_WAIT;
 
 fn terminal(pid: i32) -> crate::watch::field::FieldSnapshot {
     crate::watch::field::FieldSnapshot {
@@ -377,4 +378,34 @@ fn an_undo_behind_an_enter_in_flight_is_refused_as_entered() {
         h.pump();
     }
     assert_eq!(h.screen.keys(), ["return"], "no Command-Z after Enter");
+}
+
+/// The first Enter times out, a retry is queued, then the first job's late
+/// answer arrives. It must free only its own claim: matching the callback by
+/// recording and key kind let it answer the retry and release the keyboard
+/// claim, so a third Enter pressed Return again.
+#[test]
+fn a_late_answer_to_a_timed_out_enter_cannot_free_the_retrys_claim() {
+    let mut h = harness("enter-late");
+    let watch = h.pair("watch-1");
+    read_back_paste(&mut h, &watch);
+    h.core.desktop = Desktop::manual(h.screen.clone());
+    h.frames.lock().unwrap().clear();
+    // 1: queued, never answered in time.
+    assert!(h.query(&watch, "/enter", &[("id", ID)]).is_none());
+    h.advance(KEY_WAIT + Duration::from_secs(1));
+    h.core.tick(h.now);
+    // 2: the retry, queued behind the cancelled first job.
+    assert!(h.query(&watch, "/enter", &[("id", ID)]).is_none());
+    // The first job's late answer and the retry's answer come in together.
+    h.core.desktop.run_pending();
+    h.pump();
+    // 3: a further Enter, after both.
+    let third = h.query(&watch, "/enter", &[("id", ID)]);
+    h.core.desktop.run_pending();
+    h.pump();
+    assert_eq!(h.screen.keys(), ["return"], "Return went in once");
+    drop(third);
+    let status = h.status_of(&watch, ID);
+    assert_eq!(status["entered"], true);
 }

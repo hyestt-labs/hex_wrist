@@ -129,13 +129,16 @@ impl Core {
             return self.answer(reply, status, body);
         };
         let valid_until = now.at + KEY_WAIT;
-        let ticket = crate::watch::desktop::Ticket::new();
+        let op = self.next_op;
+        self.next_op += 1;
+        let ticket = crate::watch::desktop::Ticket::new(op);
         if let Some(live) = self.records.get_mut(id) {
             live.in_flight = Some(ticket.clone());
         }
         self.waiting.push(Waiting::Key {
             id: id.to_owned(),
             key,
+            op,
             reply,
             deadline: valid_until,
         });
@@ -143,15 +146,23 @@ impl Core {
         let id = id.to_owned();
         self.desktop
             .press(key, field, valid_until, ticket, move |outcome| {
-                let _ = inbox.send(Message::Keyed { id, key, outcome });
+                let _ = inbox.send(Message::Keyed {
+                    id,
+                    key,
+                    op,
+                    outcome,
+                });
             });
     }
 
     /// The `watch-ax` thread pressed the key, or says why it did not.
-    pub(super) fn on_keyed(&mut self, id: &str, key: Key, outcome: KeyOutcome, now: Now) {
-        let position = self.waiting.iter().position(|waiting| {
-            matches!(waiting, Waiting::Key { id: held, key: kind, .. } if held == id && *kind == key)
-        });
+    /// Answers are matched by operation number: one for a request already
+    /// given up on finds no waiting reply and frees nothing.
+    pub(super) fn on_keyed(&mut self, id: &str, key: Key, op: u64, outcome: KeyOutcome, now: Now) {
+        let position = self
+            .waiting
+            .iter()
+            .position(|waiting| matches!(waiting, Waiting::Key { op: held, .. } if *held == op));
         let Some(position) = position else {
             tracing::info!(id, "a key answer arrived after its request was answered");
             return;
@@ -159,16 +170,21 @@ impl Core {
         let Waiting::Key { reply, .. } = self.waiting.remove(position) else {
             return;
         };
-        self.end_key(id, false, now);
+        self.end_key(id, op, false, now);
         let (status, body) = self.keyed(id, key, outcome, now);
         self.answer(reply, status, body);
         self.release_settled(id, now);
     }
 
-    /// The key on its way for `id` is over. `cancel` also stops the
-    /// `watch-ax` thread from pressing it late.
-    pub(super) fn end_key(&mut self, id: &str, cancel: bool, now: Now) {
+    /// Operation `op`'s claim on `id`'s keyboard is over; another
+    /// operation's claim is left alone. `cancel` also stops the `watch-ax`
+    /// thread from pressing it late.
+    pub(super) fn end_key(&mut self, id: &str, op: u64, cancel: bool, now: Now) {
         if let Some(live) = self.records.get_mut(id)
+            && live
+                .in_flight
+                .as_ref()
+                .is_some_and(|ticket| ticket.op() == op)
             && let Some(ticket) = live.in_flight.take()
             && cancel
         {
