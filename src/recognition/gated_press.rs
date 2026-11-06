@@ -55,36 +55,100 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::app_settings::{OPTION_KEY_MASK, RuntimeHotkey, SHIFT_KEY_MASK};
+    use crate::app_settings::{FUNCTION_KEY_MASK, OPTION_KEY_MASK, RuntimeHotkey, SHIFT_KEY_MASK};
     use crate::audio::CaptureInstant;
     use crate::desktop::onboarding::PermissionState;
     use crate::dictation::microphone_access::fakes::{Fake, Opens, open_audio};
     use crate::suppression::{DictationHotkey, InputEvent};
 
     const E_KEY: u16 = 14;
+    const F5_KEY: u16 = 96;
+
+    /// The shortcut bindings: Option alone (a bare modifier, which passes
+    /// through), and the three that do not: a function key, a letter with a
+    /// modifier, and Fn (Globe) alone.
+    #[derive(Clone, Copy, Debug)]
+    enum Binding {
+        Option,
+        F5,
+        OptionE,
+        Globe,
+    }
+
+    impl Binding {
+        fn hotkey(self) -> RuntimeHotkey {
+            let option = crate::app_settings::HotkeyModifiers::option();
+            let none = crate::app_settings::HotkeyModifiers::default();
+            let function = crate::app_settings::HotkeyModifiers {
+                function: true,
+                ..none
+            };
+            let (modifiers, key_code) = match self {
+                Self::Option => (option, None),
+                Self::F5 => (none, Some(F5_KEY)),
+                Self::OptionE => (option, Some(E_KEY)),
+                Self::Globe => (function, None),
+            };
+            RuntimeHotkey {
+                modifiers,
+                key_code,
+            }
+        }
+
+        fn press(self) -> Vec<InputEvent> {
+            let key = |code, flags| InputEvent::Key {
+                code,
+                down: true,
+                flags,
+            };
+            match self {
+                Self::Option => vec![InputEvent::Flags(OPTION_KEY_MASK)],
+                Self::F5 => vec![key(F5_KEY, 0)],
+                Self::OptionE => vec![
+                    InputEvent::Flags(OPTION_KEY_MASK),
+                    key(E_KEY, OPTION_KEY_MASK),
+                ],
+                Self::Globe => vec![InputEvent::Flags(FUNCTION_KEY_MASK)],
+            }
+        }
+
+        fn release(self) -> Vec<InputEvent> {
+            let key = |code, flags| InputEvent::Key {
+                code,
+                down: false,
+                flags,
+            };
+            match self {
+                Self::Option | Self::Globe => vec![InputEvent::Flags(0)],
+                Self::F5 => vec![key(F5_KEY, 0)],
+                Self::OptionE => vec![key(E_KEY, OPTION_KEY_MASK), InputEvent::Flags(0)],
+            }
+        }
+    }
 
     /// The real shortcut machine, the real audio owner on a fake permission,
     /// and the three calls `recognition::listen` makes around them. The HID
-    /// state `break_chord` reads is the only part not driven: the test takes
-    /// the same due moment through `take_chord_break`.
+    /// state `break_chord` reads (to post the 0x44 marker) is the only part not
+    /// driven: the due moment is the machine's own `owned_now`.
     struct Rig {
         hotkeys: Hotkeys,
         audio: DictationAudio,
         permission: Fake,
         opens: Opens,
         base: CaptureInstant,
+        binding: Binding,
         /// Actions that would have reached the capture code: none may.
         leaked: Vec<HotkeyAction>,
     }
 
     impl Rig {
         fn new(state: PermissionState, toggle: bool) -> Self {
+            Self::with_binding(state, toggle, Binding::Option)
+        }
+
+        fn with_binding(state: PermissionState, toggle: bool, binding: Binding) -> Self {
             let base = CaptureInstant::from_nanos(60_000_000_000);
-            let option = RuntimeHotkey {
-                modifiers: crate::app_settings::HotkeyModifiers::option(),
-                key_code: None,
-            };
-            let mut dictation = DictationHotkey::new(base, false, option);
+            let mut dictation = DictationHotkey::new(base, false, binding.hotkey());
             dictation.set_toggle(toggle);
             let permission = Fake::new(state);
             let opens = Opens::default();
@@ -99,7 +163,20 @@ mod tests {
                 permission,
                 opens,
                 base,
+                binding,
                 leaked: Vec::new(),
+            }
+        }
+
+        fn press(&mut self, ms: u64) {
+            for event in self.binding.press() {
+                self.send(event, ms);
+            }
+        }
+
+        fn release(&mut self, ms: u64) {
+            for event in self.binding.release() {
+                self.send(event, ms);
             }
         }
 
@@ -111,7 +188,7 @@ mod tests {
         fn tick(&mut self, ms: u64) {
             let now = self.at(ms);
             let machine = &mut self.hotkeys.dictation;
-            if machine.take_chord_break(now) || machine.is_locked() {
+            if machine.owned_now(now) {
                 owned(&mut self.hotkeys, Shortcut::Dictation, &self.audio);
             }
         }
@@ -284,5 +361,77 @@ mod tests {
         rig.tick(160);
         assert_eq!(rig.noticed(), (0, 1, 1));
         assert!(!rig.hotkeys.any_recording());
+    }
+    const OTHER_BINDINGS: [Binding; 3] = [Binding::F5, Binding::OptionE, Binding::Globe];
+
+    /// A function key, a letter with a modifier, and Fn have no chord breaker,
+    /// so the owned moment cannot lean on it: a short tap or an early release
+    /// is nobody's try in Hold mode. In Toggle mode a tap of the binding is the
+    /// gesture itself, so it is one try (and nothing before its 40 ms grace is
+    /// asked of a press still held).
+    #[test]
+    fn other_bindings_are_silent_until_the_press_is_owned() {
+        for binding in OTHER_BINDINGS {
+            for state in REFUSED {
+                let mut rig = Rig::with_binding(state, false, binding);
+                rig.press(0);
+                rig.release(250);
+                rig.tick(2_000);
+                let label = format!("{binding:?}, {state:?}");
+                assert_eq!(rig.noticed(), (0, 0, 0), "{label}");
+                assert_eq!(rig.opens.count(), 0, "{label}");
+                assert!(rig.leaked.is_empty(), "{label}: {:?}", rig.leaked);
+                assert!(!rig.hotkeys.any_recording(), "{label}");
+
+                let mut held = Rig::with_binding(state, true, binding);
+                held.press(0);
+                held.tick(39);
+                assert_eq!(
+                    held.noticed(),
+                    (0, 0, 0),
+                    "{label}: toggle, before the grace"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn other_bindings_ask_exactly_once_for_a_hold_past_the_threshold() {
+        for binding in OTHER_BINDINGS {
+            let mut rig = Rig::with_binding(PermissionState::NeedsRequest, false, binding);
+            rig.press(0);
+            rig.tick(299);
+            assert_eq!(rig.noticed(), (0, 0, 0), "{binding:?}: not yet");
+            rig.tick(300);
+            assert_eq!(rig.noticed(), (1, 0, 0), "{binding:?}: the prompt");
+            assert!(!rig.hotkeys.any_recording(), "{binding:?}");
+            rig.release(1_000);
+            rig.tick(2_000);
+            assert_eq!(rig.noticed(), (1, 0, 0), "{binding:?}: nothing more");
+            assert!(rig.leaked.is_empty(), "{binding:?}");
+
+            let mut toggle = Rig::with_binding(PermissionState::NeedsRequest, true, binding);
+            toggle.press(0);
+            toggle.tick(39);
+            assert_eq!(toggle.noticed(), (0, 0, 0), "{binding:?} toggle");
+            toggle.tick(40);
+            assert_eq!(toggle.noticed(), (1, 0, 0), "{binding:?} toggle");
+        }
+    }
+
+    #[test]
+    fn other_bindings_sound_on_each_long_press_after_a_refusal() {
+        for binding in OTHER_BINDINGS {
+            let mut rig = Rig::with_binding(PermissionState::NeedsSettings, false, binding);
+            for round in 1..=3_u64 {
+                let start = round * 10_000;
+                rig.press(start);
+                rig.tick(start + 300);
+                assert_eq!(rig.noticed(), (0, round as usize, 1), "{binding:?} {round}");
+                rig.release(start + 900);
+            }
+            assert!(rig.leaked.is_empty(), "{binding:?}");
+            assert_eq!(rig.opens.count(), 0);
+        }
     }
 }

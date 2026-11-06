@@ -240,8 +240,10 @@ impl Hotkeys {
         Shortcut::ALL
             .into_iter()
             .filter(|shortcut| {
-                self.machine_mut(*shortcut)
-                    .is_some_and(|machine| machine.break_chord(now) || machine.is_locked())
+                self.machine_mut(*shortcut).is_some_and(|machine| {
+                    machine.break_chord(now);
+                    machine.owned_now(now)
+                })
             })
             .collect()
     }
