@@ -614,7 +614,7 @@ fn run_processor_worker(
                 target: job.target,
                 result: Box::new(Ok(CompletedTranscript {
                     text: processed.text,
-                    raw: job.text,
+                    raw: processed.heard,
                     application: job.context.application,
                     timings: job.timings,
                     processing: processed.observation,
@@ -634,7 +634,14 @@ fn process_job_text(
     profiles: impl FnOnce() -> crate::dictation::processor::Profiles,
     processing: impl FnOnce(),
 ) -> crate::dictation::processor::Processed {
-    let profiles = profiles();
+    // A watch recording names its own language, which the Chinese
+    // characters step reads before the model's.
+    let profiles = match &job.target {
+        TranscriptionTarget::Watch(delivery) => {
+            profiles().language_hint(delivery.job().language.clone())
+        }
+        _ => profiles(),
+    };
     if profiles.processes(&job.context) {
         processing();
     }
@@ -1888,6 +1895,112 @@ mod tests {
             !text.contains("p p p p") && !text.contains("p-p-p-p"),
             "pathological token repetition: {text}"
         );
+    }
+
+    /// What `run_inference_worker` and the processor worker make of one
+    /// transcript on its way to the output worker.
+    mod chinese_output_routing {
+        use super::*;
+        use crate::dictation::chinese_output::{self, ChineseOutput};
+
+        fn completed(target: TranscriptionTarget, transcript: &str) -> CompletedTranscript {
+            let (jobs, inference) = mpsc::channel();
+            let (processor_send, processor_jobs) = mpsc::sync_channel(4);
+            let (output_send, output) = mpsc::sync_channel(4);
+            let (events, _) = mpsc::channel();
+            jobs.send(InferenceJob {
+                job_id: DictationJobId(1),
+                control: Arc::new(JobControl::default()),
+                submitted_at: Instant::now(),
+                transcript: PendingTranscript::ready(transcript),
+                audio_ms: 1000,
+                prepare_ms: 0,
+                target,
+                context: ContextSnapshot::default(),
+                recording: None,
+            })
+            .unwrap();
+            drop(jobs);
+            run_inference_worker(inference, &processor_send, &output_send, &events);
+            drop(processor_send);
+            let processors = Mutex::new(processor_jobs);
+            let (processed_send, processed) = mpsc::sync_channel(4);
+            drop(output_send);
+            // A processed target reaches the processor worker; the rest go
+            // straight to output.
+            if let Ok(OutputJob::Completed { result, .. }) = output.try_recv() {
+                return (*result).unwrap();
+            }
+            run_processor_worker(
+                &processors,
+                &processed_send,
+                &mpsc::channel().0,
+                &crate::personal_commands::TransformationClient::default(),
+            );
+            match processed.try_recv() {
+                Ok(OutputJob::Completed { result, .. }) => (*result).unwrap(),
+                _ => panic!("the job produced no completed transcript"),
+            }
+        }
+
+        fn watch(language: &str) -> TranscriptionTarget {
+            let screen = Arc::new(crate::watch::desktop::fake::FakeScreen::trusted_with(None));
+            TranscriptionTarget::Watch(crate::watch::delivery::WatchDelivery::new(
+                crate::watch::delivery::Job {
+                    id: "6f9619ff-8b86-d011-b42d-00c04fc964ff".into(),
+                    language: language.into(),
+                    expectation: crate::watch::field::Expectation::Current,
+                    desktop: crate::watch::desktop::Desktop::inline(screen),
+                },
+                |_| {},
+            ))
+        }
+
+        #[test]
+        fn raw_and_service_targets_are_not_converted() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            crate::app_settings::set_language_for_test("zh");
+            for target in [
+                TranscriptionTarget::RawPaste,
+                TranscriptionTarget::RawPrint,
+                TranscriptionTarget::Service,
+            ] {
+                let done = completed(target.clone(), "头发");
+                assert_eq!((done.text.as_str(), done.raw.as_str()), ("头发", "头发"));
+            }
+        }
+
+        #[test]
+        fn history_raw_is_the_converted_heard_text() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            crate::app_settings::set_language_for_test("zh");
+            for target in [TranscriptionTarget::Paste, TranscriptionTarget::Print] {
+                let done = completed(target, "头发");
+                assert_eq!(done.text, "頭髮");
+                assert_eq!(done.raw, "頭髮", "not the model's 头发");
+            }
+        }
+
+        #[test]
+        fn watch_simplified_setting_is_not_forced_traditional() {
+            chinese_output::set_live(ChineseOutput::Simplified);
+            let done = completed(watch("zh"), "頭髮 好");
+            assert_eq!(done.text, "头发 好");
+            assert_eq!(done.raw, "头发 好");
+            // Heard equals the result, so the watch's report carries no raw text.
+            assert_eq!(
+                (done.raw != done.text).then(|| done.raw.clone()),
+                None::<String>
+            );
+        }
+
+        #[test]
+        fn a_watch_recordings_own_language_decides_over_the_models() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            crate::app_settings::set_language_for_test("en");
+            assert_eq!(completed(watch("zh"), "头发").text, "頭髮");
+            assert_eq!(completed(watch("en"), "头发").text, "头发");
+        }
     }
 
     mod watch_output {

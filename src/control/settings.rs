@@ -612,6 +612,11 @@ const KEYS: &[Key] = &[
         ]),
         "Interface language; none follows the system",
     ),
+    optional(
+        "chinese_output",
+        Kind::Choice(&["traditional", "simplified", "as_heard"]),
+        "Chinese characters in dictation; none follows the system language",
+    ),
     key(
         "transcription_device",
         Kind::Choice(&["auto", "gpu", "cpu"]),
@@ -1509,6 +1514,7 @@ mod tests {
                 opencode_model: Some("anthropic/claude-haiku".into()),
                 ..Default::default()
             },
+            chinese_output: Some(crate::dictation::chinese_output::ChineseOutput::Traditional),
             ..Default::default()
         };
         let json = serde_json::to_value(settings).unwrap();
@@ -1536,6 +1542,33 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), keys().count(), "a key is listed twice");
+    }
+
+    #[test]
+    fn chinese_output_cli_accepts_none_and_three_values() {
+        use crate::dictation::chinese_output::ChineseOutput::{AsHeard, Simplified, Traditional};
+        let settings = AppSettings::default();
+        assert_eq!(settings.chinese_output, None);
+        assert_eq!(
+            get(&settings, "chinese_output").unwrap()[0].value,
+            Value::Null
+        );
+        for (raw, expected) in [
+            ("traditional", Traditional),
+            ("Simplified", Simplified),
+            ("as_heard", AsHeard),
+        ] {
+            let change = apply(&settings, "chinese_output", raw, &rules()).unwrap();
+            assert_eq!(change.settings.chinese_output, Some(expected), "{raw}");
+            let shown = get(&change.settings, "chinese_output").unwrap();
+            assert_eq!(shown[0].value, Value::String(raw.to_lowercase()), "{raw}");
+        }
+        let chosen = apply(&settings, "chinese_output", "simplified", &rules())
+            .unwrap()
+            .settings;
+        let change = apply(&chosen, "chinese_output", "none", &rules()).unwrap();
+        assert_eq!(change.settings.chinese_output, None);
+        assert!(apply(&settings, "chinese_output", "klingon", &rules()).is_err());
     }
 
     #[test]

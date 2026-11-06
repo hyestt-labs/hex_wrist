@@ -17,6 +17,7 @@ use crate::transcription::models::{TranscriptionModelId, TranscriptionSelection}
 
 #[cfg(hex_capture)]
 mod capture;
+mod chinese_output;
 mod dictation_processing;
 mod hotkeys;
 mod labs;
@@ -321,6 +322,11 @@ pub struct AppSettings {
     pub mouse_shortcut_notice: bool,
     /// The interface language code; `None` follows the system language.
     pub ui_language: Option<String>,
+    /// The Chinese characters dictation comes out in; `None` follows the
+    /// system language (left out of the file, never `null`). Wristper fork:
+    /// not a Labs feature (the watch needs it on by default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chinese_output: Option<crate::dictation::chinese_output::ChineseOutput>,
     pub indicator_position: IndicatorPosition,
     pub updates: UpdateSettings,
     /// The shared vocabulary (`crate::dictation::vocabulary`). Left out of the file
@@ -430,6 +436,7 @@ impl Default for AppSettings {
             share_dictation_shortcut: false,
             mouse_shortcut_notice: false,
             ui_language: None,
+            chinese_output: None,
             indicator_position: IndicatorPosition::default(),
             updates: UpdateSettings::default(),
             vocabulary: Vec::new(),
@@ -555,13 +562,12 @@ impl AppSettings {
 
     pub fn load() -> Result<Self> {
         let path = path()?;
-        #[cfg_attr(not(hex_capture), allow(unused_mut))]
         let mut settings = Self::load_from(&path)?;
+        let mut imported = false;
         #[cfg(hex_capture)]
         {
             let read = |path: PathBuf| fs::read(path).ok();
             let engine = read(scrawl_capture::handoff::default_config_path());
-            let mut imported = false;
             if !settings.has_migration(SCRAWL_IMPORT_MIGRATION) {
                 settings.import_scrawl_settings(
                     engine.as_deref(),
@@ -579,13 +585,21 @@ impl AppSettings {
                     .push(SCRAWL_ROUTING_IMPORT_MIGRATION.into());
                 imported = true;
             }
-            if imported
-                && path.exists()
-                && persistence::healthy_file(&path)
-                && let Err(error) = settings.write_to(&path)
-            {
-                tracing::warn!(%error, "could not record the Scrawl settings import");
-            }
+        }
+        // A test build keeps its own data folder and never reads Wristper's.
+        if !crate::app_paths::is_macos_test_build()
+            && !settings.has_migration(chinese_output::WRISTPER_IMPORT_MIGRATION)
+            && let Ok(support) = crate::app_paths::support_dir()
+        {
+            settings.import_wristper_chinese_script(&support);
+            imported = true;
+        }
+        if imported
+            && path.exists()
+            && persistence::healthy_file(&path)
+            && let Err(error) = settings.write_to(&path)
+        {
+            tracing::warn!(%error, "could not record the settings import");
         }
         settings.apply_runtime();
         Ok(settings)
@@ -733,6 +747,7 @@ impl AppSettings {
         crate::feedback::set_volume(self.sound_effect_volume.clamp(0.0, 1.0));
         crate::feedback::set_sound_set(self.sound_theme);
         crate::desktop::i18n::apply(self.ui_language.as_deref());
+        self.apply_chinese_output();
         INDICATOR_POSITION.store(self.indicator_position as u8, Ordering::Relaxed);
         #[cfg(not(target_os = "macos"))]
         crate::transcription::local_transcriber::set_device(self.transcription_device);
@@ -1150,6 +1165,15 @@ fn set_transcription_selection(selection: &TranscriptionSelection) {
         state.revision = state.revision.wrapping_add(1);
         state.selection = selection.clone();
     }
+}
+
+/// Tests of what the model's language decides run in this language.
+#[cfg(test)]
+pub(crate) fn set_language_for_test(language: &str) {
+    set_transcription_selection(&TranscriptionSelection {
+        language: language.into(),
+        ..transcription_selection().1
+    });
 }
 
 pub fn transcription_selection() -> (u64, TranscriptionSelection) {

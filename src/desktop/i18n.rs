@@ -4,12 +4,14 @@
 //! untranslated strings fall back to English. Composite strings are `{}`
 //! templates filled through [`tr_fill`].
 
+pub(crate) use locale::preferred_locales;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 mod french;
+mod locale;
 mod portuguese;
 mod russian;
 mod traditional_chinese;
@@ -169,7 +171,7 @@ fn system_locale() -> String {
 /// interface language; on macOS the system's language list.
 fn preferred_locale() -> String {
     #[cfg(target_os = "macos")]
-    if let Some(locale) = macos_preferred_locale() {
+    if let Some(locale) = locale::macos_preferred_locale() {
         return locale;
     }
     system_locale()
@@ -188,21 +190,7 @@ pub(crate) fn preferred_language() -> String {
 
 #[cfg(target_os = "macos")]
 fn macos_preferred_language() -> Option<String> {
-    primary_subtag(&macos_preferred_locale()?)
-}
-
-/// The first entry of `NSLocale.preferredLanguages`, such as `zh-Hant-TW`.
-#[cfg(target_os = "macos")]
-fn macos_preferred_locale() -> Option<String> {
-    use objc2::msg_send;
-    use objc2::rc::Retained;
-    use objc2::runtime::AnyClass;
-    use objc2_foundation::{NSArray, NSString};
-
-    let class = AnyClass::get(c"NSLocale")?;
-    let languages: Option<Retained<NSArray<NSString>>> =
-        unsafe { msg_send![class, preferredLanguages] };
-    Some(languages?.firstObject()?.to_string())
+    primary_subtag(&locale::macos_preferred_locale()?)
 }
 
 /// `pt-BR` and `zh-Hans-CN` yield `pt` and `zh`.

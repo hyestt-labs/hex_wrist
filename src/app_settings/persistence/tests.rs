@@ -289,3 +289,35 @@ fn a_managed_lock_reads_off_and_never_rewrites_the_saved_switch() {
     assert!(unmanaged.meetings.enabled);
     assert!(unmanaged.labs.live_text);
 }
+
+#[test]
+fn unchosen_chinese_output_is_omitted_not_null() {
+    use crate::dictation::chinese_output::ChineseOutput;
+    let written = serde_json::to_value(AppSettings::default()).unwrap();
+    assert!(written.get("chinese_output").is_none());
+    let chosen = serde_json::to_value(AppSettings {
+        chinese_output: Some(ChineseOutput::AsHeard),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(chosen["chinese_output"], "as_heard");
+    // An older build ignores the key it does not know.
+    #[derive(Deserialize)]
+    struct Older {
+        #[serde(default)]
+        ui_language: Option<String>,
+    }
+    let older: Older = serde_json::from_value(chosen).unwrap();
+    assert_eq!(older.ui_language, None);
+}
+
+#[test]
+fn invalid_chinese_output_falls_back_without_blocking_launch() {
+    let original = br#"{"chinese_output":"klingon","sound_effect_volume":0.25}"#;
+    let file = SettingsFile::new(original);
+    let (settings, _) = AppSettings::read_from(&file.path).unwrap();
+    assert_eq!(settings.chinese_output, None);
+    // The rest of the file still loads, and nothing was rewritten.
+    assert_eq!(settings.sound_effect_volume, 0.25);
+    assert_eq!(fs::read(&file.path).unwrap(), original);
+}
