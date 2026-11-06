@@ -216,10 +216,14 @@ Apple Watch                               // watch.pair, watch.dictate
   the script made in its own temp folder (never an untitled document, which
   TextEdit autosaves into iCloud Drive where Trash cannot remove it), find the
   window by its document name, and move only that file and folder to the
-  Trash after closing the window; `--check-textedit` proves this on a real Mac.
-  No Terminal stage runs until `--check-terminal` has passed on that Mac
-  (`--check-terminal` is written, not yet run), and stage 4 is off until its
-  Rust tests open a file of their own.
+  Trash after closing the window, and only when no window shows the file
+  (anything unproven keeps it); `--check-textedit` proves this on a real Mac.
+  Trash is item by item: only what the script registered, one by one.
+  No Terminal stage runs until `--check-terminal` has passed on that Mac, for
+  that script file, within 24 hours (`--check-terminal` is written, not yet
+  run). Stage 4 is off: the script refuses it, and the ignored `watch_live`
+  tests refuse unless the script issued their one-time token (the TextEdit one
+  opens an untitled document and refuses always until it opens a temp file).
 - C1: `dictation::microphone_access` covers the gate (a refused start
   records nothing, opens nothing, and says nothing; an intentional try asks
   once, then sounds; a grant restores the saved policy; a revoke closes the

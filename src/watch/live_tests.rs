@@ -18,7 +18,16 @@
 //! document or the front window, so a document or window of yours that comes
 //! to the front meanwhile is never closed and never gets an `exit`. The
 //! `owned_*` tests below check this without a screen.
+//!
+//! Run by hand, they refuse to start. The TextEdit test opens an untitled
+//! document, which TextEdit autosaves into iCloud Drive where Trash cannot
+//! remove it: it refuses always, until it opens a file in a temp folder as
+//! `scripts/verify-watch-e2e.sh` does. The Terminal test needs the one-time
+//! token that script issues only after its Terminal gate (`--check-terminal`
+//! on this Mac, for this script, within 24 hours) is open; a `cargo` run
+//! started by hand has none. See `live_gate`.
 
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
@@ -32,6 +41,66 @@ use super::recording::Verification;
 use super::screen::MacScreen;
 use crate::paste::Paster;
 use crate::suppression::InputActivity;
+
+/// What lets a live test touch the real desktop. Both gates answer `Err(why)` and the test stops before it opens or
+/// types anything.
+mod live_gate {
+    use super::Path;
+
+    /// Looks an environment variable up (the tests pass a fake).
+    pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+    pub const TOKEN_VAR: &str = "WATCH_E2E_LIVE_TERMINAL_ONCE";
+    pub const TMP_VAR: &str = "WATCH_E2E_TMP";
+    pub const TOKEN_FILE: &str = "live-terminal-once";
+
+    /// The TextEdit test opens an untitled document (`make new document`). TextEdit autosaves such a document
+    /// into iCloud Drive and `/usr/bin/trash` cannot remove that file, so no token unlocks it.
+    pub fn textedit_untitled() -> Result<(), String> {
+        Err("this test opens an untitled TextEdit document, which TextEdit autosaves into iCloud Drive where \
+             Trash cannot remove it; it stays off until it opens a file in a temp folder instead"
+            .into())
+    }
+
+    /// The Terminal test needs the one-time token that `scripts/verify-watch-e2e.sh` issues after its Terminal
+    /// gate is open: the variable holds 32 hex characters and the file `live-terminal-once` in the script's temp
+    /// folder (`WATCH_E2E_TMP`) holds the same. The file is emptied here, so the token works once.
+    pub fn terminal(var: Env) -> Result<(), String> {
+        let how = "run it through scripts/verify-watch-e2e.sh (stage 4), which sets the one-time token only \
+                   after its Terminal gate (--check-terminal) is open";
+        let token = var(TOKEN_VAR)
+            .filter(|token| !token.is_empty())
+            .ok_or(format!(
+                "no one-time token ({TOKEN_VAR}) in the environment; {how}"
+            ))?;
+        if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "the one-time token is not 32 hex characters; {how}"
+            ));
+        }
+        let folder = var(TMP_VAR)
+            .filter(|folder| !folder.is_empty())
+            .ok_or(format!("no {TMP_VAR} in the environment; {how}"))?;
+        let file = Path::new(&folder).join(TOKEN_FILE);
+        let stored = std::fs::read_to_string(&file)
+            .map_err(|error| format!("cannot read {}: {error}; {how}", file.display()))?;
+        if stored != token {
+            return Err(format!(
+                "the token in {} is not the one in the environment (or was already used); {how}",
+                file.display()
+            ));
+        }
+        std::fs::write(&file, "")
+            .map_err(|error| format!("cannot consume the token in {}: {error}", file.display()))
+    }
+
+    /// The gate a test calls first: the real environment, and a panic with the reason.
+    pub fn require(gate: &dyn Fn(Env) -> Result<(), String>) {
+        if let Err(why) = gate(&|name| std::env::var(name).ok()) {
+            panic!("live test refused: {why}");
+        }
+    }
+}
 
 fn osascript(script: &str) -> String {
     let output = Command::new("/usr/bin/osascript")
@@ -407,6 +476,7 @@ impl Drop for Guard {
 #[test]
 #[ignore = "drives TextEdit and Finder; run by hand (see the module doc)"]
 fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
+    live_gate::require(&|_| live_gate::textedit_untitled());
     let mut rig = Rig::new();
     let made = Made::open_textedit(&Osa).expect("a new TextEdit document");
     let _close = Guard(made.clone());
@@ -482,6 +552,7 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
 #[test]
 #[ignore = "drives Terminal; run by hand (see the module doc)"]
 fn watch_live_terminal_paste_is_final_and_enter_runs_the_command() {
+    live_gate::require(&live_gate::terminal);
     let mut rig = Rig::new();
     let made = Made::open_terminal(&Osa).expect("a new Terminal window");
     let _close = Guard(made.clone());
@@ -788,5 +859,90 @@ mod owned_cleanup {
             assert!(!script.contains("front document"), "{script}");
             assert!(!script.contains("front window"), "{script}");
         }
+    }
+}
+
+/// The gates that keep a `cargo` run started by hand away from the real desktop.
+#[cfg(test)]
+mod live_gate_tests {
+    use super::live_gate::{self, TMP_VAR, TOKEN_FILE, TOKEN_VAR};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |name| map.get(name).cloned()
+    }
+
+    fn folder(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("hex-live-gate-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    fn trash(folder: &PathBuf) {
+        let _ = std::process::Command::new("/usr/bin/trash")
+            .arg(folder)
+            .status();
+    }
+
+    #[test]
+    fn a_cargo_run_by_hand_has_no_token_and_the_terminal_test_refuses() {
+        let why = live_gate::terminal(&env(&[])).unwrap_err();
+        assert!(why.contains(TOKEN_VAR), "{why}");
+        assert!(why.contains("--check-terminal"), "{why}");
+    }
+
+    #[test]
+    fn a_token_in_the_environment_without_the_scripts_file_is_refused() {
+        let missing = folder("missing");
+        // no file in the folder
+        let why = live_gate::terminal(&env(&[
+            (TOKEN_VAR, TOKEN),
+            (TMP_VAR, missing.to_str().unwrap()),
+        ]))
+        .unwrap_err();
+        assert!(why.contains("cannot read"), "{why}");
+        // a file with another token
+        let other = folder("other");
+        std::fs::write(other.join(TOKEN_FILE), "ffffffffffffffffffffffffffffffff").unwrap();
+        let why = live_gate::terminal(&env(&[
+            (TOKEN_VAR, TOKEN),
+            (TMP_VAR, other.to_str().unwrap()),
+        ]))
+        .unwrap_err();
+        assert!(why.contains("not the one"), "{why}");
+        // a token that is not 32 hex characters
+        let why = live_gate::terminal(&env(&[
+            (TOKEN_VAR, "abc"),
+            (TMP_VAR, other.to_str().unwrap()),
+        ]))
+        .unwrap_err();
+        assert!(why.contains("32 hex"), "{why}");
+        trash(&missing);
+        trash(&other);
+    }
+
+    #[test]
+    fn the_scripts_token_opens_the_terminal_gate_once() {
+        let dir = folder("once");
+        std::fs::write(dir.join(TOKEN_FILE), TOKEN).unwrap();
+        let vars = env(&[(TOKEN_VAR, TOKEN), (TMP_VAR, dir.to_str().unwrap())]);
+        assert_eq!(live_gate::terminal(&vars), Ok(()));
+        let again = live_gate::terminal(&vars).unwrap_err();
+        assert!(again.contains("already used"), "{again}");
+        trash(&dir);
+    }
+
+    #[test]
+    fn the_untitled_textedit_test_is_always_refused() {
+        let why = live_gate::textedit_untitled().unwrap_err();
+        assert!(why.contains("iCloud"), "{why}");
     }
 }
