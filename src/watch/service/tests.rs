@@ -20,6 +20,7 @@ use crate::watch::desktop::fake::FakeScreen;
 use crate::watch::e2ee::{self, Aad, AudioHead, SharedKey};
 use crate::watch::frame::{Inbound, RequestHead};
 use crate::watch::pairing::MemorySecretStore;
+use crate::watch::pairing::requests::NO_CLAIM;
 use crate::watch::recording::{DUPLICATE_AUDIO_WAIT_SECONDS, Verification};
 use crate::watch::relay::{NotConnected, RelayEvent, RelayState};
 use crate::watch::suspect::SuspectReason;
@@ -301,12 +302,17 @@ impl Harness {
     }
 
     fn approve(&mut self, device: &str) {
-        self.core.requests.approve(device, self.now.at);
+        self.core.requests.approve(device, NO_CLAIM, self.now.at);
     }
 
     /// The whole pairing exchange, as the watch runs it.
     fn pair(&mut self, device: &str) -> Watch {
         self.approve(device);
+        self.pair_approved(device)
+    }
+
+    /// The pairing exchange for a watch whose claim was already approved.
+    fn pair_approved(&mut self, device: &str) -> Watch {
         let secret = watch_secret();
         let (status, body) = self
             .request(
@@ -1387,6 +1393,7 @@ fn claims_answer_ok_failed_timeout_and_offline() {
         h.core.handle(
             Message::Claim {
                 code: code.to_owned(),
+                claim_id: 1,
                 reply,
                 deadline: h.now.at + CLAIM_TIMEOUT,
             },
@@ -1494,6 +1501,7 @@ fn a_claim_is_never_sent_after_its_caller_gave_up() {
         h.core.handle(
             Message::Claim {
                 code: code.to_owned(),
+                claim_id: 1,
                 reply,
                 deadline,
             },
@@ -1543,6 +1551,7 @@ fn a_claim_answer_handled_after_the_deadline_approves_no_watch() {
     h.core.handle(
         Message::Claim {
             code: "123456".to_owned(),
+            claim_id: 1,
             reply,
             deadline: h.now.at + CLAIM_TIMEOUT,
         },

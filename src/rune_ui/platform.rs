@@ -621,10 +621,12 @@ pub(super) enum PlatformRequest {
         generation: u64,
     },
     /// Remove the paired watch `id`, named `name` in the error if it fails
-    /// (macOS); the answer comes back as `WatchEvent::Revoked`.
+    /// (macOS); the answer comes back as `WatchEvent::Revoked` with the same
+    /// `seq`.
     WatchRevoke {
         id: String,
         name: String,
+        seq: u64,
     },
 }
 

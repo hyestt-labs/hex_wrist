@@ -80,16 +80,12 @@ pub(in crate::rune_ui) fn scene(ui: &mut Ui, scene: Scene) {
         Scene::Offline => ui.platform.watch = Some(snapshot(RelayState::Offline, watches())),
         Scene::Pairing => {
             ui.watch.code = rune::TextEdit::new("217400");
-            ui.watch.pair = Pair::Pairing {
-                generation: 0,
-                seen: 0,
-            };
+            ui.watch.pair = Pair::Pairing { generation: 0 };
         }
         Scene::Waiting => {
             ui.watch.code = rune::TextEdit::new("217400");
             ui.watch.pair = Pair::Waiting {
-                claim_id: "device-0003".into(),
-                seen: 0,
+                generation: 0,
                 since: Instant::now(),
             };
         }
@@ -100,6 +96,7 @@ pub(in crate::rune_ui) fn scene(ui: &mut Ui, scene: Scene) {
             let refused = super::WatchEvent::Revoked {
                 id: "device-0001".into(),
                 name: "Test watch".into(),
+                seq: 0,
                 result: Err("could not write paired-devices.json: disk full".into()),
             };
             ui.watch.apply(refused, ui.platform.watch.as_ref());

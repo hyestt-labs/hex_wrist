@@ -28,28 +28,18 @@ pub(in crate::rune_ui) enum Tone {
 /// waits for.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// The newest pairing request the service has admitted, or 0.
-fn newest(snapshot: Option<&WatchSnapshot>) -> u64 {
-    snapshot
-        .and_then(|snapshot| snapshot.admissions.iter().map(|a| a.serial).max())
-        .unwrap_or(0)
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(in crate::rune_ui) enum Pair {
     #[default]
     Idle,
-    /// Claim `generation` went to the relay; `seen` is the newest admission
-    /// the window knew of then.
+    /// Claim `generation` went to the relay.
     Pairing {
         generation: u64,
-        seen: u64,
     },
-    /// The relay took the code for the watch it calls `claim_id`; that watch
-    /// has until `since + FINISH_WAIT` to ask this Mac for its token.
+    /// The relay took claim `generation`; its watch has until
+    /// `since + FINISH_WAIT` to ask this Mac for its token.
     Waiting {
-        claim_id: String,
-        seen: u64,
+        generation: u64,
         since: Instant,
     },
     Paired(String),
@@ -78,7 +68,6 @@ impl Pair {
     ) -> Self {
         let Self::Pairing {
             generation: waiting,
-            seen,
         } = self
         else {
             return self.clone();
@@ -87,9 +76,8 @@ impl Pair {
             return self.clone();
         }
         match result {
-            Ok(ok) => Self::Waiting {
-                claim_id: ok.device_id,
-                seen: *seen,
+            Ok(_) => Self::Waiting {
+                generation,
                 since: Instant::now(),
             }
             .settled(snapshot, Instant::now()),
@@ -97,23 +85,18 @@ impl Pair {
         }
     }
 
-    /// Paired once the watch that claimed has its pairing request admitted,
-    /// failed once that watch has had its time. A watch that pairs while
-    /// this one waits is not this claim's.
+    /// Paired once the service admits a pairing request that spent this
+    /// claim's approval, failed once the watch has had its time. A pairing
+    /// another claim earned, a watch's or an older window's, is not this one's.
     pub(super) fn settled(&self, snapshot: Option<&WatchSnapshot>, now: Instant) -> Self {
-        let Self::Waiting {
-            claim_id,
-            seen,
-            since,
-        } = self
-        else {
+        let Self::Waiting { generation, since } = self else {
             return self.clone();
         };
         let arrived = snapshot.and_then(|snapshot| {
             let admission = snapshot
                 .admissions
                 .iter()
-                .find(|a| a.serial > *seen && a.claimed_device_id == *claim_id)?;
+                .find(|admission| admission.claim_id == *generation)?;
             snapshot
                 .devices
                 .iter()
@@ -149,7 +132,7 @@ impl WatchView {
     /// Keeps only digits (six at most) in the field; the sixth sends the
     /// code once, with the number of its claim. Nothing is sent while a
     /// pairing is under way.
-    pub(super) fn typed(&mut self, snapshot: Option<&WatchSnapshot>) -> Option<(String, u64)> {
+    pub(super) fn typed(&mut self) -> Option<(String, u64)> {
         let digits: String = self
             .code
             .text
@@ -165,10 +148,7 @@ impl WatchView {
         }
         self.removing = None;
         let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-        self.pair = Pair::Pairing {
-            generation,
-            seen: newest(snapshot),
-        };
+        self.pair = Pair::Pairing { generation };
         Some((digits, generation))
     }
 
@@ -200,7 +180,7 @@ pub(super) fn last_seen(stamp: &str, now: SystemTime) -> String {
 mod tests {
     use super::super::WatchEvent;
     use super::*;
-    use crate::watch::pairing::requests::Admission;
+    use crate::watch::pairing::requests::{Admission, NO_CLAIM};
     use crate::watch::pairing::{DeviceStatus, DeviceSummary};
     use crate::watch::relay::RelayState;
 
@@ -216,10 +196,13 @@ mod tests {
         }
     }
 
-    fn admission(serial: u64, claimed: &str, enrolled: &str) -> Admission {
+    /// The claim number of a pairing from before the claim under test; claims
+    /// count up from 1 in each process, so a test's own never reaches it.
+    const EARLIER: u64 = 10_000;
+
+    fn admission(claim_id: u64, enrolled: &str) -> Admission {
         Admission {
-            serial,
-            claimed_device_id: claimed.into(),
+            claim_id,
             device_id: enrolled.into(),
         }
     }
@@ -234,56 +217,67 @@ mod tests {
         }
     }
 
-    fn ok(claim_id: &str) -> Result<ClaimOk, ClaimError> {
+    fn ok() -> Result<ClaimOk, ClaimError> {
         Ok(ClaimOk {
-            device_id: claim_id.into(),
+            device_id: "relay-id".into(),
             device_name: "Test watch".into(),
         })
     }
 
     /// Types `text` and returns the code and claim number a send would carry.
-    fn typed(
-        view: &mut WatchView,
-        text: &str,
-        snapshot: Option<&WatchSnapshot>,
-    ) -> Option<(String, u64)> {
+    fn typed(view: &mut WatchView, text: &str) -> Option<(String, u64)> {
         view.code = TextEdit::new(text);
-        view.typed(snapshot)
+        view.typed()
     }
 
-    fn claim(view: &mut WatchView, snapshot: Option<&WatchSnapshot>) -> u64 {
-        typed(view, "217400", snapshot).expect("six digits send").1
+    fn claim(view: &mut WatchView) -> u64 {
+        typed(view, "217400").expect("six digits send").1
+    }
+
+    /// A claim the relay took: the view waits for its watch.
+    fn waiting(snapshot: Option<&WatchSnapshot>) -> (WatchView, u64) {
+        let mut view = WatchView::default();
+        let generation = claim(&mut view);
+        view.apply(
+            WatchEvent::Claimed {
+                generation,
+                result: ok(),
+            },
+            snapshot,
+        );
+        (view, generation)
     }
 
     #[test]
     fn six_digits_send_one_code_and_nothing_else_does() {
         let mut view = WatchView::default();
-        assert_eq!(typed(&mut view, "21740", None), None);
+        assert_eq!(typed(&mut view, "21740"), None);
         assert_eq!(view.pair, Pair::Idle);
-        let (code, _) = typed(&mut view, "217400", None).unwrap();
+        let (code, _) = typed(&mut view, "217400").unwrap();
         assert_eq!(code, "217400");
         assert!(view.pair.busy());
         // The same digits again, while it runs, send nothing more.
-        assert_eq!(typed(&mut view, "217400", None), None);
-        assert_eq!(typed(&mut view, "999999", None), None);
+        assert_eq!(typed(&mut view, "217400"), None);
+        assert_eq!(typed(&mut view, "999999"), None);
     }
 
     #[test]
     fn every_claim_has_its_own_number() {
         let mut view = WatchView::default();
-        let first = claim(&mut view, None);
+        let first = claim(&mut view);
         view.pair = Pair::Idle;
-        let second = claim(&mut view, None);
+        let second = claim(&mut view);
         assert_ne!(first, second);
         assert_ne!(first, 0, "0 belongs to scenes");
+        assert_ne!(first, NO_CLAIM, "a window's claim is never the CLI's");
     }
 
     #[test]
     fn the_field_keeps_only_six_digits() {
         let mut view = WatchView::default();
-        assert_eq!(typed(&mut view, "2-1 7a4", None), None);
+        assert_eq!(typed(&mut view, "2-1 7a4"), None);
         assert_eq!(view.code.text, "2174");
-        let (code, _) = typed(&mut view, "1234567890", None).unwrap();
+        let (code, _) = typed(&mut view, "1234567890").unwrap();
         assert_eq!(code, "123456");
         assert_eq!(view.code.text, "123456");
     }
@@ -291,7 +285,7 @@ mod tests {
     #[test]
     fn a_refused_code_shows_its_reason_and_the_next_six_digits_try_again() {
         let mut view = WatchView::default();
-        let generation = claim(&mut view, None);
+        let generation = claim(&mut view);
         view.apply(
             WatchEvent::Claimed {
                 generation,
@@ -303,17 +297,17 @@ mod tests {
         assert_eq!(words, claim_error(&ClaimError::CodeNotFound));
         assert_eq!(tone, Tone::Bad);
         assert!(!view.pair.busy());
-        assert!(typed(&mut view, "111111", None).is_some());
+        assert!(typed(&mut view, "111111").is_some());
     }
 
     #[test]
     fn the_reply_to_the_current_claim_moves_pairing_on() {
         let mut view = WatchView::default();
-        let generation = claim(&mut view, None);
+        let generation = claim(&mut view);
         let changed = view.apply(
             WatchEvent::Claimed {
                 generation,
-                result: ok("relay-id"),
+                result: ok(),
             },
             None,
         );
@@ -328,7 +322,7 @@ mod tests {
     #[test]
     fn the_reply_to_an_older_claim_is_dropped() {
         let mut view = WatchView::default();
-        let older = claim(&mut view, None);
+        let older = claim(&mut view);
         view.apply(
             WatchEvent::Claimed {
                 generation: older,
@@ -337,30 +331,24 @@ mod tests {
             None,
         );
         // A newer claim is under way when the older one's late reply lands.
-        let newer = claim(&mut view, None);
+        let newer = claim(&mut view);
         assert_ne!(older, newer);
         let changed = view.apply(
             WatchEvent::Claimed {
                 generation: older,
-                result: ok("relay-id"),
+                result: ok(),
             },
             None,
         );
         assert!(!changed, "nothing shown changes");
-        assert_eq!(
-            view.pair,
-            Pair::Pairing {
-                generation: newer,
-                seen: 0
-            }
-        );
+        assert_eq!(view.pair, Pair::Pairing { generation: newer });
         assert_eq!(view.code.text, "217400", "the field is not cleared");
         // A window that has no claim under way ignores a reply too.
         let mut idle = WatchView::default();
         assert!(!idle.apply(
             WatchEvent::Claimed {
                 generation: older,
-                result: ok("relay-id"),
+                result: ok(),
             },
             None,
         ));
@@ -368,25 +356,17 @@ mod tests {
     }
 
     #[test]
-    fn the_watch_that_claimed_settles_the_claim() {
+    fn the_pairing_this_claim_earned_settles_it() {
         let before = snapshot(
             vec![device("old", "Old watch")],
-            vec![admission(1, "old", "old")],
+            vec![admission(EARLIER, "old")],
         );
-        let mut view = WatchView::default();
-        let generation = claim(&mut view, Some(&before));
-        view.apply(
-            WatchEvent::Claimed {
-                generation,
-                result: ok("relay-new"),
-            },
-            Some(&before),
-        );
+        let (mut view, generation) = waiting(Some(&before));
         // The earlier pairing is not this one.
         assert!(!view.settle(Some(&before), Instant::now()));
         let after = snapshot(
             vec![device("old", "Old watch"), device("new", "Series 9")],
-            vec![admission(1, "old", "old"), admission(2, "relay-new", "new")],
+            vec![admission(EARLIER, "old"), admission(generation, "new")],
         );
         assert!(view.settle(Some(&after), Instant::now()));
         assert_eq!(view.pair, Pair::Paired("Series 9".into()));
@@ -395,56 +375,37 @@ mod tests {
 
     #[test]
     fn a_reinstalled_watch_settles_under_the_entry_its_token_named() {
-        // The service enrolled the claim of "relay-new" under the older
-        // entry "w"; the window finds it by the admission, not by a new id.
-        let before = snapshot(vec![device("w", "Series 9")], vec![admission(1, "w", "w")]);
-        let mut view = WatchView::default();
-        let generation = claim(&mut view, Some(&before));
-        view.apply(
-            WatchEvent::Claimed {
-                generation,
-                result: ok("relay-new"),
-            },
-            Some(&before),
-        );
+        // The service enrolled this claim's watch under the older entry "w";
+        // the window finds it by the admission, not by a new id.
+        let before = snapshot(vec![device("w", "Series 9")], vec![admission(EARLIER, "w")]);
+        let (mut view, generation) = waiting(Some(&before));
         assert!(!view.settle(Some(&before), Instant::now()), "same pairing");
         let again = snapshot(
             vec![device("w", "Series 9")],
-            vec![admission(1, "w", "w"), admission(2, "relay-new", "w")],
+            vec![admission(EARLIER, "w"), admission(generation, "w")],
         );
         assert!(view.settle(Some(&again), Instant::now()), "no 120 s wait");
         assert_eq!(view.pair, Pair::Paired("Series 9".into()));
     }
 
     #[test]
-    fn another_watch_pairing_during_the_wait_does_not_settle_this_claim() {
-        let before = snapshot(Vec::new(), Vec::new());
-        let mut view = WatchView::default();
-        let generation = claim(&mut view, Some(&before));
-        view.apply(
-            WatchEvent::Claimed {
-                generation,
-                result: ok("relay-mine"),
-            },
-            Some(&before),
-        );
-        // A different watch finishes pairing in the same window.
+    fn another_claims_pairing_during_the_wait_does_not_settle_this_one() {
+        let (mut view, generation) = waiting(None);
+        // Another watch, or an older window's claim of this very watch,
+        // finishes pairing in the same window of time.
         let other = snapshot(
             vec![device("theirs", "Test watch 2")],
-            vec![admission(1, "relay-theirs", "theirs")],
+            vec![admission(EARLIER, "theirs")],
         );
         assert!(!view.settle(Some(&other), Instant::now()));
         assert!(matches!(view.pair, Pair::Waiting { .. }), "{:?}", view.pair);
-        // The watch that claimed then does, and the status names it.
+        // This claim's own pairing then does, and the status names it.
         let both = snapshot(
             vec![
                 device("theirs", "Test watch 2"),
                 device("mine", "Test watch"),
             ],
-            vec![
-                admission(1, "relay-theirs", "theirs"),
-                admission(2, "relay-mine", "mine"),
-            ],
+            vec![admission(EARLIER, "theirs"), admission(generation, "mine")],
         );
         assert!(view.settle(Some(&both), Instant::now()));
         assert_eq!(view.pair, Pair::Paired("Test watch".into()));
@@ -454,8 +415,7 @@ mod tests {
     fn a_watch_that_never_asks_times_out_with_its_own_message() {
         let mut view = WatchView {
             pair: Pair::Waiting {
-                claim_id: "relay-id".into(),
-                seen: 0,
+                generation: 1,
                 since: Instant::now(),
             },
             ..Default::default()

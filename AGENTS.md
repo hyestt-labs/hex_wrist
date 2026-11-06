@@ -670,8 +670,9 @@ substitute for source inspection or a second roadmap.
   cannot write changes nothing and the error shows under the watch's row;
   the window keeps each failed Remove's error by watch id, so a reply
   touches only its own watch), `WatchSnapshot::admissions` (which
-  `/pairing/request` spent which claim's approval, by serial, so the window
-  settles a claim on the watch that answered it),
+  `/pairing/request` spent which claim's approval, by the claim's number, so
+  the window settles only the claim it sent; a Remove carries a number too,
+  so an older answer never undoes a newer one),
   `settings` (the `watch.*` settings,
   applied live: `status_capsule`, `capsule_follows_pointer`,
   `keep_on_clipboard`, and the extra `terminal_apps`; paste takes `keep` from

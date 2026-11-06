@@ -204,6 +204,9 @@ pub(crate) struct WatchService {
 pub(crate) enum Message {
     Claim {
         code: String,
+        /// Which claim this is, so the pairing it earns names it
+        /// (`Admission::claim_id`).
+        claim_id: u64,
         reply: mpsc::SyncSender<Result<ClaimOk, ClaimError>>,
         /// When the caller stops waiting, less the margin; a claim still in
         /// the inbox then is never sent.
@@ -315,7 +318,9 @@ impl WatchService {
     }
 
     /// Claims `code` through the relay, waiting at most `CLAIM_TIMEOUT`.
-    pub(crate) fn claim(&self, code: &str) -> Result<ClaimOk, ClaimError> {
+    /// `claim_id` numbers the claim (`requests::NO_CLAIM` for one no window
+    /// made); the pairing it approves carries it.
+    pub(crate) fn claim(&self, code: &str, claim_id: u64) -> Result<ClaimOk, ClaimError> {
         if !super::frame::is_valid_claim_code(code) {
             return Err(ClaimError::InvalidCode);
         }
@@ -324,6 +329,7 @@ impl WatchService {
             .inbox
             .send(Message::Claim {
                 code: code.to_owned(),
+                claim_id,
                 reply,
                 deadline: Instant::now() + CLAIM_TIMEOUT,
             })

@@ -13,6 +13,8 @@ use super::{
 
 struct Approval {
     device_id: String,
+    /// The claim that earned it (`NO_CLAIM` for one no window made).
+    claim_id: u64,
     until: Instant,
 }
 
@@ -35,14 +37,17 @@ struct Request {
 /// How many admissions the service remembers for the window.
 const ADMISSIONS_KEPT: usize = 8;
 
-/// Which `/pairing/request` spent which claim's approval: the id the relay
-/// gave the watch that claimed, and the entry the request enrolled (an
-/// older one when `previous_token` named it). `serial` rises with each, so
-/// a window that waits for one tells it from any it saw before.
+/// The claim id of a claim no window made (`hex watch pair`); windows number
+/// theirs from 1.
+pub(crate) const NO_CLAIM: u64 = 0;
+
+/// Which `/pairing/request` spent which claim's approval: the claim's id
+/// (each window claim has its own, across windows) and the entry the request
+/// enrolled (an older one when `previous_token` named it). A window settles
+/// only on the admission of the claim it sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Admission {
-    pub(crate) serial: u64,
-    pub(crate) claimed_device_id: String,
+    pub(crate) claim_id: u64,
     pub(crate) device_id: String,
 }
 
@@ -78,7 +83,6 @@ pub(crate) struct PairingRequests {
     approval: Option<Approval>,
     finished: u32,
     admissions: Vec<Admission>,
-    serial: u64,
 }
 
 impl Default for PairingRequests {
@@ -95,7 +99,6 @@ impl PairingRequests {
             approval: None,
             finished: 0,
             admissions: Vec::new(),
-            serial: 0,
         }
     }
 
@@ -104,11 +107,12 @@ impl PairingRequests {
         &self.admissions
     }
 
-    /// Called on `claim_ok`. One watch at a time; a later claim replaces
-    /// the earlier one.
-    pub(crate) fn approve(&mut self, device_id: &str, now: Instant) {
+    /// Called on `claim_ok` for claim `claim_id`. One watch at a time; a
+    /// later claim replaces the earlier one.
+    pub(crate) fn approve(&mut self, device_id: &str, claim_id: u64, now: Instant) {
         self.approval = Some(Approval {
             device_id: device_id.to_owned(),
+            claim_id,
             until: now + APPROVAL_WINDOW,
         });
         self.clear_failures();
@@ -175,6 +179,7 @@ impl PairingRequests {
         if approval.until <= now || approval.device_id != claimed_device_id {
             return None;
         }
+        let claim_id = approval.claim_id;
         self.approval = None;
         let stale: Vec<String> = self
             .items
@@ -201,10 +206,8 @@ impl PairingRequests {
         };
         let id = new_request_id()?;
         if matches!(outcome, Outcome::Issued { .. }) {
-            self.serial += 1;
             self.admissions.push(Admission {
-                serial: self.serial,
-                claimed_device_id: claimed_device_id.to_owned(),
+                claim_id,
                 device_id: device_id.to_owned(),
             });
             if self.admissions.len() > ADMISSIONS_KEPT {

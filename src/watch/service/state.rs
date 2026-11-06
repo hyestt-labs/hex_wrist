@@ -110,6 +110,7 @@ impl LiveRecord {
 
 struct PendingClaim {
     code: String,
+    claim_id: u64,
     reply: SyncSender<Result<ClaimOk, ClaimError>>,
     deadline: Instant,
 }
@@ -207,9 +208,10 @@ impl Core {
             } => self.on_keyed(&id, key, op, outcome, now),
             Message::Claim {
                 code,
+                claim_id,
                 reply,
                 deadline,
-            } => self.on_claim(code, reply, deadline, now),
+            } => self.on_claim(code, claim_id, reply, deadline, now),
             Message::Snapshot { reply } => {
                 let _ = reply.try_send(self.snapshot());
             }
@@ -410,7 +412,7 @@ impl Core {
                     let _ = claim.reply.try_send(Err(ClaimError::Timeout));
                     return;
                 }
-                self.requests.approve(&device_id, now.at);
+                self.requests.approve(&device_id, claim.claim_id, now.at);
                 let _ = claim.reply.try_send(Ok(ClaimOk {
                     device_id,
                     device_name,
@@ -445,6 +447,7 @@ impl Core {
     fn on_claim(
         &mut self,
         code: String,
+        claim_id: u64,
         reply: SyncSender<Result<ClaimOk, ClaimError>>,
         deadline: Instant,
         now: Now,
@@ -472,6 +475,7 @@ impl Core {
         }
         self.claims.push(PendingClaim {
             code,
+            claim_id,
             reply,
             deadline,
         });

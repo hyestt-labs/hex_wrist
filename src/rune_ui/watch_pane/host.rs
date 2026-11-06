@@ -41,20 +41,27 @@ impl WatchFeed {
         match request.clone() {
             PlatformRequest::WatchPair { code, generation } => spawn("hex-watch-pair", move || {
                 let result = match crate::watch::service() {
-                    Some(service) => service.claim(&code),
+                    Some(service) => service.claim(&code, generation),
                     None => Err(ClaimError::Unavailable),
                 };
                 let _ = events.send(WatchEvent::Claimed { generation, result });
                 wake();
             }),
-            PlatformRequest::WatchRevoke { id, name } => spawn("hex-watch-revoke", move || {
-                let result = match crate::watch::service() {
-                    Some(service) => service.revoke(&id),
-                    None => Err(ClaimError::Unavailable.message()),
-                };
-                let _ = events.send(WatchEvent::Revoked { id, name, result });
-                wake();
-            }),
+            PlatformRequest::WatchRevoke { id, name, seq } => {
+                spawn("hex-watch-revoke", move || {
+                    let result = match crate::watch::service() {
+                        Some(service) => service.revoke(&id),
+                        None => Err(ClaimError::Unavailable.message()),
+                    };
+                    let _ = events.send(WatchEvent::Revoked {
+                        id,
+                        name,
+                        seq,
+                        result,
+                    });
+                    wake();
+                })
+            }
             _ => return false,
         }
         true

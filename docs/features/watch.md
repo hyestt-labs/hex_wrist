@@ -235,25 +235,29 @@ First run (macOS, the service has reported once)
   runs a claim or a Remove on a thread of its own (a claim waits up to 11 s on
   the relay); the answers come back as `WatchEvent`s in `PlatformState`.
   Linux and Windows hosts do nothing with the two requests.
-- **Pairing in the window (C2c).** `PairingRequests::admit` records each
-  request that spends the 120 s approval as an `Admission` (a rising `serial`,
-  the id the relay gave the claiming watch, and the entry it enrolled, which
-  is an older one when `previous_token` named it). The snapshot carries the
-  newest eight. The pane numbers every claim (`GENERATION`, one counter for
-  the process, so a reply that reaches a reopened window cannot match a new
-  claim); a reply settles only the `Pairing` that sent that number and is
-  dropped otherwise. `ClaimOk::device_id` is the claim's id; the pane
-  waits for an admission with that id and a serial above the newest it saw
-  when it sent the claim, then shows the enrolled watch's name. A watch that
-  pairs meanwhile has another claim id and settles nothing, and a watch
-  paired again with its old token settles at once. A request that fails its
+- **Pairing in the window (C2d).** The pane numbers every claim
+  (`GENERATION`, one counter for the process, so a reply that reaches a
+  reopened window cannot match a new claim) and sends the number with the
+  code; `hex watch pair` sends `NO_CLAIM` (0). The service keeps it with the
+  claim, the approval it earns, and the admission: `PairingRequests::admit`
+  records each request that spends the 120 s approval as an `Admission`
+  (that claim's number and the entry it enrolled, which is an older one when
+  `previous_token` named it). The snapshot carries the newest eight. A reply
+  settles only the `Pairing` that sent that number and is dropped otherwise;
+  the pane then waits for the admission with its own number and shows the
+  enrolled watch's name. A pairing another claim earned (another watch, or an
+  older window's claim of the same watch) settles nothing, and a watch paired
+  again with its old token settles at once. A request that fails its
   key agreement or Keychain write records no admission, so the pane shows
   the timeout sentence after 120 s. The Mac cannot see the watch's own 426
   `watch_outdated`, which also shows that sentence.
-- **Replies own only their request (C2c).** A Remove's reply names its watch
+- **Replies own only their request (C2d).** A Remove's reply names its watch
   and changes only that watch's error (`WatchView::remove_errors`, by id); a
   success clears its own entry only, and an entry for a watch that is no
-  longer listed is dropped. A claim's reply carries its number (above).
+  longer listed is dropped. Each Remove also carries a number (`REMOVAL`,
+  process-wide); the pane keeps the newest sent for each watch and drops the
+  answer to an older one, so whichever answer arrives last, the newest
+  request decides what the row says. A claim's reply carries its number (above).
 - **Health.** `/health` `paste_ready` is the Accessibility permission, with a
   `paste_detail` that names where to grant it.
 

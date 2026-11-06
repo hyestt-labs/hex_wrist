@@ -61,6 +61,7 @@ fn a_claim_then_the_watch_request_pushes_the_new_device() {
     h.core.handle(
         Message::Claim {
             code: "217400".to_owned(),
+            claim_id: 1,
             reply,
             deadline: h.now.at + CLAIM_TIMEOUT,
         },
@@ -241,52 +242,120 @@ fn pairing_request(h: &mut Harness, device: &str, previous_token: &str) -> u16 {
     .0
 }
 
-fn admitted(h: &mut Harness) -> Vec<(String, String)> {
+fn admitted(h: &mut Harness) -> Vec<(u64, String)> {
     h.core
         .snapshot()
         .admissions
         .into_iter()
-        .map(|a| (a.claimed_device_id, a.device_id))
+        .map(|a| (a.claim_id, a.device_id))
         .collect()
+}
+
+/// Claim `claim_id` for `code`, answered by the relay for the watch it calls
+/// `device`: the service approves that watch for this claim.
+fn claim_answered(h: &mut Harness, claim_id: u64, code: &str, device: &str) {
+    let (reply, answer) = mpsc::sync_channel(1);
+    h.core.handle(
+        Message::Claim {
+            code: code.to_owned(),
+            claim_id,
+            reply,
+            deadline: h.now.at + CLAIM_TIMEOUT,
+        },
+        h.now,
+    );
+    h.core.handle(
+        Message::Relay(RelayEvent::Inbound(Inbound::ClaimOk {
+            code: code.to_owned(),
+            device_id: device.to_owned(),
+            device_name: "Test Watch".to_owned(),
+        })),
+        h.now,
+    );
+    assert!(answer.try_recv().unwrap().is_ok());
+}
+
+fn connected(h: &mut Harness) {
+    h.core.handle(
+        Message::Relay(RelayEvent::State(RelayState::Connected)),
+        h.now,
+    );
 }
 
 #[test]
 fn the_snapshot_names_which_claim_each_pairing_request_spent() {
     let mut h = harness("view-admissions");
-    h.pair("watch-1");
+    connected(&mut h);
+    claim_answered(&mut h, 11, "111111", "watch-1");
+    assert_eq!(pairing_request(&mut h, "watch-1", ""), 200);
     let first = h.core.snapshot().admissions;
-    assert_eq!(admitted(&mut h), [("watch-1".into(), "watch-1".into())]);
+    assert_eq!(admitted(&mut h), [(11, "watch-1".into())]);
     // A reinstalled watch: the relay's new id, enrolled under the old entry.
-    let old = h.pair("watch-2").token;
-    h.approve("watch-2b");
+    claim_answered(&mut h, 12, "222222", "watch-2");
+    let old = h.pair_approved("watch-2").token;
+    claim_answered(&mut h, 13, "333333", "watch-2b");
     assert_eq!(pairing_request(&mut h, "watch-2b", &old), 200);
-    let all = h.core.snapshot().admissions;
     assert_eq!(
         admitted(&mut h),
         [
-            ("watch-1".into(), "watch-1".into()),
-            ("watch-2".into(), "watch-2".into()),
-            ("watch-2b".into(), "watch-2".into()),
+            (11, "watch-1".into()),
+            (12, "watch-2".into()),
+            (13, "watch-2".into()),
         ],
-        "the claim's id and the entry it enrolled are both named"
+        "each claim's id and the entry its pairing enrolled are both named"
     );
-    let serials: Vec<u64> = all.iter().map(|a| a.serial).collect();
-    assert!(
-        serials.windows(2).all(|pair| pair[0] < pair[1]),
-        "{serials:?}"
+    assert_eq!(
+        h.core.snapshot().admissions[0],
+        first[0],
+        "an earlier admission is kept as it was"
     );
-    assert_eq!(all[0], first[0], "an earlier admission keeps its serial");
+}
+
+#[test]
+fn a_later_claim_for_the_same_watch_takes_over_the_approval() {
+    // Two claims of one watch (an old window's, then a new window's) are
+    // both approved before the watch asks: the one request spends the newer
+    // approval, so only the newer claim has an admission.
+    let mut h = harness("view-admissions-takeover");
+    connected(&mut h);
+    claim_answered(&mut h, 21, "111111", "watch-1");
+    claim_answered(&mut h, 22, "222222", "watch-1");
+    assert_eq!(pairing_request(&mut h, "watch-1", ""), 200);
+    assert_eq!(admitted(&mut h), [(22, "watch-1".into())]);
+}
+
+#[test]
+fn an_earlier_claims_pairing_is_not_the_later_claims() {
+    // Claim 31 pairs the watch, then claim 32 (same watch) is approved and
+    // pairs it again: two admissions, each under its own claim.
+    let mut h = harness("view-admissions-two-claims");
+    connected(&mut h);
+    claim_answered(&mut h, 31, "111111", "watch-1");
+    assert_eq!(pairing_request(&mut h, "watch-1", ""), 200);
+    assert_eq!(admitted(&mut h), [(31, "watch-1".into())]);
+    claim_answered(&mut h, 32, "222222", "watch-1");
+    assert_eq!(
+        admitted(&mut h),
+        [(31, "watch-1".into())],
+        "an approval alone admits nothing"
+    );
+    assert_eq!(pairing_request(&mut h, "watch-1", ""), 200);
+    assert_eq!(
+        admitted(&mut h),
+        [(31, "watch-1".into()), (32, "watch-1".into())]
+    );
 }
 
 #[test]
 fn a_request_from_another_watch_spends_no_claim_and_records_nothing() {
     let mut h = harness("view-admissions-refused");
-    h.approve("watch-1");
+    connected(&mut h);
+    claim_answered(&mut h, 41, "111111", "watch-1");
     assert_eq!(pairing_request(&mut h, "watch-other", ""), 403);
     assert!(
         admitted(&mut h).is_empty(),
         "a refused request is no admission"
     );
     assert_eq!(pairing_request(&mut h, "watch-1", ""), 200);
-    assert_eq!(admitted(&mut h), [("watch-1".into(), "watch-1".into())]);
+    assert_eq!(admitted(&mut h), [(41, "watch-1".into())]);
 }

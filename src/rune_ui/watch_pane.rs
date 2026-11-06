@@ -14,6 +14,7 @@ mod pairing;
 mod tests;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use rune::{El, TextEdit, row, text};
@@ -46,12 +47,18 @@ pub(super) enum WatchEvent {
         generation: u64,
         result: Result<ClaimOk, ClaimError>,
     },
+    /// The answer to Remove request `seq` for watch `id`.
     Revoked {
         id: String,
         name: String,
+        seq: u64,
         result: Result<bool, String>,
     },
 }
+
+/// Numbers each Remove sent, across windows, so the answers to two Removes of
+/// one watch are told apart whichever comes back last.
+static REMOVAL: AtomicU64 = AtomicU64::new(0);
 
 /// The pane's own state: the code being typed, how pairing is going, and the
 /// two-step Remove. The service's state is `ui.platform.watch`.
@@ -61,6 +68,9 @@ pub(super) struct WatchView {
     pub(super) pair: Pair,
     /// The watch whose Remove was pressed once.
     removing: Option<String>,
+    /// The newest Remove sent for each watch, by number: an older request's
+    /// answer is dropped, so it never undoes what the newer one said.
+    removals: BTreeMap<String, u64>,
     /// Removes that could not write the list: what to say under each
     /// watch's row, by its id. A reply touches only its own watch's entry.
     remove_errors: BTreeMap<String, String>,
@@ -82,7 +92,7 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     changed |= ui
         .watch
         .settle(ui.platform.watch.as_ref(), std::time::Instant::now());
-    if let Some((code, generation)) = ui.watch.typed(ui.platform.watch.as_ref()) {
+    if let Some((code, generation)) = ui.watch.typed() {
         ui.ask(PlatformRequest::WatchPair { code, generation });
         changed = true;
     }
@@ -93,9 +103,12 @@ fn removal_pressed(ui: &mut Ui, id: &str, name: &str) {
     if ui.watch.removing.as_deref() == Some(id) {
         ui.watch.removing = None;
         ui.watch.remove_errors.remove(id);
+        let seq = REMOVAL.fetch_add(1, Ordering::Relaxed) + 1;
+        ui.watch.removals.insert(id.to_owned(), seq);
         ui.ask(PlatformRequest::WatchRevoke {
             id: id.to_owned(),
             name: name.to_owned(),
+            seq,
         });
     } else {
         ui.watch.removing = Some(id.to_owned());
@@ -113,18 +126,28 @@ impl WatchView {
                 self.code = TextEdit::default();
                 self.pair = next;
             }
-            WatchEvent::Revoked { id, name, result } => match result {
-                Err(error) => {
-                    let words = tr_named(
-                        "Couldn't remove {name}: {error}",
-                        &[("name", &name), ("error", &error)],
-                    );
-                    self.remove_errors.insert(id, words);
+            WatchEvent::Revoked {
+                id,
+                name,
+                seq,
+                result,
+            } => {
+                if self.removals.get(&id).is_some_and(|newest| seq < *newest) {
+                    return false;
                 }
-                Ok(_) => {
-                    self.remove_errors.remove(&id);
+                match result {
+                    Err(error) => {
+                        let words = tr_named(
+                            "Couldn't remove {name}: {error}",
+                            &[("name", &name), ("error", &error)],
+                        );
+                        self.remove_errors.insert(id, words);
+                    }
+                    Ok(_) => {
+                        self.remove_errors.remove(&id);
+                    }
                 }
-            },
+            }
         }
         true
     }
@@ -132,8 +155,9 @@ impl WatchView {
     /// Forgets the error of a watch that is no longer listed.
     fn forget_removed(&mut self, snapshot: Option<&WatchSnapshot>) {
         if let Some(snapshot) = snapshot {
-            self.remove_errors
-                .retain(|id, _| snapshot.devices.iter().any(|device| device.id == *id));
+            let listed = |id: &String| snapshot.devices.iter().any(|device| device.id == *id);
+            self.remove_errors.retain(|id, _| listed(id));
+            self.removals.retain(|id, _| listed(id));
         }
     }
 }

@@ -156,7 +156,7 @@ pub(crate) fn pair(code: &str) -> crate::control::ControlReply {
             service::ClaimError::Unavailable.message(),
         );
     };
-    match service.claim(code.trim()) {
+    match service.claim(code.trim(), pairing::requests::NO_CLAIM) {
         Ok(claimed) => ControlReply::done(format!(
             "Claimed the code for {} ({}); the watch finishes pairing by itself within 2 minutes",
             claimed.device_name, claimed.device_id

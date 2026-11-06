@@ -202,8 +202,26 @@ fn a_late_reply_to_an_older_claim_changes_nothing_on_screen() {
     assert!(!says(&rt, "Finish on your watch…"));
 }
 
+/// The service admitted a pairing request that spent claim `claim_id`'s
+/// approval and enrolled `id` (named `name`), as its pushed snapshot says.
+fn admit(rt: &mut Runtime<Ui>, claim_id: u64, id: &str, name: &str) {
+    let mut snapshot = rt.state.platform.watch.clone().unwrap();
+    if !snapshot.devices.iter().any(|device| device.id == id) {
+        let mut device = crate::rune_ui::watch_pane::scene_watch();
+        device.id = id.into();
+        device.name = name.into();
+        snapshot.devices.push(device);
+    }
+    snapshot.admissions.push(Admission {
+        claim_id,
+        device_id: id.into(),
+    });
+    rt.state.platform.watch = Some(snapshot);
+    refresh(rt);
+}
+
 #[test]
-fn another_watch_pairing_while_this_claim_waits_does_not_settle_it() {
+fn another_claims_pairing_while_this_claim_waits_does_not_settle_it() {
     let mut rt = runtime("mac-watch");
     let generation = send_claim(&mut rt);
     rt.state
@@ -212,34 +230,43 @@ fn another_watch_pairing_while_this_claim_waits_does_not_settle_it() {
         .push(claimed(generation, "relay-mine"));
     refresh(&mut rt);
     // A different watch finishes pairing in the same minutes.
-    let mut other = crate::rune_ui::watch_pane::scene_watch();
-    other.id = "device-0009".into();
-    other.name = "Test watch 3".into();
-    let mut snapshot = rt.state.platform.watch.clone().unwrap();
-    snapshot.devices.push(other);
-    snapshot.admissions.push(Admission {
-        serial: 1,
-        claimed_device_id: "relay-theirs".into(),
-        device_id: "device-0009".into(),
-    });
-    rt.state.platform.watch = Some(snapshot);
-    refresh(&mut rt);
+    admit(&mut rt, generation - 1, "device-0009", "Test watch 3");
     assert!(says(&rt, "Finish on your watch…"), "{:?}", shown(&rt));
     assert!(!says(&rt, "Paired with Test watch 3"));
     // The watch that claimed finishes, and the pane names it.
-    let mut mine = crate::rune_ui::watch_pane::scene_watch();
-    mine.id = "device-0010".into();
-    mine.name = "Test watch 4".into();
-    let mut snapshot = rt.state.platform.watch.clone().unwrap();
-    snapshot.devices.push(mine);
-    snapshot.admissions.push(Admission {
-        serial: 2,
-        claimed_device_id: "relay-mine".into(),
-        device_id: "device-0010".into(),
-    });
-    rt.state.platform.watch = Some(snapshot);
-    refresh(&mut rt);
+    admit(&mut rt, generation, "device-0010", "Test watch 4");
     assert!(says(&rt, "Paired with Test watch 4"), "{:?}", shown(&rt));
+}
+
+#[test]
+fn an_older_panes_claim_of_the_same_watch_does_not_settle_the_newer_pane() {
+    // The old pane sent claim A and closed; the new pane then sent claim B
+    // for the very same watch, so both claims name the same relay id.
+    let mut old_pane = WatchView {
+        code: TextEdit::new("111111"),
+        ..Default::default()
+    };
+    let (_, claim_a) = old_pane.typed().expect("the old pane sent its claim");
+    let mut rt = runtime("mac-watch");
+    let claim_b = send_claim(&mut rt);
+    assert_ne!(claim_a, claim_b);
+    rt.state
+        .platform
+        .watch_events
+        .push(claimed(claim_b, "relay-same-watch"));
+    refresh(&mut rt);
+    assert!(says(&rt, "Finish on your watch…"));
+    // A's approval and pairing finish after B was sent, for the same watch.
+    admit(&mut rt, claim_a, "device-0001", "Test watch");
+    assert!(
+        says(&rt, "Finish on your watch…"),
+        "B is not settled by A's pairing: {:?}",
+        shown(&rt)
+    );
+    assert!(!says(&rt, "Paired with Test watch"));
+    // B's own pairing still settles B.
+    admit(&mut rt, claim_b, "device-0001", "Test watch");
+    assert!(says(&rt, "Paired with Test watch"), "{:?}", shown(&rt));
 }
 
 #[test]
@@ -256,10 +283,7 @@ fn each_claim_error_shows_its_message() {
     let mut messages = Vec::new();
     for error in errors {
         let mut rt = runtime("mac-watch");
-        rt.state.watch.pair = Pair::Pairing {
-            generation: 7,
-            seen: 0,
-        };
+        rt.state.watch.pair = Pair::Pairing { generation: 7 };
         rt.state.platform.watch_events.push(WatchEvent::Claimed {
             generation: 7,
             result: Err(error.clone()),
@@ -297,12 +321,14 @@ fn remove_needs_two_presses() {
     assert!(asked(&rt).is_empty());
     tap(&mut rt, "watch-remove");
     tap(&mut rt, "watch-remove-now");
-    assert_eq!(
-        asked(&rt),
-        [PlatformRequest::WatchRevoke {
-            id: "device-0001".into(),
-            name: "Test watch".into()
-        }]
+    assert!(
+        matches!(
+            asked(&rt),
+            [PlatformRequest::WatchRevoke { id, name, .. }]
+                if id == "device-0001" && name == "Test watch"
+        ),
+        "{:?}",
+        asked(&rt)
     );
     assert!(
         rt.find("watch-remove-now").is_none(),
@@ -316,6 +342,7 @@ fn a_remove_that_could_not_write_says_why_under_the_watch_it_kept() {
     rt.state.platform.watch_events.push(WatchEvent::Revoked {
         id: "device-0001".into(),
         name: "Test watch".into(),
+        seq: 1,
         result: Err("could not write paired-devices.json: disk full".into()),
     });
     refresh(&mut rt);
@@ -338,6 +365,7 @@ fn a_remove_that_could_not_write_says_why_under_the_watch_it_kept() {
     rt.state.platform.watch_events.push(WatchEvent::Revoked {
         id: "device-0001".into(),
         name: "Test watch".into(),
+        seq: 2,
         result: Ok(true),
     });
     refresh(&mut rt);
@@ -351,6 +379,7 @@ fn revoked(id: &str, name: &str, result: Result<bool, String>) -> WatchEvent {
     WatchEvent::Revoked {
         id: id.into(),
         name: name.into(),
+        seq: 0,
         result,
     }
 }
@@ -414,6 +443,94 @@ fn each_failed_remove_says_its_own_reason_under_its_own_watch() {
             assert!(says(&rt, words), "{order:?}: {words:?} in {:?}", shown(&rt));
         }
     }
+}
+
+/// The numbers of the Removes sent so far, oldest first.
+fn removal_numbers(rt: &Runtime<Ui>) -> Vec<u64> {
+    asked(rt)
+        .iter()
+        .filter_map(|request| match request {
+            PlatformRequest::WatchRevoke { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Presses Remove, then confirms, on the first watch.
+fn remove_first_watch(rt: &mut Runtime<Ui>) {
+    tap(rt, "watch-remove");
+    tap(rt, "watch-remove-now");
+}
+
+fn revoke_answer(seq: u64, result: Result<bool, String>) -> WatchEvent {
+    WatchEvent::Revoked {
+        id: "device-0001".into(),
+        name: "Test watch".into(),
+        seq,
+        result,
+    }
+}
+
+#[test]
+fn the_newest_remove_of_a_watch_decides_what_the_row_says() {
+    // The same watch is removed twice before either answers. Whichever
+    // answer arrives last, the newer request's result is what shows.
+    for newest_fails in [true, false] {
+        for older_answers_last in [true, false] {
+            let mut rt = runtime("mac-watch");
+            remove_first_watch(&mut rt);
+            remove_first_watch(&mut rt);
+            let [older, newer] = removal_numbers(&rt)[..] else {
+                panic!("two Removes went out: {:?}", asked(&rt));
+            };
+            assert!(older < newer, "numbers rise: {older} {newer}");
+            let (older_result, newer_result) = if newest_fails {
+                (Ok(true), Err("disk full".to_owned()))
+            } else {
+                (Err("read-only volume".to_owned()), Ok(true))
+            };
+            let mut answers = vec![
+                revoke_answer(older, older_result),
+                revoke_answer(newer, newer_result),
+            ];
+            if older_answers_last {
+                answers.reverse();
+            }
+            for answer in answers {
+                rt.state.platform.watch_events.push(answer);
+                refresh(&mut rt);
+            }
+            let case = format!("newest fails: {newest_fails}, older last: {older_answers_last}");
+            if newest_fails {
+                assert!(
+                    says(&rt, "Couldn't remove Test watch: disk full"),
+                    "{case}: the newer failure stays: {:?}",
+                    shown(&rt)
+                );
+            } else {
+                assert!(
+                    rt.find("watch-remove-error").is_none(),
+                    "{case}: the older failure shows nothing: {:?}",
+                    shown(&rt)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_answer_to_the_only_remove_sent_still_shows() {
+    let mut rt = runtime("mac-watch");
+    remove_first_watch(&mut rt);
+    let [seq] = removal_numbers(&rt)[..] else {
+        panic!("one Remove went out");
+    };
+    rt.state
+        .platform
+        .watch_events
+        .push(revoke_answer(seq, Err("disk full".into())));
+    refresh(&mut rt);
+    assert!(says(&rt, "Couldn't remove Test watch: disk full"));
 }
 
 #[test]

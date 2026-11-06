@@ -820,7 +820,7 @@ impl PairedDevices {
 
 #[cfg(test)]
 mod tests {
-    use super::requests::{PairingRequest, PairingRequests, PairingResult};
+    use super::requests::{NO_CLAIM, PairingRequest, PairingRequests, PairingResult};
     use super::*;
     use crate::watch::e2ee::{self, open_pairing_result};
     use p256::SecretKey;
@@ -1136,7 +1136,7 @@ mod tests {
             None,
             "no approval yet"
         );
-        requests.approve("w1", start);
+        requests.approve("w1", NO_CLAIM, start);
         assert_eq!(requests.window_remaining(start), APPROVAL_WINDOW);
         assert_eq!(
             requests.admit(&req("w9", "w9", "Other", &key), &mut paired, start, NOW),
@@ -1158,7 +1158,7 @@ mod tests {
             None,
             "expired"
         );
-        requests.approve("w1", start);
+        requests.approve("w1", NO_CLAIM, start);
         let request_id = requests
             .admit(
                 &req("w1", "w1", "Apple Watch", &key),
@@ -1221,7 +1221,7 @@ mod tests {
         let mut paired = load(&dir, store.clone());
         let mut requests = PairingRequests::new();
         let start = Instant::now();
-        requests.approve("w1", start);
+        requests.approve("w1", NO_CLAIM, start);
         let request_id = requests
             .admit(
                 &req("w1", "w1", "Watch", &watch_public_key()),
@@ -1498,7 +1498,7 @@ mod tests {
         let mut paired = load(&dir, store.clone());
         let mut requests = PairingRequests::new();
         let start = Instant::now();
-        requests.approve("w1", start);
+        requests.approve("w1", NO_CLAIM, start);
         let bad = requests
             .admit(
                 &req("w1", "w1", "W", "bm90IGEga2V5"),
@@ -1511,7 +1511,7 @@ mod tests {
         assert_eq!(requests.result(&bad, start), PairingResult::Unknown);
         assert!(paired.devices().is_empty());
         store.locked.set(true);
-        requests.approve("w2", start);
+        requests.approve("w2", NO_CLAIM, start);
         assert_eq!(
             requests.failure(&bad, start),
             None,
@@ -1541,7 +1541,7 @@ mod tests {
         let mut paired = load(&dir, store.clone());
         let mut requests = PairingRequests::new();
         let start = Instant::now();
-        requests.approve("w-old", start);
+        requests.approve("w-old", NO_CLAIM, start);
         let first = requests
             .admit(
                 &req("w-old", "w-old", "W", &watch_public_key()),
@@ -1554,7 +1554,7 @@ mod tests {
             panic!()
         };
         let old_token = paired.token_for("w-old").unwrap().to_owned();
-        requests.approve("w-new", start);
+        requests.approve("w-new", NO_CLAIM, start);
         let owner = paired.device_for_token(&old_token).unwrap();
         let _ = requests
             .admit(
