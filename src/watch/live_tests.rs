@@ -170,7 +170,9 @@ impl Script for Osa {
             .output()
             .map_err(|error| error.to_string())?;
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_owned())
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_owned())
         } else {
             Err(String::from_utf8_lossy(&output.stderr).into_owned())
         }
@@ -191,13 +193,156 @@ enum Closed {
 }
 
 impl Made {
+    fn app(&self) -> &'static str {
+        match self {
+            Self::TextEdit { .. } => "TextEdit",
+            Self::Terminal { .. } => "Terminal",
+        }
+    }
+
+    fn window(&self) -> u64 {
+        match self {
+            Self::TextEdit { window, .. } | Self::Terminal { window, .. } => *window,
+        }
+    }
+
+    /// What the live window must say about itself to be this one: the document name or the tty.
+    fn identity(&self) -> &str {
+        match self {
+            Self::TextEdit { name, .. } => name,
+            Self::Terminal { tty, .. } => tty,
+        }
+    }
+
+    /// A new, empty TextEdit document, found again by its window id and name.
+    fn open_textedit(script: &dyn Script) -> Result<Self, String> {
+        let made = script.run(
+            r#"tell application "TextEdit"
+                activate
+                set d to make new document
+                set w to first window whose document is d
+                return ((id of w) as text) & "|" & (name of d)
+            end tell"#,
+        )?;
+        let (window, name) = made
+            .split_once('|')
+            .ok_or(format!("no document id in {made:?}"))?;
+        let window = window
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad window id in {made:?}"))?;
+        Ok(Self::TextEdit {
+            window,
+            name: name.to_owned(),
+        })
+    }
+
+    /// A new Terminal window, found again by its window id and tty.
+    fn open_terminal(script: &dyn Script) -> Result<Self, String> {
+        let made = script.run(
+            r#"tell application "Terminal"
+                activate
+                set t to do script ""
+                delay 1
+                set theTTY to tty of t
+                repeat with w in windows
+                    try
+                        if (tty of selected tab of w) is theTTY then return ((id of w) as text) & "|" & theTTY
+                    end try
+                end repeat
+            end tell"#,
+        )?;
+        let (window, tty) = made
+            .split_once('|')
+            .ok_or(format!("no window id in {made:?}"))?;
+        let window = window
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad window id in {made:?}"))?;
+        Ok(Self::Terminal {
+            window,
+            tty: tty.to_owned(),
+        })
+    }
+
+    /// Is the live window the one this test made? An app that is not running is not asked (that would
+    /// launch it again), and an empty or failed answer is "no", never "fine".
+    fn still_ours(&self, script: &dyn Script) -> bool {
+        let app = self.app();
+        let running = script.run(&format!(r#"application "{app}" is running"#));
+        if running.as_deref() != Ok("true") {
+            return false;
+        }
+        let window = self.window();
+        let live = match self {
+            Self::TextEdit { .. } => script.run(&format!(
+                r#"tell application "TextEdit"
+                    if not (exists window id {window}) then return ""
+                    return name of document of window id {window}
+                end tell"#
+            )),
+            Self::Terminal { .. } => script.run(&format!(
+                r#"tell application "Terminal"
+                    if not (exists window id {window}) then return ""
+                    return tty of selected tab of window id {window}
+                end tell"#
+            )),
+        };
+        matches!(live, Ok(live) if !live.is_empty() && live == self.identity())
+    }
+
+    /// Brings this window to the front, only if it is still ours.
+    fn raise(&self, script: &dyn Script) -> bool {
+        if !self.still_ours(script) {
+            return false;
+        }
+        let (app, window) = (self.app(), self.window());
+        script
+            .run(&format!(
+                r#"tell application "{app}"
+                    activate
+                    set index of window id {window} to 1
+                end tell"#
+            ))
+            .is_ok()
+    }
+
+    /// Is the window in front the one this test made?
+    fn front_is_ours(&self, script: &dyn Script) -> bool {
+        if !self.still_ours(script) {
+            return false;
+        }
+        let app = self.app();
+        matches!(
+            script.run(&format!(r#"tell application "{app}" to return (id of front window) as text"#)),
+            Ok(front) if front == self.window().to_string()
+        )
+    }
+
+    /// Closes this window and nothing else, by its id, and only if the live window is still the one made.
     fn close(&self, script: &dyn Script) -> Closed {
+        if !self.still_ours(script) {
+            return Closed::NotOurs;
+        }
+        let window = self.window();
         match self {
             Self::TextEdit { .. } => {
-                let _ = script.run(r#"tell application "TextEdit" to close front document saving no"#);
+                let _ = script.run(&format!(
+                    r#"tell application "TextEdit" to close window id {window} saving no"#
+                ));
             }
             Self::Terminal { .. } => {
-                let _ = script.run(r#"tell application "Terminal" to do script "exit" in front window"#);
+                // `exit` goes to this window's own tab, never to whatever window is in front.
+                let _ = script.run(&format!(
+                    r#"tell application "Terminal" to do script "exit" in selected tab of window id {window}"#
+                ));
+                std::thread::sleep(Duration::from_millis(500));
+                // The shell closing may have closed the window already; close it only if it is still ours.
+                if self.still_ours(script) {
+                    let _ = script.run(&format!(
+                        r#"tell application "Terminal" to close window id {window}"#
+                    ));
+                }
             }
         }
         Closed::Done
@@ -217,14 +362,15 @@ impl Drop for Guard {
 #[ignore = "drives TextEdit and Finder; run by hand (see the module doc)"]
 fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
     let mut rig = Rig::new();
-    osascript(
-        r#"tell application "TextEdit"
-            activate
-            make new document
-        end tell"#,
-    );
-    let _close = Guard(Made::TextEdit { window: 0, name: String::new() });
+    let made = Made::open_textedit(&Osa).expect("a new TextEdit document");
+    let _close = Guard(made.clone());
     settle();
+    // Everything below acts on the front field: it must be the document this test made.
+    assert!(made.raise(&Osa), "the document this test made is gone");
+    assert!(
+        made.front_is_ours(&Osa),
+        "another window is in front; not pasting into it"
+    );
 
     // Snapshot: the focused field is TextEdit's text area.
     let field = rig.focused();
@@ -281,7 +427,7 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
         DeliveryOutcome::Withheld(Withheld::TargetChanged)
     );
     assert_eq!(rig.press(Key::Enter, &field), KeyOutcome::TargetChanged);
-    osascript(r#"tell application "TextEdit" to activate"#);
+    assert!(made.raise(&Osa), "the document this test made is gone");
     settle();
     let value = text_of_focus();
     assert!(!value.contains("should not land"), "{value:?}");
@@ -291,14 +437,14 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
 #[ignore = "drives Terminal; run by hand (see the module doc)"]
 fn watch_live_terminal_paste_is_final_and_enter_runs_the_command() {
     let mut rig = Rig::new();
-    osascript(
-        r#"tell application "Terminal"
-            activate
-            do script ""
-        end tell"#,
+    let made = Made::open_terminal(&Osa).expect("a new Terminal window");
+    let _close = Guard(made.clone());
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(made.raise(&Osa), "the window this test made is gone");
+    assert!(
+        made.front_is_ours(&Osa),
+        "another window is in front; not typing into it"
     );
-    let _close = Guard(Made::Terminal { window: 0, tty: String::new() });
-    std::thread::sleep(Duration::from_millis(2000));
 
     let field = rig.focused();
     assert_eq!(
@@ -319,8 +465,10 @@ fn watch_live_terminal_paste_is_final_and_enter_runs_the_command() {
     // Enter runs it: the marker shows twice, as typed and as printed.
     assert_eq!(rig.press(Key::Enter, &field), KeyOutcome::Pressed);
     std::thread::sleep(Duration::from_millis(1200));
-    let history =
-        osascript(r#"tell application "Terminal" to get history of selected tab of front window"#);
+    let history = osascript(&format!(
+        r#"tell application "Terminal" to get history of selected tab of window id {}"#,
+        made.window()
+    ));
     assert!(
         history.matches("hex-watch-live-marker").count() >= 2,
         "the command ran: {history}"
@@ -501,7 +649,10 @@ mod owned_cleanup {
         assert_eq!(ours_textedit().close(&fake), Closed::NotOurs);
         assert_eq!(ours_terminal().close(&fake), Closed::NotOurs);
         let log = fake.0.borrow().log.join("\n");
-        assert!(!log.contains("tell application \"TextEdit\" to close"), "{log}");
+        assert!(
+            !log.contains("tell application \"TextEdit\" to close"),
+            "{log}"
+        );
         assert!(!log.contains("do script"), "{log}");
     }
 
