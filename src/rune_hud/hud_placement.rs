@@ -298,6 +298,23 @@ pub fn beside_plate(placed: &Placed, screen: &Screen, content: Content, gap: f64
     }
 }
 
+/// A pill `size` wide and tall resting `margin` above the bottom of the
+/// screen's visible area, centred: the top-left corner in Rune's global
+/// space (points from the primary screen's top-left, y down). `primary_top`
+/// is the primary screen's top edge in screen coordinates.
+pub fn bottom_center(
+    screen: &Screen,
+    size: (f64, f64),
+    margin: f64,
+    primary_top: f64,
+) -> (f32, f32) {
+    let top = screen.visible.y + margin + size.1;
+    (
+        (screen.visible.mid_x() - size.0 / 2.0) as f32,
+        (primary_top - top) as f32,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +427,19 @@ mod tests {
             beside(Placement::Notch, &notched, false),
             (false, notched.safe_top + 2.0 * ISLAND_PAD + plate + 4.0),
         );
+    }
+
+    #[test]
+    fn a_bottom_pill_is_centred_in_the_visible_area_of_its_own_screen() {
+        // The flat display sits left of the primary one, whose top is 982.
+        let (x, y) = bottom_center(&flat(), (520.0, 84.0), 28.0, 982.0);
+        assert_eq!(x, -2560.0 + 1280.0 - 260.0);
+        // 28 pt above the bottom, 84 pt tall: its top is 112 up, y down from 982.
+        assert_eq!(y, (982.0 - 112.0) as f32);
+        // On the notched primary screen the Dock's strip (visible.y = 70) counts.
+        let (x, y) = bottom_center(&notched(), (520.0, 84.0), 28.0, 982.0);
+        assert_eq!(x, 756.0 - 260.0);
+        assert_eq!(y, (982.0 - 182.0) as f32);
     }
 
     #[test]

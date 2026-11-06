@@ -321,3 +321,58 @@ fn invalid_chinese_output_falls_back_without_blocking_launch() {
     assert_eq!(settings.sound_effect_volume, 0.25);
     assert_eq!(fs::read(&file.path).unwrap(), original);
 }
+
+#[test]
+fn an_old_file_without_watch_loads_defaults_and_is_not_rewritten() {
+    // A settled file from before the `watch` key: every one-time migration
+    // is recorded, so only the new key is missing.
+    let mut old = serde_json::to_value(AppSettings::default()).unwrap();
+    old.as_object_mut().unwrap().remove("watch").unwrap();
+    old["sound_effect_volume"] = json!(0.25);
+    let original = serde_json::to_string_pretty(&old).unwrap();
+    let file = SettingsFile::new(original.as_bytes());
+    let settings = AppSettings::load_from(&file.path).unwrap();
+    assert_eq!(
+        settings.watch,
+        crate::app_settings::WatchSettings::default()
+    );
+    assert_eq!(settings.sound_effect_volume, 0.25);
+    assert_eq!(
+        fs::read_to_string(&file.path).unwrap(),
+        original,
+        "loading wrote the file"
+    );
+    // What a save writes: the empty list as `[]`, never null.
+    let written = serde_json::to_value(&settings).unwrap();
+    assert_eq!(written["watch"]["terminal_apps"], json!([]));
+    assert_eq!(written["watch"]["status_capsule"], json!(true));
+}
+
+#[test]
+fn an_invalid_watch_field_falls_back_alone() {
+    let original = br#"{"watch":{"status_capsule":false,"keep_on_clipboard":"yes","capsule_follows_pointer":true,"terminal_apps":["a.b"]},"sound_effect_volume":0.25}"#;
+    let file = SettingsFile::new(original);
+    let (settings, _) = AppSettings::read_from(&file.path).unwrap();
+    assert!(
+        !settings.watch.keep_on_clipboard,
+        "the bad field is its default"
+    );
+    assert!(
+        !settings.watch.status_capsule,
+        "its siblings keep their values"
+    );
+    assert!(settings.watch.capsule_follows_pointer);
+    assert_eq!(settings.watch.terminal_apps, ["a.b"]);
+    assert_eq!(settings.sound_effect_volume, 0.25);
+    assert_eq!(
+        fs::read(&file.path).unwrap(),
+        original,
+        "a repair never rewrites the file"
+    );
+    // A bad list is dropped alone too.
+    let file =
+        SettingsFile::new(br#"{"watch":{"keep_on_clipboard":true,"terminal_apps":["", "a.b"]}}"#);
+    let (settings, _) = AppSettings::read_from(&file.path).unwrap();
+    assert!(settings.watch.keep_on_clipboard);
+    assert!(settings.watch.terminal_apps.is_empty());
+}

@@ -82,6 +82,29 @@ impl ClipboardRestore {
     }
 }
 
+/// Who is pasting, which decides whether the text stays on the clipboard.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Keep {
+    /// A Mac dictation: Labs › Keep dictation on clipboard.
+    Dictation,
+    /// A watch recording: that Lab, or the watch's own setting.
+    Watch,
+}
+
+impl Keep {
+    /// Read as each paste commits, so a change applies at once.
+    pub(crate) fn on(self) -> bool {
+        self.decide(
+            crate::labs::keep_on_clipboard(),
+            crate::watch::settings::keep_on_clipboard(),
+        )
+    }
+
+    fn decide(self, labs: bool, watch: bool) -> bool {
+        labs || (self == Self::Watch && watch)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ClipboardSnapshot {
     items: Vec<Vec<ClipboardFlavor>>,
@@ -229,7 +252,7 @@ impl Paster {
         commit: impl FnOnce() -> bool,
     ) -> Result<()> {
         let restore = Restore::After(CLIPBOARD_RESTORE_DELAY);
-        self.paste_text(text, mode, commit, restore, None)
+        self.paste_text(text, mode, commit, restore, None, Keep::Dictation)
             .map(|_| ())
     }
 
@@ -250,6 +273,7 @@ impl Paster {
             commit,
             Restore::Deferred,
             Some(verify),
+            Keep::Watch,
         )
     }
 
@@ -260,6 +284,7 @@ impl Paster {
         commit: impl FnOnce() -> bool,
         restore: Restore,
         verify: Option<&dyn Fn() -> bool>,
+        keep: Keep,
     ) -> Result<Option<Sent>> {
         if matches!(mode, PasteMode::CopyOnly) {
             self.copy_only(text, commit)?;
@@ -293,7 +318,7 @@ impl Paster {
                     }
                     tracing::debug!("typing instead of pasting into Chromium 155 or 156");
                     keyboard::type_text(&text)?;
-                    if crate::labs::keep_on_clipboard() {
+                    if keep.on() {
                         self.clipboard_restore
                             .lock()
                             .unwrap_or_else(|error| error.into_inner())
@@ -306,7 +331,7 @@ impl Paster {
                 },
             )?
         } else {
-            self.paste_through_clipboard(&text, mode, commit, restore, verify)?
+            self.paste_through_clipboard(&text, mode, commit, restore, verify, keep)?
         };
         let Pasted::Sent(handle) = handle else {
             return Ok(None);
@@ -347,6 +372,7 @@ impl Paster {
         commit: impl FnOnce() -> bool,
         timing: Restore,
         verify: Option<&dyn Fn() -> bool>,
+        keep: Keep,
     ) -> Result<Pasted> {
         let generation = commit_prepared_paste(
             || {
@@ -384,7 +410,7 @@ impl Paster {
                     self.continuation = None;
                 }
                 // Read as the paste commits, so the toggle applies at once.
-                let keep = crate::labs::keep_on_clipboard();
+                let keep = keep.on();
                 if let Err(error) = write_clipboard_text(&self.clipboard, text, !keep) {
                     if let Err(restore_error) = restore_clipboard(&self.clipboard, &previous) {
                         tracing::error!(%restore_error, "could not recover the clipboard after a failed write");
@@ -899,6 +925,20 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn watch_keep_on_clipboard_applies_only_to_watch_recordings() {
+        // (labs, watch) -> (dictation keeps, watch recording keeps)
+        for (labs, watch, dictation, recording) in [
+            (false, false, false, false),
+            (false, true, false, true),
+            (true, false, true, true),
+            (true, true, true, true),
+        ] {
+            assert_eq!(Keep::Dictation.decide(labs, watch), dictation);
+            assert_eq!(Keep::Watch.decide(labs, watch), recording);
+        }
+    }
 
     static PASTEBOARD_TEST: Mutex<()> = Mutex::new(());
 

@@ -26,6 +26,7 @@ mod meetings;
 mod persistence;
 mod screenshots;
 mod shortcut_repair;
+mod watch;
 
 #[cfg(hex_capture)]
 pub use capture::*;
@@ -38,6 +39,7 @@ pub use meeting_folder::default_meeting_output_folder;
 pub use meetings::*;
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use screenshots::{ScreenshotSettings, screenshot_hotkey, screenshot_settings};
+pub use watch::WatchSettings;
 
 static RECORDING_DUCK_VOLUME: AtomicU32 = AtomicU32::new(0.2_f32.to_bits());
 // Until settings load, "While dictating" is its default, not Mute: the
@@ -305,6 +307,9 @@ pub struct AppSettings {
     pub labs: LabsSettings,
     /// Labs › Screenshots' shortcut and folder (macOS).
     pub screenshots: ScreenshotSettings,
+    /// The Apple Watch's capsule, clipboard, and terminal choices (Wristper
+    /// fork; every OS reads the file, only macOS acts on it).
+    pub watch: WatchSettings,
     /// Start listening when Hex opens (Windows and Linux, where the
     /// listener can be off).
     pub enable_on_launch: bool,
@@ -430,6 +435,7 @@ impl Default for AppSettings {
             experimental: ExperimentalSettings::default(),
             labs: LabsSettings::default(),
             screenshots: ScreenshotSettings::default(),
+            watch: WatchSettings::default(),
             enable_on_launch: true,
             paste_with_shift: false,
             gnome_keyboard_shortcuts: false,
@@ -769,6 +775,7 @@ impl AppSettings {
         );
         crate::labs::apply(&self.labs);
         screenshots::apply_screenshots(self);
+        crate::watch::settings::apply(&self.watch);
         #[cfg(hex_capture)]
         {
             *CAPTURE_SETTINGS

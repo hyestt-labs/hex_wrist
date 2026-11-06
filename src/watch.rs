@@ -11,6 +11,7 @@
 //! - `output`: gate, paste, read-back, and clipboard restore for a recording's text.
 //! - `desktop`: the focused field and the keys, behind `Screen` and one `watch-ax` thread.
 //! - `service`: the one `watch` thread that owns the state and answers requests.
+//! - `settings`: the saved watch choices as the service reads them live.
 //! - `listener_ready`: whether the listener can take a recording yet (Accessibility, model).
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
@@ -40,6 +41,7 @@ pub(crate) mod relay;
 #[cfg(target_os = "macos")]
 pub(crate) mod screen;
 pub(crate) mod service;
+pub(crate) mod settings;
 pub(crate) mod status;
 pub(crate) mod suspect;
 

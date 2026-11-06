@@ -159,3 +159,28 @@ fn both_languages_have_words_for_every_capsule() {
         assert_ne!(kind.text(true), kind.text(false));
     }
 }
+
+#[test]
+fn a_turned_off_capsule_publishes_only_hides() {
+    use std::sync::Mutex;
+    let seen: Arc<Mutex<Vec<Option<Capsule>>>> = Arc::default();
+    let sink = seen.clone();
+    watch(move |capsule| sink.lock().unwrap().push(capsule));
+    let capsule = Capsule {
+        kind: Kind::Recording,
+        tone: Tone::Recording,
+    };
+    crate::watch::settings::apply(&crate::app_settings::WatchSettings {
+        status_capsule: false,
+        ..Default::default()
+    });
+    publish(Some(capsule));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [None],
+        "off: the capsule is withheld"
+    );
+    crate::watch::settings::apply(&crate::app_settings::WatchSettings::default());
+    publish(Some(capsule));
+    assert_eq!(seen.lock().unwrap()[1], Some(capsule), "on: it shows");
+}
