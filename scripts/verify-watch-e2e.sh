@@ -640,7 +640,7 @@ te_window_ids() {
   done <<<"$raw"
 }
 # One scan of the TextEdit windows that have a document: "<id>|<path>" per line. A failed osascript, no END line, or any
-# line that is not "<digits>|<text>" is a failed scan (returns 1): nothing is guessed from a broken answer.
+# line that is not "<digits>|<text, possibly empty>" is a failed scan (returns 1): nothing is guessed from a broken answer.
 te_scan() {
   local raw last line
   raw=$(osascript -e 'tell application "TextEdit"' -e 'set found to {}' -e 'set orphanScan to id of every window' \
@@ -651,7 +651,7 @@ te_scan() {
   last=${raw##*$'\n'}; [ "$last" = END ] || return 1
   while IFS= read -r line; do
     [ "$line" = END ] && continue
-    [[ $line =~ ^[0-9]+\|. ]] || return 1
+    [[ $line =~ ^[0-9]+\| ]] || return 1   # an untitled document has an empty path: "<id>|"
     printf '%s\n' "$line"
   done <<<"$raw"
 }
@@ -2628,6 +2628,13 @@ selftest_main() {
   close_target textedit "$h"
   st_check "(c) a window from before the run is not closed" bash -c "! grep -q 'close window id 102' '$STUB_DIR/asc.log'"
   st_check "(c) …and the file is kept, with the reason" bash -c "[ -f '$tf' ] && grep -q \"^te-keep.$tf.window 102\" '$tmp/registry.tsv'"
+  st_sweep_te
+  # (d0) untitled documents show up in a real scan as "<id>|" (empty path): that is a normal line
+  st_reset; st_set live live; : > "$STUB_DIR/scan"; printf '7\n' > "$STUB_DIR/before-ids"
+  h=$(open_target textedit); tf=$(cat "$STUB_DIR/te-path"); td=$(dirname "$tf")
+  printf '178|\n2706|\n' >> "$STUB_DIR/scan"
+  close_target textedit "$h"
+  st_check "(d0) windows with an empty path (untitled documents) are normal lines: the file is Trashed" bash -c "[ ! -e '$tf' ] && [ ! -e '$td' ]"
   st_sweep_te
   # (d) a document with a comma, quotes, and a backslash in its path does not break the scan
   st_reset; st_set live live; : > "$STUB_DIR/scan"; printf '7\n' > "$STUB_DIR/before-ids"
