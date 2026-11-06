@@ -206,11 +206,14 @@ impl Made {
         }
     }
 
-    /// What the live window must say about itself to be this one: the document name or the tty.
-    fn identity(&self) -> &str {
+    /// What a Terminal window must say about itself to be this one: its tty, which never changes. A TextEdit
+    /// window has no such check: its id is the identity, and the document name recorded when it was made is
+    /// NOT compared, because TextEdit renames an edited untitled document after its first line (and autosaves
+    /// it) within a second of a paste.
+    fn tty(&self) -> Option<&str> {
         match self {
-            Self::TextEdit { name, .. } => name,
-            Self::Terminal { tty, .. } => tty,
+            Self::TextEdit { .. } => None,
+            Self::Terminal { tty, .. } => Some(tty),
         }
     }
 
@@ -283,21 +286,26 @@ impl Made {
             return false;
         }
         let window = self.window();
-        let live = match self {
-            Self::TextEdit { .. } => script.run(&format!(
-                r#"tell application "TextEdit"
-                    if not (exists window id {window}) then return ""
-                    return name of document of window id {window}
-                end tell"#
-            )),
-            Self::Terminal { .. } => script.run(&format!(
-                r#"tell application "Terminal"
-                    if not (exists window id {window}) then return ""
-                    return tty of selected tab of window id {window}
-                end tell"#
-            )),
-        };
-        matches!(live, Ok(live) if !live.is_empty() && live == self.identity())
+        match self {
+            // The window id still exists in TextEdit (and the app is running): the same window.
+            Self::TextEdit { .. } => {
+                script
+                    .run(&format!(
+                        r#"tell application "TextEdit" to return exists window id {window}"#
+                    ))
+                    .as_deref()
+                    == Ok("true")
+            }
+            Self::Terminal { .. } => {
+                let live = script.run(&format!(
+                    r#"tell application "Terminal"
+                        if not (exists window id {window}) then return ""
+                        return tty of selected tab of window id {window}
+                    end tell"#
+                ));
+                matches!(live, Ok(live) if !live.is_empty() && Some(live.as_str()) == self.tty())
+            }
+        }
     }
 
     /// Brings this window to the front, only if it is still ours.
@@ -316,16 +324,35 @@ impl Made {
             .is_ok()
     }
 
-    /// Is the window in front the one this test made?
+    /// Is the front window the one this test made? For TextEdit "front" means the first window that has a
+    /// document: about a second after a new document appears TextEdit shows a small panel (no document, not
+    /// closeable) at the top of its window list, so `id of front window` would name the panel.
     fn front_is_ours(&self, script: &dyn Script) -> bool {
         if !self.still_ours(script) {
             return false;
         }
         let app = self.app();
-        matches!(
-            script.run(&format!(r#"tell application "{app}" to return (id of front window) as text"#)),
-            Ok(front) if front == self.window().to_string()
-        )
+        let front = match self {
+            Self::TextEdit { .. } => script.run(
+                r#"tell application "TextEdit"
+                    set firstDocumentWindow to ""
+                    repeat with w in windows
+                        try
+                            set d to document of w
+                            if d is not missing value then
+                                set firstDocumentWindow to (id of w) as text
+                                exit repeat
+                            end if
+                        end try
+                    end repeat
+                    return firstDocumentWindow
+                end tell"#,
+            ),
+            Self::Terminal { .. } => script.run(&format!(
+                r#"tell application "{app}" to return (id of front window) as text"#
+            )),
+        };
+        matches!(front, Ok(front) if front == self.window().to_string())
     }
 
     /// Closes this window and nothing else, by its id, and only if the live window is still the one made.
@@ -336,6 +363,15 @@ impl Made {
         let window = self.window();
         match self {
             Self::TextEdit { .. } => {
+                // TextEdit may have autosaved the document to a file by now; closing with "saving no" leaves
+                // that file, and this test does not delete it. Say so.
+                if let Ok(path) = script.run(&format!(
+                    r#"tell application "TextEdit" to return path of document of window id {window}"#
+                )) && !path.is_empty()
+                    && path != "missing value"
+                {
+                    eprintln!("LEFT BEHIND: TextEdit autosaved this test's document to {path} (not deleted)");
+                }
                 let _ = script.run(&format!(
                     r#"tell application "TextEdit" to close window id {window} saving no"#
                 ));
@@ -533,6 +569,10 @@ mod owned_cleanup {
                 return Ok(String::new());
             }
             if script.contains("TextEdit") {
+                if let Some(id) = id_after(script, "return exists window id ") {
+                    let found = desk.documents.iter().any(|(window, _)| *window == id);
+                    return Ok(found.to_string());
+                }
                 if let Some(id) = id_after(script, "close window id ") {
                     desk.documents.retain(|(window, _)| *window != id);
                     return Ok(String::new());
@@ -675,13 +715,39 @@ mod owned_cleanup {
     }
 
     #[test]
-    fn a_reused_window_id_with_another_name_is_not_ours() {
+    fn a_document_textedit_renamed_is_still_ours_and_is_closed() {
+        // After a paste TextEdit names the document after its first line: same window id, new name.
         let fake = desk(|d| {
-            d.documents = vec![(101, "Budget.txt".into())];
-            d.front_document = Some(101);
+            d.documents = vec![
+                (101, "Quarterly Report to Design Team".into()),
+                (7, "Notes.txt".into()),
+            ];
+            d.front_document = Some(7);
         });
-        assert_eq!(ours_textedit().close(&fake), Closed::NotOurs);
-        assert_eq!(fake.0.borrow().documents.len(), 1);
+        assert_eq!(ours_textedit().close(&fake), Closed::Done);
+        let desk = fake.0.borrow();
+        assert!(
+            !desk.documents.iter().any(|(id, _)| *id == 101),
+            "the renamed scratch document stayed open"
+        );
+        assert!(
+            desk.documents.iter().any(|(id, _)| *id == 7),
+            "your document was closed"
+        );
+    }
+
+    #[test]
+    fn a_renamed_document_is_recognised_while_a_missing_id_is_not() {
+        let fake = desk(|d| d.documents = vec![(101, "First line of the dictation".into())]);
+        assert!(ours_textedit().still_ours(&fake));
+        let other = Made::TextEdit {
+            window: 102,
+            name: "Untitled 4".into(),
+        };
+        assert!(
+            !other.still_ours(&fake),
+            "an id TextEdit does not have is not ours"
+        );
     }
 
     #[test]
