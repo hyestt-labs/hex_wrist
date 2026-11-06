@@ -76,7 +76,8 @@ Settings › Apple Watch (macOS, below General)         // pane key nav-watch
 ├── Paired watches (name, Last seen <age>)
 │   ├── NeedsRepair -> "Pair it again to use it"; SecretsUnavailable -> "Waiting for the keychain"
 │   ├── Remove… -> Cancel | Remove (two presses)       // Message::Revoke
-│   │   └── the list could not be written -> "Couldn't remove <name>: <the error>"; the watch is denied either way
+│   │   └── the list could not be written -> nothing changes: the watch stays listed and served, its Keychain item stays,
+│   │       and "Couldn't remove <name>: <the error>" shows under its row; Remove tries again
 │   └── none -> "No watches paired yet"
 ├── Status and paste                                    // watch.* settings, each applied at once
 │   ├── Status capsule (on)            watch.status_capsule
@@ -92,6 +93,7 @@ First run (macOS, the service has reported once)
 │   └── a watch paired (not needing repair) -> Continue -> demo
 ├── a watch paired and no Microphone: Let Hex type for you (Accessibility only) -> no practice -> Hex is ready
 └── resumed at setup: no watch paired -> Apple Watch page; paired -> permissions
+    └── no snapshot yet -> permissions; a first snapshot within 1.5 s (no watch) -> Apple Watch page; a later one changes nothing
 ```
 
 ## Behavior
@@ -216,6 +218,13 @@ First run (macOS, the service has reported once)
   setting to Labs' switch; a Mac dictation never reads it); the terminal list
   is read at every gate (`field::is_terminal`). Every key has a
   `hex settings` key; each needs the `watch` capability.
+- **Remove (C2b).** `PairedDevices::revoke` writes the list without the
+  watch first. Only once it is written does Hex forget the watch in memory
+  and delete its Keychain item. A list it cannot write changes nothing: the
+  watch stays listed, served, and in the snapshot, with the error under its
+  row, and Remove can try again. A Keychain item that cannot be deleted after
+  the list is written is only logged: an item without a list entry never
+  authenticates.
 - **Window state (C2).** The `watch` thread publishes a `WatchSnapshot`
   (relay state, Mac name, `replaced`, devices) through `watch::view` when the
   relay state, `replaced`, a pairing, or a Remove changes; an unchanged one is
@@ -225,8 +234,11 @@ First run (macOS, the service has reported once)
   the relay); the answers come back as `WatchEvent`s in `PlatformState`.
   Linux and Windows hosts do nothing with the two requests.
 - **Pairing in the window (C2).** The pane tells a new pairing from an old
-  one by each watch's `paired_at` (the claimed id can differ from the enrolled
-  one when a watch pairs again with its old token). The Mac cannot see the
+  one by each watch's id and when it last paired (`DeviceSummary::last_paired_at`:
+  the file's `last_paired_at`, else `paired_at`). A watch paired again with its
+  old token keeps its entry and its first `paired_at` (the claimed id can
+  differ from the enrolled one), so only the last pairing time changes; the
+  snapshot then differs, is pushed, and the pane settles at once. The Mac cannot see the
   watch's own 426 `watch_outdated`, so a watch that never asks shows the
   timeout sentence.
 - **Health.** `/health` `paste_ready` is the Accessibility permission, with a
@@ -277,16 +289,23 @@ First run (macOS, the service has reported once)
   (`watch_keep_on_clipboard_applies_only_to_watch_recordings`),
   `watch::status::tests` (a turned-off capsule), `rune_hud::hud_placement`,
   `watch::service::tests::view` (a claim and the watch's request push the new
-  device; Remove reports a list it could not write; `replaced`),
+  device; a Remove that cannot write the list keeps the watch listed, served,
+  and in the Keychain, and a retry removes it; a watch paired again with its
+  old token pushes its new pairing time; `replaced`),
   `rune_ui::watch_pane` (the pairing state machine and last-seen ages; the
   scenes' texts; six digits send one `WatchPair`; every claim error has its
-  words; Remove takes two presses and shows the revoke error; every control
-  has a name; the first run's page, Pair later, the watch-only permissions
-  page and finish, the resumed setup), and `desktop::onboarding`
+  words; Remove takes two presses and shows the revoke error under the watch
+  it kept; a watch paired again settles at once; every control has a name;
+  the first run's page, Pair later, the watch-only permissions page and
+  finish, the resumed setup with a snapshot inside or after the 1.5 s wait),
+  `watch::pairing` (a Remove that cannot write changes nothing, also after a
+  restart; a retry removes it), `desktop::i18n::apple_watch` (every string
+  has one Taiwan-wording Traditional Chinese entry, and the zh-Hant table has
+  none of the mainland words), and `desktop::onboarding`
   (`permission_warnings` leaves the Microphone out with a paired watch). The
-  UI tests are plain `#[test]`s that run on macOS too; the goldens (the nine
-  `mac-watch*` scenes and the three `mac-onboarding-*watch*` ones) compare on
-  Linux only.
+  UI tests are plain `#[test]`s that run on macOS too; the goldens (the ten
+  `mac-watch*` scenes, `mac-watch-revoke-error` included, and the three
+  `mac-onboarding-*watch*` ones) compare on Linux only.
 - Not verified: no real Apple Watch, no connection to the production relay,
   no TLS or proxy path (tests use `ws://127.0.0.1`), no end-to-end paste on a
   real Mac with the model loaded. A fixture recorded from a development watch
@@ -349,8 +368,9 @@ First run (macOS, the service has reported once)
 - C2's own code that has not run on a real Mac: where the capsule lands with
   Follow the pointer on (and the default placement coming back when it is
   turned off), and the threads that run a claim and a Remove. The Apple Watch
-  strings in Traditional Chinese are converted from the Simplified ones and
-  are not reviewed by a native speaker; the other languages' strings have no
+  strings in Traditional Chinese are written in Taiwan wording
+  (`apple_watch::TRADITIONAL`), not converted, and are not reviewed by a
+  native speaker; the other languages' strings have no
   native review either.
 - Not observed on a real Mac: whether listing devices without opening a
   stream raises the Microphone prompt, `requestAccess`' timing, the first key

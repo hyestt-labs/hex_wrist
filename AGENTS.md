@@ -665,8 +665,10 @@ substitute for source inspection or a second roadmap.
   capsule, pushed from the `watch` thread, never polled).
   Unit C adds `view` (the relay state, Mac name, and paired watches, pushed
   to the window as `WatchSnapshot`s like the capsule, never polled), `Message::Revoke`
-  (Settings' Remove, which reports the error `PairedDevices::revoke` returns
-  when the list cannot be written), `settings` (the `watch.*` settings,
+  (Settings' Remove: `PairedDevices::revoke` writes the list first and
+  forgets the watch and its Keychain item only once it is written; a list it
+  cannot write changes nothing and the error shows under the watch's row),
+  `settings` (the `watch.*` settings,
   applied live: `status_capsule`, `capsule_follows_pointer`,
   `keep_on_clipboard`, and the extra `terminal_apps`; paste takes `keep` from
   its caller: Labs' switch for a Mac dictation, either for a watch
