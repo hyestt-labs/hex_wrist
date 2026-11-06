@@ -183,6 +183,11 @@ impl ClaimError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WatchSnapshot {
     pub(crate) relay: super::relay::RelayState,
+    /// What the watch shows for this Mac after pairing.
+    pub(crate) mac_name: String,
+    /// Another Mac took this relay room and this one has not served it
+    /// since: its pairing now reaches the other Mac.
+    pub(crate) replaced: bool,
     pub(crate) devices: Vec<super::pairing::DeviceSummary>,
 }
 
@@ -202,6 +207,12 @@ pub(crate) enum Message {
     },
     Snapshot {
         reply: mpsc::SyncSender<WatchSnapshot>,
+    },
+    /// Removes a paired watch. `Ok(false)`: it was not paired. `Err` names
+    /// why the list was not written; the watch is denied either way.
+    Revoke {
+        id: String,
+        reply: mpsc::SyncSender<Result<bool, String>>,
     },
     Stop,
     Relay(RelayEvent),
@@ -327,6 +338,20 @@ impl WatchService {
         answer.recv_timeout(Duration::from_secs(2)).ok()
     }
 
+    /// Removes the paired watch `id` (Settings' Remove).
+    pub(crate) fn revoke(&self, id: &str) -> Result<bool, String> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.inbox
+            .send(Message::Revoke {
+                id: id.to_owned(),
+                reply,
+            })
+            .map_err(|_| "the Apple Watch service is not running".to_owned())?;
+        answer
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| Err("the Apple Watch service did not answer".to_owned()))
+    }
+
     pub(crate) fn stop(&self) {
         let _ = self.inbox.send(Message::Stop);
     }
@@ -334,6 +359,7 @@ impl WatchService {
 
 /// The `watch` thread: one inbox, woken by the nearest deadline.
 fn run(mut core: Core, messages: mpsc::Receiver<Message>) {
+    core.publish_view();
     serve(&mut core, &messages, Now::current);
     core.shutdown();
 }

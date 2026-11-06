@@ -28,6 +28,7 @@ use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
 mod capsule;
 mod field;
 mod keys;
+mod view;
 
 const M4A: &[u8] = include_bytes!("../../../tests/fixtures/watch-audio/tone-440-16k.m4a");
 const ID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";

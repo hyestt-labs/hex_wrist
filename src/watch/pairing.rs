@@ -747,6 +747,12 @@ impl PairedDevices {
             .collect()
     }
 
+    /// Makes every save fail with `why`, as a full disk would.
+    #[cfg(test)]
+    pub(crate) fn refuse_saves(&mut self, why: &str) {
+        self.unwritable = Some(why.to_owned());
+    }
+
     pub(crate) fn devices(&self) -> &[PairedDevice] {
         &self.devices
     }

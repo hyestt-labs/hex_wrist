@@ -20,6 +20,7 @@
 //! - `recording`: a recording's state machine and the `/status` projection.
 //! - `refusal`: every error body the watch reads.
 //! - `suspect`: Wristper's silence-hallucination and script rules.
+//! - `view`: the relay, Mac name, and paired watches, pushed to the Settings window.
 
 #![allow(dead_code)]
 
@@ -44,6 +45,7 @@ pub(crate) mod service;
 pub(crate) mod settings;
 pub(crate) mod status;
 pub(crate) mod suspect;
+pub(crate) mod view;
 
 use std::io::{self, Write};
 use std::path::Path;

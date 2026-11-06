@@ -329,6 +329,7 @@ impl Core {
             file = PAIRED_FILE,
             "a watch was approved with the pairing code"
         );
+        self.publish_view();
         Ok((
             200,
             json!({
