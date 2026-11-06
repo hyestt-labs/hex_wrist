@@ -36,7 +36,10 @@ jobs:
         with:
           cache-on-failure: true
       - name: Install the Metal toolchain
-        run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+        # The hosted image could download it; this Mac's runner has Xcode
+        # without the component, and a clippy run compiles no shaders. Say so
+        # instead of failing; a build that does need it fails at its own step.
+        run: xcrun --sdk macosx metal --version || echo "Metal toolchain not installed on this runner"
       - run: scripts/test-app-identity.sh
       - run: cargo clippy --locked -p "$(cargo pkgid)" -p scrawl-capture --bin hex --lib --tests -- -D warnings
 
@@ -60,7 +63,10 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Install the Metal toolchain
-        run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+        # The hosted image could download it; this Mac's runner has Xcode
+        # without the component, and a clippy run compiles no shaders. Say so
+        # instead of failing; a build that does need it fails at its own step.
+        run: xcrun --sdk macosx metal --version || echo "Metal toolchain not installed on this runner"
       - run: cargo nextest run --locked --profile ci -p "$(cargo pkgid)" -p scrawl-capture --bin hex --lib
       - name: No compromised eMudhra CA roots
         run: cargo build --locked --bin hex && scripts/check-ca-roots.sh target/debug/hex

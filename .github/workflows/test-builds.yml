@@ -71,7 +71,7 @@ jobs:
   macos:
     name: macOS arm64
     needs: resolve
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-26
     timeout-minutes: 90
     env:
       HEX_TEST_BUILD: "1"

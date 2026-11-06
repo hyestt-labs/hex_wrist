@@ -147,7 +147,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       - name: Install the Metal toolchain
-        run: xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+        # The hosted image could download it; this Mac's runner has Xcode
+        # without the component, and a clippy run compiles no shaders. Say so
+        # instead of failing; a build that does need it fails at its own step.
+        run: xcrun --sdk macosx metal --version || echo "Metal toolchain not installed on this runner"
       - run: cargo clippy --locked --bin hex -- -D warnings
 
   windows:
