@@ -246,8 +246,13 @@ Every processed dictation (macOS, Linux, Windows; paste, --print, watch)
 ├── 1. convert the transcript                           -> Processed.heard, History raw   // cn.convert
 │   ├── table: Mandarin s2tw / tw2s, Cantonese (yue) s2hk / hk2s; no phrase step
 │   ├── language: the watch recording's own, else the model's; en, ja, ko, … -> unchanged
-│   ├── auto or empty: only text with Han characters and no kana or Hangul
-│   └── any kana in the text -> unchanged (Japanese kanji stay)
+│   ├── auto or empty (watch, ordinary dictation): fall back to the model's language
+│   │   └── model language en -> unchanged, even if the model wrote Chinese  // known result
+│   ├── model language auto: only text with Han characters and no kana or Hangul
+│   └── any kana in the text -> unchanged, even with an explicit zh or yue
+│       └── "今天天气很好，去コンビニ" stays whole: better unconverted than
+│           damaged Japanese kanji (product trade-off; mixed Chinese-Japanese
+│           sentences are never converted)
 ├── 2. replacements and Labs steps                      -> match the characters the person sees
 │   ├── macOS: Labs steps, then global + mode replacements (processor)
 │   └── Linux, Windows: global replacements, then Labs steps, then mode replacements (modes)
@@ -255,7 +260,8 @@ Every processed dictation (macOS, Linux, Windows; paste, --print, watch)
 └── 4. custom transformations -> never converted (the person's script wins)
 Not converted: Dictate without processing, the local API (`/transcriptions`,
 `/dictations`, `/streams`), meetings, Annotate's words, Labs › Live text.
-History › Transcribe again converts.
+History › Transcribe again converts, in the language picked there:
+`auto` there never reads the dictation model's language; only the text decides.
 ```
 
 Behavior change: History's raw text is the converted text (heard), not the
@@ -263,10 +269,14 @@ model's own, so a Simplified model result does not read as "changed" next to
 a Traditional final text. Replacements written in the other script (a person
 who fixed Whisper large-v3's Simplified output with Simplified phrases) no
 longer match when the setting converts to Traditional; write them in the
-chosen characters.
+chosen characters. Older History entries are not rewritten, and `--raw`
+dictations keep their unconverted text as raw. History search matches raw and
+final, so for a new processed entry the raw text is the converted one: a search
+in the other script may not find it.
 
 Checks: `dictation::chinese_output` (tables, `tw2s` keeps 軟體, Cantonese
-`里面` → `裏面`, Japanese untouched, system resolution),
+`里面` → `裏面`, Japanese untouched, explicit zh/yue with kana untouched,
+re-transcription `auto` ignoring the model's language, system resolution),
 `app_settings::chinese_output` (Wristper import once, never overwriting,
 live change), `app_settings::persistence` (omitted, invalid value falls back),
 `control::settings` (CLI none and three values), `dictation::processor` and

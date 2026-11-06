@@ -138,8 +138,9 @@ pub fn retranscribe(path: &Path, selection: TranscriptionSelection) -> Result<St
     // keeping it would make the shutdown wait forever after the result.
     drop(handle);
     service.shutdown();
-    // In the chosen Chinese characters, so the versions of one entry read alike.
-    result.map(|text| crate::dictation::chinese_output::apply(text.trim(), &language))
+    // In the chosen Chinese characters, so the versions of one entry read alike;
+    // the language picked here decides, never the dictation model's.
+    result.map(|text| crate::dictation::chinese_output::apply_in_language(text.trim(), &language))
 }
 
 fn describe(error: TranscriptionServiceError) -> String {

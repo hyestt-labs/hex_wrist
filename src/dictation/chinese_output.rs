@@ -211,24 +211,31 @@ pub(crate) fn convert(text: &str, output: ChineseOutput, language: &str) -> Stri
 
 /// A dictation's text in the live choice. `hint` is the language the
 /// recording itself names (a watch's), used when it is a real language;
-/// otherwise the language the model runs in decides.
+/// when it is empty or `auto`, the language the model runs in decides.
 pub(crate) fn apply(text: &str, hint: &str) -> String {
+    let hint = hint.trim();
+    if hint.is_empty() || hint.eq_ignore_ascii_case("auto") {
+        apply_in_language(
+            text,
+            &crate::app_settings::transcription_selection().1.language,
+        )
+    } else {
+        apply_in_language(text, hint)
+    }
+}
+
+/// `text` in the live choice, for a language the caller already knows
+/// (History's re-transcription: the one picked there). `auto` is an answer,
+/// not a missing hint: only the text decides, and the model dictation runs
+/// in is never read.
+pub(crate) fn apply_in_language(text: &str, language: &str) -> String {
     #[cfg(test)]
     CALLS.with(|calls| calls.set(calls.get() + 1));
     let output = live();
     if output == ChineseOutput::AsHeard {
         return text.to_owned();
     }
-    let hint = hint.trim();
-    if hint.is_empty() || hint.eq_ignore_ascii_case("auto") {
-        convert(
-            text,
-            output,
-            &crate::app_settings::transcription_selection().1.language,
-        )
-    } else {
-        convert(text, output, hint)
-    }
+    convert(text, output, language)
 }
 
 #[cfg(test)]
@@ -236,7 +243,7 @@ thread_local! {
     static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many times `apply` ran on this thread: tests pin that a dictation is
+/// How many times `apply` or `apply_in_language` ran on this thread: tests pin that a dictation is
 /// converted once, ahead of the replacements, on every OS.
 #[cfg(test)]
 pub(crate) fn calls() -> usize {
@@ -377,5 +384,44 @@ mod tests {
         assert_eq!(apply("頭髮", "zh"), "头发");
         set_live(AsHeard);
         assert_eq!(apply("头发", "zh"), "头发");
+    }
+
+    #[test]
+    fn a_chosen_auto_ignores_the_dictation_models_language() {
+        set_live(Traditional);
+        crate::app_settings::set_language_for_test("en");
+        // Re-transcription picked auto and heard Chinese: the text decides.
+        assert_eq!(apply_in_language("头发", "auto"), "頭髮");
+        // A watch's auto still falls back to the model's language.
+        assert_eq!(apply("头发", "auto"), "头发");
+        assert_eq!(apply("头发", ""), "头发");
+        crate::app_settings::set_language_for_test("zh");
+        // Global zh would convert this (zh skips the Hangul check); a chosen
+        // auto must not borrow it.
+        assert_eq!(apply_in_language("학교 学校", "auto"), "학교 学校");
+        assert_eq!(apply_in_language("hello world", "auto"), "hello world");
+        // Explicit languages behave as before.
+        assert_eq!(apply_in_language("头发", "zh"), "頭髮");
+        assert_eq!(apply_in_language("头发", "en"), "头发");
+        // A watch's auto under global zh converts (the model's language decides).
+        assert_eq!(apply("头发", "auto"), "頭髮");
+    }
+
+    #[test]
+    fn explicit_chinese_with_kana_leaves_the_whole_sentence_alone() {
+        // Product trade-off: better unconverted than damaged Japanese kanji.
+        for language in ["zh", "yue", "zh-TW", "auto"] {
+            for output in [Traditional, Simplified] {
+                assert_eq!(
+                    convert("今天天气很好，去コンビニ", output, language),
+                    "今天天气很好，去コンビニ",
+                    "{language} {output:?}"
+                );
+            }
+        }
+        assert_eq!(
+            convert("頭髮很好，去コンビニ", Simplified, "yue"),
+            "頭髮很好，去コンビニ"
+        );
     }
 }

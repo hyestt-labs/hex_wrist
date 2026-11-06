@@ -1027,7 +1027,8 @@ CoreAudio formats, AppleScript details, or event serialization.
 - Retained dictation history records only successful pasted output: raw and
   final text plus bounded metadata (raw is what was heard, already in the
   chosen Chinese characters; with the setting on as heard it is the model's own
-  text), never full browser URLs or window titles,
+  text; older entries are not rewritten, a `--raw` dictation keeps its unconverted
+  result, and search matches the new entries' converted raw text), never full browser URLs or window titles,
   and no audio unless Labs › Keep recordings is on. Entries name their speech
   model; with Keep recordings, Replace keeps up to five earlier versions
   inside the entry, counted by the same caps. History defaults to seven days, and every retention window remains
