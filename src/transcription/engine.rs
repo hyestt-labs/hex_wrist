@@ -468,8 +468,9 @@ pub struct PendingTranscript {
 }
 
 impl PendingTranscript {
-    /// A finish whose engine already answered `text`.
-    #[cfg(test)]
+    /// A finish whose engine already answered `text`. Only `parakeet`'s tests
+    /// (macOS) use it.
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn ready(text: &str) -> Self {
         let (reply, receiver) = mpsc::channel();
         reply
