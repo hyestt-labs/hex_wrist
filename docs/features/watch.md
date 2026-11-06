@@ -168,7 +168,13 @@ Apple Watch                               // watch.pair, watch.dictate
   `#[ignore]`): `cargo nextest run --locked --bin hex --run-ignored only -E
   'test(watch_live)'` from a terminal that has Accessibility and Automation
   access. They cover snapshot, paste, read-back, Enter, Undo, target change
-  in TextEdit, and a terminal paste with Enter in Terminal.
+  in TextEdit, and a terminal paste with Enter in Terminal. Each test makes its
+  own document or window, records its window id and the document name or tty,
+  and closes only that window by id after checking it is still the one it made
+  (an empty or failed answer counts as not ours); none of them closes or types
+  into the front document or window. The `owned_cleanup` unit tests in
+  `src/watch/live_tests.rs` check that with a fake desktop and run in the
+  normal suite (no screen needed).
 - `control::` covers `watch-pair` on the wire and `unsupported` on Linux and
   Windows hosts; `platform::parity_tests` records the `watch` difference.
 - `scripts/verify-watch-e2e.sh` (`.claude/skills/verify/`) runs the real path on
@@ -178,8 +184,8 @@ Apple Watch                               // watch.pair, watch.dictate
   Simulator), the text read back from TextEdit, Terminal, and a Chrome
   textarea, Enter, Undo, a double Enter, `keep_on_clipboard` with an app
   switch, and optional claude and codex in Terminal (`--with-agents`). The
-  `watch_live` tests above are stage 4, opt in with `--with-live` (they close
-  the front document and window). It acts only on windows, processes, paths,
+  `watch_live` tests above are stage 4, opt in with `--with-live` (each makes its
+  own document or window and closes only that one, by its id). It acts only on windows, processes, paths,
   and the simulator it registered itself, checks the front app before any audio
   or key goes out, and lists every missing step with exit status 3. The first
   real run is `--stage 1 --targets textedit --langs en`; `--selftest` checks

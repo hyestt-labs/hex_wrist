@@ -31,7 +31,7 @@ Preconditions: the baseline in [README.md](./README.md).
 - **Clipboard.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only clipboard`. The three `clipboard-*` rows are PASS (`clipboard-keep-gate-switch` covers the first gate only; see the gap in SKILL.md). `detail.fails` names the clipboard text that was found when one fails.
 - **Chromium.** Run `scripts/verify-watch-e2e.sh --skip-build --stage 3 --only chrome`. The `chrome-textarea` rows read the text back from a throwaway page in a separate Chrome process with an empty profile.
 - **Agents (opt in).** Add `--with-agents`. The `agent-claude` and `agent-codex` rows need those tools logged in and the folder trusted.
-- **Live tests (B2).** Opt in: `scripts/verify-watch-e2e.sh --skip-build --stage 4`. They close the front TextEdit document and Terminal window, so the stage refuses (row INCOMPLETE) unless neither app has one open, and it is not part of `--all`. One row per `watch_live_*` test.
+- **Live tests (B2).** Opt in: `scripts/verify-watch-e2e.sh --skip-build --stage 4`. Each test makes its own TextEdit document or Terminal window, records its window id (and the document name or tty), and closes only that window by id after checking it is still the one it made. Not part of `--all` because they send real keys and have not yet been seen to pass on a real Mac. One row per `watch_live_*` test.
 
 ## Gotchas
 
