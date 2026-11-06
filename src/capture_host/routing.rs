@@ -2050,9 +2050,15 @@ mod tests {
 
         fn temp(name: &str) -> PathBuf {
             let dir = std::env::temp_dir().join(format!(
-                "hex-route-{name}-{}-{}",
+                "hex-route-{name}-{}-{}-{}",
                 std::process::id(),
-                NEXT_ROUTES.fetch_add(1, Ordering::Relaxed)
+                NEXT_ROUTES.fetch_add(1, Ordering::Relaxed),
+                // nextest runs each test in its own process, so the counter
+                // always starts at 0 and a reused pid meets a directory an
+                // earlier run left behind.
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_nanos())
             ));
             std::fs::create_dir_all(&dir).unwrap();
             dir
