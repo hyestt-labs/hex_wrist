@@ -51,7 +51,9 @@ models another app already downloaded.
 [Annotate](capture.md) (macOS, Linux,
 and Windows) records the screen while you draw and talk and sends it to an agent.
 [Apple Watch](watch.md) (macOS, Wristper fork) pairs the Wristper watch app
-through the relay and pastes what you dictated on the watch.
+through the relay and pastes what you dictated on the watch; the Apple Watch
+pane in Settings pairs, removes, and sets the capsule, and a paired watch needs
+no Mac microphone.
 [Screenshots](labs.md) (Labs, macOS) takes CleanShot-style ⌘⇧4 area and
 window screenshots.
 The other capabilities stay here until they need their own verification recipe.

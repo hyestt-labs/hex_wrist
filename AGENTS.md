@@ -663,6 +663,15 @@ substitute for source inspection or a second roadmap.
   the gate, ⌘V through `paste::Paster::paste_deferred`, the read-back, and
   the restore it times), and `status` with `rune_ui::watch_status` (the click-through status
   capsule, pushed from the `watch` thread, never polled).
+  Unit C adds `view` (the relay state, Mac name, and paired watches, pushed
+  to the window as `WatchSnapshot`s like the capsule, never polled), `Message::Revoke`
+  (Settings' Remove, which reports the error `PairedDevices::revoke` returns
+  when the list cannot be written), `settings` (the `watch.*` settings,
+  applied live: `status_capsule`, `capsule_follows_pointer`,
+  `keep_on_clipboard`, and the extra `terminal_apps`; paste takes `keep` from
+  its caller: Labs' switch for a Mac dictation, either for a watch
+  recording), and `rune_ui::watch_pane` (the Apple Watch pane, its pairing
+  state machine, and the first run's Apple Watch page).
 
 Keep modules deep. Callers should not coordinate
 CoreAudio formats, AppleScript details, or event serialization.
@@ -896,7 +905,12 @@ CoreAudio formats, AppleScript details, or event serialization.
   (resumed at its saved step), or an upgrader from 2.3.1 or earlier whose
   setup isn't ready (#475). Run setup again (Labs) and `hex onboarding reset`
   replay it from the start on every build. Start using Hex records completion
-  only once setup is ready. A quiet Skip shows only on the optional pages,
+  only once setup is ready. Setup is ready when Accessibility and the model are,
+  and the Microphone is granted or a watch is paired (not needing repair). With
+  a paired watch and no Microphone, the permissions page asks only for
+  Accessibility and the practice is passed over. On macOS the Apple Watch page
+  follows the model step: Pair later or Continue moves on, it has no Skip, and
+  it never records completion. A quiet Skip shows only on the optional pages,
   the demo and the practice: it passes over that part to the next step setup
   still needs (permissions, then the model), else Hex is ready, and never
   records completion. Permissions, the model step and download, and the paste

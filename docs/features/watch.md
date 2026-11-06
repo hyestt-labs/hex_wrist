@@ -11,8 +11,10 @@ with Swift line references). macOS only in this unit; Linux and Windows carry
 Status: units B1 (relay, pairing, delivery, `/status`) and B2 (field
 snapshot, paste gate, read-back, Enter, Undo, suspect text, status
 capsule). Chinese characters are the one setting every dictation follows
-(unit G; [dictation.md](dictation.md#chinese-characters)). Unit C adds the Settings pane; unit D licensing and
-the free quota.
+(unit G; [dictation.md](dictation.md#chinese-characters)). Unit C1 lets a Mac
+without the Microphone transcribe; unit C2 adds the Settings pane, the
+`watch.*` settings, and the first run's Apple Watch page. Unit D adds
+licensing and the free quota.
 
 ## How To Get To It
 
@@ -20,7 +22,8 @@ the free quota.
 Apple Watch                               // watch.pair, watch.dictate
 ├── Pair
 │   ├── Watch: Pair a Mac -> shows a 6-digit code        // the watch asks the relay
-│   ├── Mac: hex watch pair <code>                       // B1's only entry; C adds the pane
+│   ├── Mac: Settings › Apple Watch › Pairing code      // six digits send the claim by themselves (C2)
+│   ├── Mac: hex watch pair <code>                       // B1's entry; the pane uses the same claim
 │   │   ├── done  -> "Claimed the code for Apple Watch (…)"; the watch finishes by itself
 │   │   ├── invalid_code | code_not_found | too_many_attempts | relay_offline | timeout
 │   │   └── unavailable -> the service did not start (see the log)
@@ -56,6 +59,41 @@ Apple Watch                               // watch.pair, watch.dictate
     └── same id after delivery     -> {duplicate, state, verified, verification}
 ```
 
+## Settings And First Run (C2)
+
+```ts
+Settings › Apple Watch (macOS, below General)         // pane key nav-watch
+├── This Mac
+│   ├── Connection: Connected | Connecting… | Offline: check the network
+│   │   └── another Mac took the room -> "Another Mac took over this pairing" until this Mac serves again
+│   └── Name on your watch                             // what the watch shows for this Mac
+├── Pair a watch
+│   ├── Pairing code (six digits; only digits stay)    // the sixth digit sends the claim once
+│   │   ├── Pairing… -> Finish on your watch… (≤ 120 s) -> Paired with <name>
+│   │   ├── invalid_code | relay_offline | timeout | code_not_found | too_many_attempts | relay refusal -> its own sentence
+│   │   └── the relay took the code but no new watch appeared in 120 s -> "The watch didn't finish pairing. Update Wristper on the watch and try again"
+│   └── Get the watch app -> https://wristper.dev/watch   // a link, no QR code: no QR crate is in Cargo.lock
+├── Paired watches (name, Last seen <age>)
+│   ├── NeedsRepair -> "Pair it again to use it"; SecretsUnavailable -> "Waiting for the keychain"
+│   ├── Remove… -> Cancel | Remove (two presses)       // Message::Revoke
+│   │   └── the list could not be written -> "Couldn't remove <name>: <the error>"; the watch is denied either way
+│   └── none -> "No watches paired yet"
+├── Status and paste                                    // watch.* settings, each applied at once
+│   ├── Status capsule (on)            watch.status_capsule
+│   ├── Follow the pointer (off)       watch.capsule_follows_pointer
+│   └── Keep dictation on clipboard    watch.keep_on_clipboard  // Labs' switch still keeps every dictation
+└── service not started -> "The Apple Watch service isn't running"
+
+hex settings set watch.terminal_apps '["com.example.term"]'   // CLI only: extra terminal bundle ids (≤ 32, ≤ 255 characters each)
+
+First run (macOS, the service has reported once)
+├── model step / download -> Set up your Apple Watch -> demo -> permissions -> Almost ready -> practice -> Hex is ready
+│   ├── Pair later (no Skip; it records nothing)       -> demo
+│   └── a watch paired (not needing repair) -> Continue -> demo
+├── a watch paired and no Microphone: Let Hex type for you (Accessibility only) -> no practice -> Hex is ready
+└── resumed at setup: no watch paired -> Apple Watch page; paired -> permissions
+```
+
 ## Behavior
 
 - **No Microphone needed (C1).** The listener starts once Accessibility and
@@ -73,8 +111,8 @@ Apple Watch                               // watch.pair, watch.dictate
   after the first capture, which opens cold like a released microphone. A
   Mac-only user whose microphone was revoked after setup now meets this at the
   shortcut instead of a window at launch. Every real stream open logs
-  `microphone stream opened`. Onboarding still asks for the Microphone until
-  unit C2 wires `SetupStatus::ready_with_watch` to the Apple Watch page.
+  `microphone stream opened`. Onboarding no longer needs it once a watch is
+  paired: see "Settings And First Run".
 - **Service.** `watch::service::WatchService` starts with the macOS app
   (`macos_rune::run`), on by default, no toggle. It reads or creates
   `relay-room`, `relay-secret`, and `device-id` in the data folder
@@ -166,6 +204,31 @@ Apple Watch                               // watch.pair, watch.dictate
   grace as its own deadlines. `rune_ui::watch_status` draws a click-through
   pill at the bottom of the primary screen. It shows only after the field was
   read.
+- **Settings (C2).** `app_settings::WatchSettings` (`watch` in
+  `settings.json`; every OS reads it, only macOS acts on it). An older file
+  without `watch` loads the defaults and is not rewritten; one bad field falls
+  back alone (a bad `terminal_apps` list is dropped whole). `watch::settings`
+  holds the applied values: the capsule setting is read each time the service
+  publishes (`watch::status::publish` withholds a capsule and only hides);
+  the screen follows the pointer when the capsule shows
+  (`rune_hud::hud_placement::bottom_center`, from the pointer's `NSScreen`);
+  `paste::Keep` is read as each paste commits (`Keep::Watch` adds the watch
+  setting to Labs' switch; a Mac dictation never reads it); the terminal list
+  is read at every gate (`field::is_terminal`). Every key has a
+  `hex settings` key; each needs the `watch` capability.
+- **Window state (C2).** The `watch` thread publishes a `WatchSnapshot`
+  (relay state, Mac name, `replaced`, devices) through `watch::view` when the
+  relay state, `replaced`, a pairing, or a Remove changes; an unchanged one is
+  not sent again, and a window opened later gets the newest at once. The
+  macOS host (`rune_ui::watch_pane::host`) hands snapshots to the window and
+  runs a claim or a Remove on a thread of its own (a claim waits up to 11 s on
+  the relay); the answers come back as `WatchEvent`s in `PlatformState`.
+  Linux and Windows hosts do nothing with the two requests.
+- **Pairing in the window (C2).** The pane tells a new pairing from an old
+  one by each watch's `paired_at` (the claimed id can differ from the enrolled
+  one when a watch pairs again with its old token). The Mac cannot see the
+  watch's own 426 `watch_outdated`, so a watch that never asks shows the
+  timeout sentence.
 - **Health.** `/health` `paste_ready` is the Accessibility permission, with a
   `paste_detail` that names where to grant it.
 
@@ -206,6 +269,24 @@ Apple Watch                               // watch.pair, watch.dictate
   `dictation::audio` adds the interrupted-stream path and the one stated
   exception, Annotate's capture sink. `desktop::onboarding` and `macos_rune`
   pin the Mac-only behavior (`a_mac_only_*`) and the watch-only launch.
+- C2: `app_settings::persistence` (an old file loads the defaults without a
+  write; one bad field falls back alone), `control::settings` (each key sets
+  its own field; bad `terminal_apps` lists are refused with a reason;
+  `every_persisted_setting_has_a_cli_key`), `watch::field`
+  (`a_custom_terminal_bundle_id_pastes_as_final`), `paste::tests`
+  (`watch_keep_on_clipboard_applies_only_to_watch_recordings`),
+  `watch::status::tests` (a turned-off capsule), `rune_hud::hud_placement`,
+  `watch::service::tests::view` (a claim and the watch's request push the new
+  device; Remove reports a list it could not write; `replaced`),
+  `rune_ui::watch_pane` (the pairing state machine and last-seen ages; the
+  scenes' texts; six digits send one `WatchPair`; every claim error has its
+  words; Remove takes two presses and shows the revoke error; every control
+  has a name; the first run's page, Pair later, the watch-only permissions
+  page and finish, the resumed setup), and `desktop::onboarding`
+  (`permission_warnings` leaves the Microphone out with a paired watch). The
+  UI tests are plain `#[test]`s that run on macOS too; the goldens (the nine
+  `mac-watch*` scenes and the three `mac-onboarding-*watch*` ones) compare on
+  Linux only.
 - Not verified: no real Apple Watch, no connection to the production relay,
   no TLS or proxy path (tests use `ws://127.0.0.1`), no end-to-end paste on a
   real Mac with the model loaded. A fixture recorded from a development watch
@@ -254,8 +335,19 @@ Apple Watch                               // watch.pair, watch.dictate
   restart a recording reads `unknown-id` for both (the dedupe table keeps its
   state, not its field). A `focus: current` resend has no snapshot, so Enter
   for it reads `target-changed`, as in Wristper.
-- The capsule is on the primary screen, not on the one under the pointer, and
-  speaks only Traditional Chinese and English.
+- The capsule is on the primary screen unless `watch.capsule_follows_pointer`
+  is on (never exercised on a real multi-display Mac), and speaks only
+  Traditional Chinese and English.
+- Not in C2, each an open question: `hex watch list` and `revoke`; a pane
+  editor for `terminal_apps`; a "Pair Apple Watch…" menu-bar item; a login
+  item registered when onboarding finishes; the practice with a watch; a QR
+  code; showing the watch's 426 `watch_outdated` on the Mac; licensing and the
+  quota (units D, E); the capsule in other languages; Windows and Linux.
+- Not observed on a real Mac: whether listing devices without opening a
+  stream raises the Microphone prompt, `requestAccess`' timing, the first key
+  after a grant, and the path that opens Settings after a refusal (C1's list),
+  nor the resumed-setup decision, which waits up to 1.5 s for the service's
+  first snapshot.
 - Field matching is a best effort over what Accessibility exposes, not proof
   of identity. Paste: same process and role, the identifier when both sides
   have one (and then the window rectangle must agree too, or the field's frame
