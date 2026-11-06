@@ -174,10 +174,15 @@ epoch_of() { date -j -f '%a %b %e %T %Y' "$1" +%s 2>/dev/null; }
 # The one Trash command (a variable only so the self-test can make it fail).
 TRASH=/usr/bin/trash
 
-reg_add() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$tmp/registry.tsv"; }
+# The registry is what every later action is allowed by, so it must be writable and readable: a write that fails is an error
+# the caller must act on (reg_add returns 1), a registry that cannot be read is not an empty one (reg_list returns 1), and
+# nothing dangerous runs while it cannot be written (reg_writable is checked by `owned`, by do_trash, and before every
+# creation that is registered afterwards).
+reg_add() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$tmp/registry.tsv" 2>/dev/null || { log "REGISTRY WRITE FAILED for $1 $2: nothing that depends on it will be done"; return 1; }; }
+reg_writable() { [ -f "$tmp/registry.tsv" ] && { : >> "$tmp/registry.tsv"; } 2>/dev/null; }
 reg_has() { [ -f "$tmp/registry.tsv" ] && K="$1" V="$2" awk -F'\t' '$1==ENVIRON["K"] && $2==ENVIRON["V"] {f=1} END{exit !f}' "$tmp/registry.tsv"; }
 reg_get() { [ -f "$tmp/registry.tsv" ] && K="$1" V="$2" awk -F'\t' '$1==ENVIRON["K"] && $2==ENVIRON["V"] {x=$3} END{print x}' "$tmp/registry.tsv"; }
-reg_list() { [ -f "$tmp/registry.tsv" ] && K="$1" awk -F'\t' '$1==ENVIRON["K"] {print $2 "\t" $3}' "$tmp/registry.tsv"; return 0; }
+reg_list() { [ -r "$tmp/registry.tsv" ] || return 1; K="$1" awk -F'\t' '$1==ENVIRON["K"] {print $2 "\t" $3}' "$tmp/registry.tsv"; }
 reg_del() {
   [ -f "$tmp/registry.tsv" ] || return 0
   K="$1" V="$2" awk -F'\t' '!($1==ENVIRON["K"] && $2==ENVIRON["V"])' "$tmp/registry.tsv" > "$tmp/registry.new" && mv -f "$tmp/registry.new" "$tmp/registry.tsv"
@@ -200,6 +205,7 @@ row_refused() { [ -s "$tmp/row-refused" ]; }
 owned() {
   local kind=$1 key=$2
   shift 2
+  reg_writable || { refuse "$kind" "$key" "the registry cannot be written, so no action is allowed: $*"; return 99; }
   if ! reg_has "$kind" "$key"; then refuse "$kind" "$key" "$*"; return 99; fi
   "$@"
 }
@@ -286,13 +292,21 @@ reap_all() { # every registered process group
 #         Trashed only once it is empty. A listing that fails keeps everything.
 #   The temp root itself (kind path, extra `root`) is Trashed last, and only when it is empty.
 # Every Trash of this script goes through do_trash, which refuses a path that is, or holds, a te-keep file.
-do_trash() { # path
-  local p=$1 k
-  while IFS=$'\t' read -r k _; do
-    [ -n "$k" ] || continue
-    if [ "$k" = "$p" ]; then log "kept: $p (te-keep: $(reg_get te-keep "$k"))"; return 97; fi
-    case "$k" in "$p"/*) log "kept: $p (it holds $k, marked te-keep: $(reg_get te-keep "$k"))"; return 97 ;; esac
-  done < <(reg_list te-keep)
+do_trash() { # [--final] path
+  local p k keeps final=0
+  if [ "$1" = --final ]; then final=1; shift; fi
+  p=$1
+  # --final is only for the last two steps of cleanup_root (the script's own bookkeeping files, then the EMPTY root): the
+  # registry is among the things being removed, so there is nothing left to check it against.
+  if [ $final = 0 ]; then
+    reg_writable || { log "kept: $p (the registry cannot be written, so a te-keep mark may have been lost)"; return 95; }
+    keeps=$(reg_list te-keep) || { log "kept: $p (the registry could not be read, so te-keep marks are unknown)"; return 96; }
+    while IFS=$'\t' read -r k _; do
+      [ -n "$k" ] || continue
+      if [ "$k" = "$p" ]; then log "kept: $p (te-keep: $(reg_get te-keep "$k"))"; return 97; fi
+      case "$k" in "$p"/*) log "kept: $p (it holds $k, marked te-keep: $(reg_get te-keep "$k"))"; return 97 ;; esac
+    done <<<"$keeps"
+  fi
   "$TRASH" "$p" >/dev/null 2>&1
 }
 # dir_state DIR: empty | nonempty | unknown (the listing failed: never treated as empty)
@@ -330,20 +344,27 @@ act_trash_path() {
 trash_own() { owned path "$1" act_trash_path "$1"; }   # the item itself must be registered
 # act_trash_tree PATH: list a registered tree, register each item, Trash them one by one (children first), then the empty folder.
 act_trash_tree() {
-  local p=$1 owner list item failed=0 rc
+  local p=$1 owner list item failed=0 rc pids
   [ -e "$p" ] || [ -L "$p" ] || return 0
   [ -d "$p" ] && [ ! -L "$p" ] || { refuse tree "$p" "not a real folder (a link or a file)"; return 99; }
   [ "$(real_path "$(dirname -- "$p")")" = "$tmp_real" ] || { refuse tree "$p" "not directly inside the temp root"; return 99; }
   owner=$(reg_get tree "$p")
   case "$owner" in
-    '*') [ -z "$(reg_list pid)" ] || { refuse tree "$p" "a registered process may still be filling it"; return 98; } ;;
+    '*') pids=$(reg_list pid) || { refuse tree "$p" "the registry could not be read, so running processes are unknown; kept"; return 98; }
+         [ -z "$pids" ] || { refuse tree "$p" "a registered process may still be filling it"; return 98; } ;;
     ''|-) refuse tree "$p" "no owner process is registered for it, so nothing proves it is no longer being filled; kept"; return 99 ;;
     *) ! reg_has pid "$owner" || { refuse tree "$p" "its owner process $owner is still registered (not stopped)"; return 98; } ;;
   esac
   list=$(find -P "$p" -mindepth 1 2>/dev/null) || { refuse tree "$p" "its contents could not be listed; kept"; return 98; }
+  # Pass 1: every item is registered first. If any one cannot be, nothing at all is Trashed.
+  reg_writable || { refuse tree "$p" "the registry cannot be written; kept"; return 98; }
   while IFS= read -r item; do
     [ -n "$item" ] || continue
-    reg_has path "$item" || reg_add path "$item" "item of tree $p"
+    reg_has path "$item" || reg_add path "$item" "item of tree $p" || { refuse tree "$p" "item $item could not be registered; nothing in the tree was Trashed"; return 98; }
+  done < <(printf '%s\n' "$list" | LC_ALL=C sort -r)
+  # Pass 2: Trash them one by one, children before parents.
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
     if [ -d "$item" ] && [ ! -L "$item" ] && [ "$(dir_state "$item")" != empty ]; then
       refuse path "$item" "a folder inside a tree is not empty or could not be listed; kept"; failed=1; continue
     fi
@@ -658,12 +679,13 @@ te_keep() { # file why
 safe_temp_path() { [[ $1 =~ ^/[A-Za-z0-9._/-]+$ ]]; }
 # Is TextEdit running? Says true, false, or nothing (the question failed: callers keep everything).
 te_running() { local a; a=$(osascript -e 'application "TextEdit" is running' 2>/dev/null) || return 1; case "$a" in true|false) echo "$a" ;; *) return 1 ;; esac; }
-# Every window id of TextEdit, space-separated; fails unless the answer is whole (ids one per line, END last).
-te_window_ids() {
+# Every window id of TextEdit, space-separated; fails unless the answer is whole (ids one per line, END last). VAR only names the
+# AppleScript variable (the self-test's stand-in tells the callers apart by it).
+te_ids_via() { # var
   local raw last line
-  raw=$(osascript -e 'tell application "TextEdit"' -e 'set idsBeforeOpen to id of every window' \
-    -e "set AppleScript's text item delimiters to linefeed" -e 'if (count of idsBeforeOpen) is 0 then return "END"' \
-    -e 'return (idsBeforeOpen as text) & linefeed & "END"' -e 'end tell' 2>/dev/null) || return 1
+  raw=$(osascript -e 'tell application "TextEdit"' -e "set $1 to id of every window" \
+    -e "set AppleScript's text item delimiters to linefeed" -e "if (count of $1) is 0 then return \"END\"" \
+    -e "return ($1 as text) & linefeed & \"END\"" -e 'end tell' 2>/dev/null) || return 1
   last=${raw##*$'\n'}; [ "$last" = END ] || return 1
   while IFS= read -r line; do
     [ "$line" = END ] && continue
@@ -671,29 +693,27 @@ te_window_ids() {
     printf '%s ' "$line"
   done <<<"$raw"
 }
-# One scan of ALL TextEdit windows, one line per window: "<id>|<path>" for a document with a file, "<id>|" for a document
-# that has none (an untitled one: TextEdit reports an empty path; `set p to path of d` would leave p undefined, so the path is
-# read inside a string concatenation), "<id>|!NODOC" for a window without a document (the small
-# panel TextEdit shows after a new document opens), "<id>|!ERR" when the document or its path could not be read. Nothing
-# is swallowed: a failed osascript, no END line, or a line that is none of these is a failed scan (returns 1).
+te_window_ids() { te_ids_via idsBeforeOpen; }
+# What ONE window shows: its path ("" for an untitled document, which TextEdit reports with an empty path; the path is read
+# inside a string concatenation because `set p to path of d` leaves p undefined), "!NODOC" for a window without a document (the
+# small panel TextEdit shows after a new document opens). A failed osascript, or an answer that is none of these, is "!ERR".
+te_read_window() { # id (digits)
+  local ans
+  ans=$(osascript -e 'tell application "TextEdit"' -e "set orphanRead to document of window id $1" \
+    -e 'if orphanRead is missing value then return "!NODOC"' -e 'return "" & (path of orphanRead)' -e 'end tell' 2>/dev/null) || { echo '!ERR'; return 0; }
+  case "$ans" in ''|'!NODOC'|/*) printf '%s\n' "$ans" ;; *) echo '!ERR' ;; esac
+}
+# One scan of ALL TextEdit windows, one line per window: "<id>|<tag>", the tag from te_read_window (a path, empty, !NODOC, or
+# !ERR). Each window starts as !ERR and a failure of its read stays on its own line, whatever the other windows answer. A failed
+# or incomplete list of ids (no END line, a line that is not an id) is a failed scan (returns 1).
 te_scan() {
-  local raw last line tag
-  raw=$(osascript -e 'tell application "TextEdit"' -e 'set found to {}' -e 'set orphanScan to id of every window' \
-    -e 'repeat with wid in orphanScan' -e 'set w to (contents of wid) as text' -e 'set tag to "!ERR"' -e 'try' \
-    -e 'set d to document of window id (contents of wid)' \
-    -e 'if d is missing value then' -e 'set tag to "!NODOC"' -e 'else' \
-    -e 'set tag to "" & (path of d)' \
-    -e 'end if' -e 'end try' -e 'set end of found to w & "|" & tag' -e 'end repeat' \
-    -e "set AppleScript's text item delimiters to linefeed" \
-    -e 'if (count of found) is 0 then return "END"' -e 'return (found as text) & linefeed & "END"' -e 'end tell' 2>/dev/null) || return 1
-  last=${raw##*$'\n'}; [ "$last" = END ] || return 1
-  while IFS= read -r line; do
-    [ "$line" = END ] && continue
-    [[ $line =~ ^[0-9]+\| ]] || return 1
-    tag=${line#*|}
-    case "$tag" in ''|'!ERR'|'!NODOC'|/*) ;; *) return 1 ;; esac
-    printf '%s\n' "$line"
-  done <<<"$raw"
+  local ids id tag
+  ids=$(te_ids_via orphanIds) || return 1
+  for id in $ids; do
+    tag='!ERR'
+    tag=$(te_read_window "$id")
+    printf '%s|%s\n' "$id" "$tag"
+  done
 }
 # The ids of the windows that show FILE (by real path), space-separated. It FAILS (returns 1) unless every window can be
 # accounted for: a window whose document or path could not be read (!ERR) cannot be excluded; a document with an empty path
@@ -845,15 +865,16 @@ close_target() {
 # before its window is registered keeps the file (te-keep): nothing is Trashed on a guess.
 te_open() {
   local dir file name before before_as ans live id
+  reg_writable || { log "the registry cannot be written; no TextEdit file is made or opened"; return 1; }
   dir=$(mktemp -d "$tmp/textedit.XXXXXX") || return 1
-  reg_add path "$dir"
+  reg_add path "$dir" || return 1
   name="wristper-verify-$RANDOM$RANDOM.txt"
   file="$dir/$name"
   safe_temp_path "$file" || { log "the TextEdit file path '$file' has characters outside A-Za-z0-9._/-; nothing is opened"; return 1; }
   before=$(te_window_ids) || { log "could not list TextEdit's windows before opening the file; nothing is opened"; return 1; }
   : > "$file" || return 1
-  reg_add path "$file"
-  reg_add te-before "$file" "$before"
+  reg_add path "$file" || return 1
+  reg_add te-before "$file" "$before" || return 1
   before_as="{$(tr -s ' ' '\n' <<<"$before" | grep . | paste -sd, -)}"
   ans=$(osascript -e 'tell application "TextEdit"' -e 'activate' \
     -e "set idsBefore to $before_as" \
@@ -904,8 +925,9 @@ kind_of() {
 chrome_open() {
   local dir port pid i
   [ -x "$CHROME_BIN" ] || return 1
+  reg_writable || { log "the registry cannot be written; Chrome is not started"; return 1; }
   dir=$(mktemp -d "$tmp/chrome.XXXXXX") || return 1
-  reg_add path "$dir.log"
+  reg_add path "$dir.log" || return 1
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   # --use-mock-keychain and basic password store: a fresh profile must not touch the login Keychain.
   owned_bg "Google Chrome" "$CHROME_BIN" --user-data-dir="$dir" --remote-debugging-port="$port" --no-first-run \
@@ -1006,14 +1028,15 @@ open_target() {
       # (te_open); the path must be inside this run's temp root, else the window is not registered at all.
       [[ $h =~ ^[0-9]+\|/.+$ ]] || { log "TextEdit did not return a window id and file path: '${h:0:120}'"; return 1; }
       case "$(real_path "${h#*|}")" in "$tmp_real"/*) ;; *) te_keep "${h#*|}" "the file is not inside the temp root; its window was not registered"; log "TextEdit's file ${h#*|} is not inside the temp root; not registered"; return 1 ;; esac
-      reg_add window "textedit:${h%%|*}" "${h#*|}" ;;
+      reg_add window "textedit:${h%%|*}" "${h#*|}" || { te_keep "${h#*|}" "its window could not be registered"; return 1; } ;;
     terminal|shell|recorder|claude|codex)
       if [ "$TERMINAL_SMOKE" != 1 ] && ! terminal_gate_ok; then
         log "REFUSED: no Terminal window is opened until --check-terminal has passed on this Mac for this version of the script"
         return 1
       fi
+      reg_writable || { log "the registry cannot be written; no Terminal window is opened"; return 1; }
       pf=$(mktemp "$tmp/pid.XXXXXX") || return 1
-      reg_add path "$pf"
+      reg_add path "$pf" || return 1
       case "$1" in
         terminal) h=$(term_open "echo \$\$ > '$pf'; clear; exec cat" 1) ;;
         shell) h=$(term_open "echo \$\$ > '$pf'; clear" 1.5) ;;
@@ -1023,7 +1046,7 @@ open_target() {
       esac
       [ -n "$h" ] || return 1
       tty=${h#*|}
-      reg_add window "terminal:${h%%|*}" "$tty"
+      reg_add window "terminal:${h%%|*}" "$tty" || { log "the new Terminal window could not be registered; nothing is sent to it and it is left open"; return 1; }
       pid=$(tr -d ' \n' < "$pf" 2>/dev/null)
       seen=$(ps -o tty= -p "${pid:-0}" 2>/dev/null | tr -d ' ')
       if [[ ${pid:-} =~ ^[0-9]+$ ]] && { [ "/dev/$seen" = "$tty" ] || [ "$seen" = "${tty#/dev/}" ]; }; then
@@ -1103,8 +1126,7 @@ clip_backup() {
     *) die "could not back up the clipboard ($msg); nothing was changed" 2 ;;
   esac
   CLIP_STATE=saved
-  reg_add clipboard backup "$tmp/clipboard"
-  reg_add tree "$tmp/clipboard" '*'
+  reg_add clipboard backup "$tmp/clipboard" && reg_add tree "$tmp/clipboard" '*' || die "the clipboard backup could not be registered; nothing was changed" 2
   log "clipboard backed up ($msg)"
 }
 clip_restore() {
@@ -1141,9 +1163,9 @@ cleanup_root() {
   [ $kept = 0 ] || { log "the temp root $tmp stays: it still holds kept items (named above)"; return 0; }
   # Everything else is gone: the script's own three bookkeeping files, then the empty root.
   for internal in registry.tsv registry.new row-refused; do
-    [ -e "$tmp/$internal" ] && { do_trash "$tmp/$internal" || { log "kept: $tmp/$internal (Trash failed)"; return 0; }; }
+    [ -e "$tmp/$internal" ] && { do_trash --final "$tmp/$internal" || { log "kept: $tmp/$internal (Trash failed)"; return 0; }; }
   done
-  [ "$(dir_state "$tmp")" = empty ] && do_trash "$tmp"
+  [ "$(dir_state "$tmp")" = empty ] && do_trash --final "$tmp"
   return 0
 }
 
@@ -1232,9 +1254,9 @@ init() { # prefix
   # codes, the registry, Chrome's profile. Mode 0700, moved to the Trash at exit.
   tmp=$(mktemp -d "$base/wristper-e2e.XXXXXX") || { echo "cannot make a temp folder" >&2; exit 2; }
   tmp_real=$(real_path "$tmp")
-  : > "$tmp/registry.tsv"; : > "$out/refusals.tsv"; : > "$tmp/row-refused"
-  reg_add path "$tmp" root
-  reg_add switch finder "the app-switch scenario"
+  # The registry is the first thing made, and the run stops here, before anything else exists, if it cannot be written.
+  { : > "$tmp/registry.tsv" && : > "$tmp/row-refused" && : > "$out/refusals.tsv" && reg_add path "$tmp" root && reg_add switch finder "the app-switch scenario"; } \
+    || { echo "the registry in $tmp cannot be written; stopping before anything is created" >&2; exit 2; }
   export WATCH_E2E_TMP="$tmp" WATCH_E2E_OUT="$out"   # the gate's helper commands find the registry through these
   SC_FILE="$out/readback.txt"
 }
@@ -1560,8 +1582,9 @@ launch_time=
 sim_paired=0
 pair_sim() { # stage
   # The watch's pairing state (device id, token, private key) and the pairing code live only in $tmp.
+  reg_writable || die "the registry cannot be written; watch-sim is not started" 2
   mkdir -m 700 -p "$tmp/watch-sim-state"
-  reg_add tree "$tmp/watch-sim-state" '*'
+  reg_add tree "$tmp/watch-sim-state" '*' || die "the pairing state folder could not be registered; stopping" 2
   export WATCH_SIM_STATE="$tmp/watch-sim-state"
   local raw="$tmp/stage$1-pair.jsonl"
   reg_add path "$raw"
@@ -2383,7 +2406,16 @@ case "$args" in
     basename "$(cat "$STUB_DIR/te-path")" ;;
   *"path of document of window id 101"*)
     [ "$(cat "$STUB_DIR/name" 2>/dev/null)" = moved ] && echo "/stub/Elsewhere.txt" || cat "$STUB_DIR/te-path" ;;
-  *orphanScan*)
+  *orphanRead*)
+    # one window's path, from the "scan" file's "<id>|<tag>" line; the Nth read can be made to fail (read-fail-nth)
+    id=$(sed -E 's/.*window id ([0-9]+).*/\1/' <<<"$args")
+    n=$(cat "$STUB_DIR/read-count" 2>/dev/null); n=$((n + 1)); echo "$n" > "$STUB_DIR/read-count"
+    [ "$(cat "$STUB_DIR/read-fail-nth" 2>/dev/null)" = "$n" ] && { echo "cannot read that window" >&2; exit 1; }
+    line=$(grep "^$id|" "$STUB_DIR/scan" 2>/dev/null | head -1)
+    tag=${line#*|}
+    [ "$tag" = '!ERR' ] && { echo "cannot read that window" >&2; exit 1; }
+    echo "$tag" ;;
+  *orphanIds*)
     [ -s "$STUB_DIR/scan-fail" ] && { echo "scan failed" >&2; exit 1; }
     [ -s "$STUB_DIR/scan-garbage" ] && { echo "this is not a window list"; echo END; exit 0; }
     if [ -s "$STUB_DIR/scan-fail-first" ]; then
@@ -2393,11 +2425,9 @@ case "$args" in
     if [ -s "$STUB_DIR/scan-late" ]; then
       # a window that shows the file appears between the first scan and the one after closing
       n=$(cat "$STUB_DIR/scan-count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_DIR/scan-count"
-      cat "$STUB_DIR/scan" 2>/dev/null
-      [ "$n" -ge 2 ] && echo "106|$(cat "$STUB_DIR/te-path")"
-      echo END; exit 0
+      [ "$n" -ge 2 ] && echo "106|$(cat "$STUB_DIR/te-path")" >> "$STUB_DIR/scan"
     fi
-    cat "$STUB_DIR/scan" 2>/dev/null
+    cut -d'|' -f1 "$STUB_DIR/scan" 2>/dev/null
     [ -s "$STUB_DIR/scan-noend" ] || echo END ;;
   *idsBeforeOpen*)
     [ -s "$STUB_DIR/ids-fail" ] && exit 1
@@ -2587,7 +2617,7 @@ selftest_main() {
   printf 'te-keep\t%s\tfixture\n' "$sub/dir/inner/kept.txt" >> "$sub/registry.tsv"
   st_run_sub do_trash "$sub/dir"
   st_check "do_trash refuses a folder that holds a te-keep item (even if it were to be Trashed whole), and the item stays" bash -c "[ -f '$sub/dir/inner/kept.txt' ]"
-  st_check "…and do_trash of an unrelated sibling path still works (control)" bash -c ": > '$sub/free.txt'; ( tmp='$SUB'; TRASH=/usr/bin/trash; $(declare -f do_trash reg_list log); do_trash '$sub/free.txt' ); [ ! -e '$sub/free.txt' ]"
+  st_check "…and do_trash of an unrelated sibling path still works (control)" bash -c ": > '$sub/free.txt'; ( tmp='$SUB'; TRASH=/usr/bin/trash; $(declare -f do_trash reg_list reg_writable reg_get log); do_trash '$sub/free.txt' ); [ ! -e '$sub/free.txt' ]"
   "$TRASH" "$sub"
   st_sub dirstate; sub=$SUB
   mkdir "$sub/d"; chmod 000 "$sub/d"
@@ -2608,6 +2638,96 @@ selftest_main() {
   : > "$sub/d/f"
   st_check "…and nonempty for one with an item" st_eq "$(dir_state "$sub/d")" nonempty
   "$TRASH" "$sub"
+
+  echo "[1c] the registry must be writable and readable: without it nothing is created, opened, closed, or Trashed"
+  # (a) a registry that cannot be written: te_open makes and opens nothing; (control) a writable one does
+  st_sub regro; sub=$SUB
+  : > "$STUB_DIR/asc.log"; chmod 444 "$sub/registry.tsv"
+  h=$(st_run_sub te_open)
+  chmod 644 "$sub/registry.tsv"
+  st_check "(a) with a registry that cannot be written, te_open opens nothing, and no TextEdit folder or file is made" bash -c "[ -z '$h' ] && [ -z \"\$(ls -A '$sub' | grep -v -e '^registry.tsv\$' -e '^row-refused\$')\" ] && ! grep -q 'POSIX file' '$STUB_DIR/asc.log'"
+  st_set live live; : > "$STUB_DIR/scan"; : > "$STUB_DIR/before-ids"
+  h=$(st_run_sub te_open)
+  st_check "(a) (control) with a writable registry the same te_open makes the file and opens it" bash -c "[ -n '$h' ] && grep -q 'POSIX file' '$STUB_DIR/asc.log'"
+  "$TRASH" "$sub"
+  # (b) a registry that cannot be written: the gate refuses even a registered window's close; (control) it closes
+  st_sub regown; sub=$SUB; f="$sub/textedit.DDDDDD/wristper-verify-4.txt"
+  mkdir "$sub/textedit.DDDDDD"; : > "$f"; st_set te-path "$f"; st_set live live; : > "$STUB_DIR/scan"
+  printf 'path\t%s\t\npath\t%s\t\nte-before\t%s\t\nwindow\ttextedit:101\t%s\n' "$sub/textedit.DDDDDD" "$f" "$f" "$f" >> "$sub/registry.tsv"
+  : > "$STUB_DIR/asc.log"; chmod 444 "$sub/registry.tsv"
+  st_run_sub close_target textedit "101|$f"
+  chmod 644 "$sub/registry.tsv"
+  st_check "(b) with a registry that cannot be written, no window is closed and nothing is Trashed" bash -c "! grep -q 'close window id 101' '$STUB_DIR/asc.log' && [ -f '$f' ]"
+  : > "$STUB_DIR/asc.log"; printf '101|%s\n' "$f" > "$STUB_DIR/scan"
+  st_run_sub close_target textedit "101|$f"
+  st_check "(b) (control) with a writable registry the same close happens" bash -c "grep -q 'close window id 101' '$STUB_DIR/asc.log'"
+  [ -e "$sub" ] && "$TRASH" "$sub"
+  # (c) init: the registry is the first thing made, and the run stops before anything else if it cannot be written
+  scratch="$tmp/initscratch"; mkdir "$scratch"; reg_add tree "$scratch" '*'
+  ( TMPDIR="$scratch"; reg_add() { return 1; }; init "selftest-reg-" ) > "$STUB_DIR/init.out" 2>&1; rc=$?
+  st_check "(c) init stops with exit 2 and says why when the registry cannot be written" bash -c "[ $rc = 2 ] && grep -q 'cannot be written' '$STUB_DIR/init.out'"
+  st_check "(c) …and nothing but the registry's own bookkeeping files was ever in the new temp folder (nothing else is left in $scratch)" bash -c "[ -z \"\$(find '$scratch' -mindepth 1 ! -name 'wristper-e2e.*' ! -name registry.tsv ! -name row-refused)\" ]"
+  ( TMPDIR="$scratch"; init "selftest-reg-ok-"; echo "$tmp" > "$STUB_DIR/init-tmp"; teardown )
+  st_check "(c) (control) with a writable registry init goes on, and its cleanup removes its own folder" bash -c "[ ! -e \"\$(cat '$STUB_DIR/init-tmp')\" ]"
+  # (d) a tree item that cannot be registered: nothing in the tree is Trashed; (control) in [1b] the same tree is Trashed
+  st_sub regfail; sub=$SUB
+  mkdir -p "$sub/tool/a"; : > "$sub/tool/a/x"; : > "$sub/tool/y"
+  printf 'tree\t%s\t*\n' "$sub/tool" >> "$sub/registry.tsv"
+  st_failing_reg_tree() { reg_add() { return 1; }; act_trash_tree "$1"; }
+  st_run_sub st_failing_reg_tree "$sub/tool"
+  st_check "(d) when one tree item cannot be registered, no item of the tree is Trashed" bash -c "[ -f '$sub/tool/a/x' ] && [ -f '$sub/tool/y' ] && [ -d '$sub/tool' ]"
+  "$TRASH" "$sub"
+  # (e) a registry that cannot be read is not an empty one: do_trash keeps, reg_list fails; (control) readable: Trashed, empty list
+  st_sub regread; sub=$SUB
+  : > "$sub/f.txt"; chmod 200 "$sub/registry.tsv"
+  st_run_sub do_trash "$sub/f.txt"
+  st_run_sub reg_list te-keep > /dev/null 2>&1; list_rc=$?
+  chmod 644 "$sub/registry.tsv"
+  st_check "(e) with a registry that cannot be read, do_trash keeps the file" test -f "$sub/f.txt"
+  st_check "(e) …and reg_list fails instead of answering with an empty list" test "$list_rc" != 0
+  st_check "(e) (control) readable again: reg_list succeeds with nothing to list" bash -c "$(declare -f reg_list); tmp='$sub'; reg_list te-keep >/dev/null"
+  st_run_sub do_trash "$sub/f.txt"
+  st_check "(e) (control) …and do_trash then Trashes the file" bash -c "[ ! -e '$sub/f.txt' ]"
+  "$TRASH" "$sub"
+
+  # (f) a registry that can be read but not written: reg_add reports the failure, and do_trash keeps (a te-keep mark could have been lost)
+  st_sub regw; sub=$SUB
+  : > "$sub/g.txt"; chmod 444 "$sub/registry.tsv"
+  st_run_sub reg_add path "$sub/x" > /dev/null 2>&1; add_rc=$?
+  st_run_sub do_trash "$sub/g.txt"
+  chmod 644 "$sub/registry.tsv"
+  st_check "(f) reg_add returns failure when the write fails (the caller can act on it)" test "$add_rc" != 0
+  st_check "(f) with a registry that can be read but not written, do_trash keeps the file" test -f "$sub/g.txt"
+  st_run_sub reg_add path "$sub/x" > /dev/null 2>&1; add_rc=$?
+  st_check "(f) (control) with a writable registry reg_add succeeds" test "$add_rc" = 0
+  st_run_sub do_trash "$sub/g.txt"
+  st_check "(f) (control) …and do_trash Trashes the file" bash -c "[ ! -e '$sub/g.txt' ]"
+  "$TRASH" "$sub"
+
+  echo "[1d] the TextEdit scan reads window by window; one unreadable window fails the whole scan and no later window clears it"
+  st_set live live; st_set running true
+  printf '201|\n202|/x/other.txt\n203|/x/third.txt\n204|\n' > "$STUB_DIR/scan"
+  for n in 1 2 4; do
+    : > "$STUB_DIR/read-count"; printf '%s\n' "$n" > "$STUB_DIR/read-fail-nth"
+    scan_out=$(te_scan); scan_rc=$?
+    st_check "(a) read number $n fails: that window's own line says !ERR, the others are read normally" bash -c "[ $scan_rc = 0 ] && [ \"\$(grep -c '|!ERR\$' <<<'$scan_out')\" = 1 ] && [ \"\$(sed -n ${n}p <<<'$scan_out' | cut -d'|' -f2)\" = '!ERR' ]"
+    : > "$STUB_DIR/read-count"
+    te_windows_showing /x/file.txt "201 202 203 204" > /dev/null; show_rc=$?
+    st_check "(a) …and the scan as a whole fails (the windows read after it do not clear the failure)" test "$show_rc" != 0
+  done
+  : > "$STUB_DIR/read-count"; : > "$STUB_DIR/read-fail-nth"
+  te_windows_showing /x/file.txt "201 202 203 204" > /dev/null; show_rc=$?
+  st_check "(b) (control) when every window reads fine the same scan succeeds (the untitled ones were open before)" test "$show_rc" = 0
+  # (c) the list of ids itself must be whole: a line that is not an id, no END line, or a failed osascript fails the scan outright
+  for flag in scan-garbage scan-noend scan-fail; do
+    st_flag $flag on
+    te_scan > /dev/null 2>&1; scan_rc=$?
+    st_flag $flag off
+    st_check "(c) [$flag] an unusable list of window ids makes te_scan itself fail" test "$scan_rc" != 0
+  done
+  te_scan > /dev/null 2>&1; scan_rc=$?
+  st_check "(c) (control) with a good list te_scan succeeds" test "$scan_rc" = 0
+  : > "$STUB_DIR/scan"; : > "$STUB_DIR/read-count"
 
   echo "[2c] TextEdit opens a file this run made (never an untitled document, which TextEdit autosaves into iCloud)"
   st_reset; st_set live live; st_set front ok; st_set name original; : > "$STUB_DIR/scan"; : > "$STUB_DIR/before-ids"; st_flag noclose off; st_flag scan-fail off
@@ -3182,7 +3302,6 @@ selftest_main() {
   echo "[14b] static rules of the script itself"
   st_check "no 'rm' command anywhere in the script, the self-test and its stand-ins included (deleting is Trash only)" bash -c "! grep -nE '(^|[^a-zA-Z_])rm( |\$)' '$self'"
   st_check "outside the self-test, only do_trash calls the Trash command (one call site)" bash -c "[ \"\$(sed -n '1,/^# selftest: no GUI/p' '$self' | grep -c '\"\\\$TRASH\"')\" = 1 ]"
-  st_check "the TextEdit scan starts every window as unreadable (!ERR) and clears it only when the document and path were read" bash -c "grep -q \"set tag to \\\"!ERR\\\"\" '$self'"
   st_check "no pkill, killall, git clean, or removeItem either" bash -c "! grep -nE '(^|[^a-zA-Z_])(pkill|killall)( |\$)|git clean|removeItem' '$self' | grep -v 'st_check\|^[0-9]*:#'"
 
   echo "[15] the temp folder of the selftest itself: everything it made was registered, so the cleanup removes it all"
