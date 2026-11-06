@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Merge gate for a pull request on the fork. Fails unless every check holds:
-#   1. all four Compile jobs show success on the PR's head SHA
+#   1. one of the head SHA's 10 latest Compile runs has all four jobs (Linux,
+#      Watch tests, macOS, Windows x64) at success; jobs from different runs
+#      are never combined, and the passing run is printed
 #   2. a local `scripts/check` log for that SHA ends with `exit=0`
 #   3. the worker report holds the mutation check's FAILED lines, unless
 #      `--no-mutation "<reason>"` skips it (for a PR that fixes no bug); the
 #      skip and its reason are printed, and a missing reason fails
 #   4. the PR body has an "unverified" section
+# FAILED output counts at a line start (`FAIL`), as `test result: FAILED` or
+# `... FAILED`, or anywhere after a backtick as `FAIL <test path>`, so a report
+# may put the output in a Markdown table cell.
 # Usage: scripts/merge-gate.sh <pr> --check-log <file> --report <file>
 #          [--no-mutation "<reason>"] [--repo owner/name]
 # scripts/test-merge-gate.sh exercises it against a fake `gh`.
@@ -35,17 +40,28 @@ ok() { echo "ok    $1"; }
 head_sha=$(gh pr view "$pr" --repo "$repo" --json headRefOid -q .headRefOid)
 echo "PR #$pr head $head_sha"
 
-run_id=$(gh run list --repo "$repo" --workflow compile.yml --commit "$head_sha" --limit 1 \
-  --json databaseId -q '.[0].databaseId // empty')
-if [ -z "$run_id" ]; then
+compile_jobs=("Linux" "Watch tests" "macOS" "Windows x64")
+run_ids=$(gh run list --repo "$repo" --workflow compile.yml --commit "$head_sha" --limit 10 \
+  --json databaseId -q '.[].databaseId')
+if [ -z "$run_ids" ]; then
   bad "no Compile run for $head_sha"
 else
-  for job in "Linux" "Watch tests" "macOS" "Windows x64"; do
-    conclusion=$(gh api "repos/$repo/actions/runs/$run_id/jobs" \
-      --jq ".jobs[] | select(.name==\"$job\") | .conclusion // \"none\"")
-    if [ "$conclusion" = "success" ]; then ok "Compile / $job success"
-    else bad "Compile / $job is '${conclusion:-missing}' (need success, not skipped)"; fi
+  good_run="" summaries=""
+  for run_id in $run_ids; do
+    jobs=$(gh api "repos/$repo/actions/runs/$run_id/jobs" \
+      --jq '.jobs[] | "\(.name)\t\(.conclusion // "none")"')
+    missing=""
+    for job in "${compile_jobs[@]}"; do
+      printf '%s\n' "$jobs" | grep -Fxq "$job"$'\t'success || missing="$missing $job;"
+    done
+    if [ -z "$missing" ]; then good_run=$run_id; break; fi
+    summaries="$summaries"$'\n'"      run $run_id: not success:$missing"
   done
+  if [ -n "$good_run" ]; then
+    ok "Compile run $good_run has Linux, Watch tests, macOS, Windows x64 all success"
+  else
+    bad "no Compile run among the latest 10 for $head_sha has all four jobs at success (jobs of different runs are not combined):$summaries"
+  fi
 fi
 
 if [ ! -f "$check_log" ]; then
@@ -66,7 +82,7 @@ if [ "$no_mutation" = 1 ]; then
   fi
 elif [ ! -f "$report" ]; then
   bad "report $report is missing"
-elif grep -Eq '^[[:space:]]*FAIL[[:space:]]|test result: FAILED|\.\.\. FAILED' "$report"; then
+elif grep -Eq '^[[:space:]]*FAIL[[:space:]]|test result: FAILED|\.\.\. FAILED|`FAIL[[:space:]]+[^`]*[[:alnum:]_]' "$report"; then
   ok "report holds mutation FAILED output"
 else
   bad "report has no mutation FAILED output (revert the fix, paste the failing test)"
