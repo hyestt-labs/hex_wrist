@@ -9,6 +9,7 @@
 //! Only there does the audio owner ask or sound.
 
 use super::{Hotkeys, Shortcut};
+use crate::audio::CaptureInstant;
 use crate::dictation::audio::DictationAudio;
 use crate::suppression::{DictationHotkey, HotkeyAction};
 
@@ -47,6 +48,21 @@ pub(super) fn owned(hotkeys: &mut Hotkeys, shortcut: Shortcut, input: &Dictation
     if input.microphone_gated() && !input.is_recording() {
         input.press_owned();
         hotkeys.suspend(shortcut);
+    }
+}
+
+/// An input event stamped `at` is about to be handled. The loop drains a whole
+/// batch before it checks the clock, so a release that waited in the queue past
+/// the threshold would end the press before its owned moment was seen. Judge
+/// the moment by the event's own timestamp first.
+pub(super) fn owned_by(hotkeys: &mut Hotkeys, at: CaptureInstant, input: &DictationAudio) {
+    for shortcut in Shortcut::ALL {
+        let due = hotkeys
+            .machine_mut(shortcut)
+            .is_some_and(|machine| machine.take_owned(at));
+        if due {
+            owned(hotkeys, shortcut, input);
+        }
     }
 }
 
@@ -193,9 +209,12 @@ mod tests {
             }
         }
 
+        /// One queued event, in the loop's order: judged by its own
+        /// timestamp, with no clock check in between (`tick` is the end of a
+        /// batch).
         fn send(&mut self, event: InputEvent, ms: u64) {
-            self.tick(ms);
             let at = self.at(ms);
+            owned_by(&mut self.hotkeys, at, &self.audio);
             for (shortcut, action) in self.hotkeys.process(event, at) {
                 if action == HotkeyAction::Start {
                     if !self.audio.start(at).unwrap() {
@@ -432,6 +451,59 @@ mod tests {
             }
             assert!(rig.leaked.is_empty(), "{binding:?}");
             assert_eq!(rig.opens.count(), 0);
+        }
+    }
+    /// The listener drains a whole batch of events before it checks the clock.
+    /// A release queued past the threshold must still count the press as the
+    /// person's try, once; one released before it, never.
+    #[test]
+    fn a_release_queued_past_the_threshold_still_counts_the_press() {
+        let bindings = [
+            Binding::Option,
+            Binding::F5,
+            Binding::OptionE,
+            Binding::Globe,
+        ];
+        for binding in bindings {
+            for state in REFUSED {
+                let label = format!("{binding:?}, {state:?}");
+                let mut late = Rig::with_binding(state, false, binding);
+                late.press(0);
+                late.release(400);
+                late.tick(401);
+                let asked = if state == PermissionState::NeedsRequest {
+                    (1, 0, 0)
+                } else {
+                    (0, 1, 1)
+                };
+                assert_eq!(late.noticed(), asked, "{label}: held 400 ms, one batch");
+                assert!(late.leaked.is_empty(), "{label}");
+
+                let mut early = Rig::with_binding(state, false, binding);
+                early.press(0);
+                early.release(250);
+                early.tick(401);
+                assert_eq!(early.noticed(), (0, 0, 0), "{label}: held 250 ms");
+            }
+        }
+    }
+
+    /// Toggle: a start after the 40 ms grace, followed in the same batch by a
+    /// later event, is one try; before the grace it is not yet.
+    #[test]
+    fn a_toggle_start_past_its_grace_in_the_same_batch_is_one_try() {
+        for binding in [Binding::Option, Binding::F5] {
+            let mut rig = Rig::with_binding(PermissionState::NeedsRequest, true, binding);
+            rig.press(0);
+            rig.send(InputEvent::MouseDown, 100);
+            rig.tick(101);
+            assert_eq!(rig.noticed(), (1, 0, 0), "{binding:?}");
+
+            let mut quick = Rig::with_binding(PermissionState::NeedsRequest, true, binding);
+            quick.press(0);
+            quick.send(InputEvent::MouseDown, 20);
+            quick.tick(21);
+            assert_eq!(quick.noticed(), (0, 0, 0), "{binding:?}: inside the grace");
         }
     }
 }

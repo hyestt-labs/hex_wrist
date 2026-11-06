@@ -219,6 +219,12 @@ Apple Watch                               // watch.pair, watch.dictate
   itself (route, device-list, selection change, stream retry) asks the
   permission again first and is dropped when it is gone; the warm stream itself
   closes at the next such moment.
+- Known limit (C1, accepted): the permission is read on the owner thread just
+  before an open starts (`RecoveringAudioInput::start_replacement`, and at
+  startup before the warm open), but the opener runs a moment later on its own
+  thread. A revoke inside that gap still reaches macOS, which decides whether
+  the stream opens. Not testable without a real Mac; it is on the real-Mac
+  verification list (open after a revoke, the prompt timing, the log line).
 - The live checks above have not been observed to pass in this unit's
   worktree: no real Apple Watch, no real Accessibility session, no Orca,
   Ghostty, Warp, or Claude Code and Codex inside a terminal yet. Linux and

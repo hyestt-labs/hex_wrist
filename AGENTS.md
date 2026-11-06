@@ -657,7 +657,9 @@ CoreAudio formats, AppleScript details, or event serialization.
   `hex dictation`, or `/dictations` is a try: macOS's prompt the first time;
   once refused, the error tone on each try and the Settings window once per
   launch. A window no longer opens at launch only because the Microphone is
-  missing. Hex never asks for
+  missing. The permission is read just before each open starts, not at the
+  opener's call: a revoke in that gap still reaches macOS, which has the last
+  word on opening the stream. Hex never asks for
   Input Monitoring: Accessibility also grants the listen-event access its
   shortcut taps need (measured on macOS 26 and 27).
 - The dictation shortcut defaults to Option but supports modifier-only,
