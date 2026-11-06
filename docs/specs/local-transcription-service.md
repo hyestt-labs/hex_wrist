@@ -185,6 +185,11 @@ export type ModelId =
   | "gigaam_v3"
   | "nb_whisper_medium"
   | "granite_speech_5"
+  | "whisper_large_v3"
+  | "whisper_medium"
+  | "whisper_small"
+  | "breeze_asr_25"
+  | "qwen3_asr_1_7b"
   | "apple_speech"
   // An imported or found model, listed while it is ready.
   | `custom-${string}`;

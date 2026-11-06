@@ -518,6 +518,113 @@ mod tests {
         )
     }
 
+    fn pin(id: TranscriptionModelId) -> &'static super::super::models::GgufArtifact {
+        match super::super::models::definition(id).runtime {
+            ModelRuntime::Gguf(artifact) => artifact,
+            ModelRuntime::AppleSpeech => panic!("{id:?} has no artifact"),
+        }
+    }
+
+    /// NB-Whisper Medium declares the variant `whisper-medium` and QwenCleo
+    /// `qwen3-asr-1.7b`, the names the real Whisper medium and Qwen3-ASR
+    /// 1.7B carry. A header's variant never picks a catalog model: only the
+    /// pinned SHA-256 and size (or repository, file name, and size) do, and
+    /// the variant only has to match the model's own artifact at load.
+    #[test]
+    fn a_header_variant_never_picks_a_catalog_model() {
+        for (architecture, variant, owner) in [
+            (
+                "whisper",
+                "whisper-medium",
+                TranscriptionModelId::NbWhisperMedium,
+            ),
+            (
+                "qwen3_asr",
+                "qwen3-asr-1.7b",
+                TranscriptionModelId::QwenCleoAsr17B,
+            ),
+        ] {
+            let header = crate::transcription::gguf_header::tests::read_header(gguf(
+                &[
+                    ("general.architecture", architecture),
+                    ("general.name", "Same variant, other file"),
+                    ("stt.variant", variant),
+                ],
+                &[("general.languages", &["en"])],
+                &[],
+                &[("encoder.weight", 8, 64), ("norm", 0, 16)],
+            ));
+            let profile = crate::transcription::custom_models::profile_of(&header, "file")
+                .unwrap_or_else(|error| panic!("{variant} imports: {error}"));
+            assert_eq!(profile.variant, variant);
+            assert_eq!(profile.architecture, architecture);
+
+            let artifact = pin(owner);
+            assert_eq!(artifact.variant, variant, "{owner:?} carries the name");
+            let other = "f".repeat(64);
+            // Another file with that variant: no catalog match, by blob or by name.
+            assert_eq!(catalog_match(Some(&other), "x/y", "z.gguf", 7), None);
+            assert_eq!(catalog_match(None, "x/y", "z.gguf", 7), None);
+            assert_eq!(
+                catalog_match(
+                    Some(&other),
+                    artifact.repository,
+                    artifact.filename,
+                    artifact.bytes
+                ),
+                None,
+                "a blob of another name is not the pin even at the pinned size"
+            );
+            // The pinned file is its own model, by blob and by plain copy.
+            assert_eq!(
+                catalog_match(
+                    Some(artifact.sha256),
+                    "any/repo",
+                    "any.gguf",
+                    artifact.bytes
+                ),
+                Some(owner)
+            );
+            assert_eq!(
+                catalog_match(None, artifact.repository, artifact.filename, artifact.bytes),
+                Some(owner)
+            );
+        }
+    }
+
+    /// After Unit F a cached Whisper medium or Qwen3-ASR 1.7B resolves to the
+    /// new model by its pin, and the models that already carried those
+    /// variant names still resolve to themselves.
+    #[test]
+    fn each_pinned_file_resolves_to_its_own_model() {
+        for id in [
+            TranscriptionModelId::WhisperLargeV3,
+            TranscriptionModelId::WhisperMedium,
+            TranscriptionModelId::WhisperSmall,
+            TranscriptionModelId::BreezeAsr25,
+            TranscriptionModelId::Qwen3Asr17B,
+            TranscriptionModelId::NbWhisperMedium,
+            TranscriptionModelId::QwenCleoAsr17B,
+        ] {
+            let artifact = pin(id);
+            assert_eq!(
+                catalog_match(
+                    Some(artifact.sha256),
+                    "any/repo",
+                    "any.gguf",
+                    artifact.bytes
+                ),
+                Some(id),
+                "{id:?} by blob"
+            );
+            assert_eq!(
+                catalog_match(None, artifact.repository, artifact.filename, artifact.bytes),
+                Some(id),
+                "{id:?} by name"
+            );
+        }
+    }
+
     fn temporary(name: &str) -> PathBuf {
         let directory =
             std::env::temp_dir().join(format!("hex-found-{name}-{}", std::process::id()));

@@ -1233,6 +1233,60 @@ mod tests {
         assert!(!takes_language_hint("parakeet"));
     }
 
+    /// A real Whisper file lists Tagalog as `tl` and has no `fil`; Settings
+    /// offers Filipino as `fil`. Imported through the whole flow (header,
+    /// copy, manifest, definition), choosing Filipino is accepted and runs
+    /// with `tl`. Qwen3-ASR names Filipino `fil` itself and keeps it.
+    #[test]
+    fn a_real_whisper_import_accepts_filipino_and_runs_it_as_tl() {
+        let models = temporary_models_dir();
+        let header = |architecture: &str, variant: &str, languages: &[&str]| {
+            gguf(
+                &[
+                    ("general.architecture", architecture),
+                    ("general.name", variant),
+                    ("stt.variant", variant),
+                ],
+                &[("general.languages", languages)],
+                &[("stt.capability.lang_detect", true)],
+                &[("encoder.weight", 8, 64), ("norm", 0, 16)],
+            )
+        };
+        // Whisper small's own list: `tl`, no `fil`, no `yue`.
+        let whisper = models.join("whisper-small-Q8_0.gguf");
+        fs::write(
+            &whisper,
+            header("whisper", "whisper-small", &["en", "zh", "de", "tl", "ja"]),
+        )
+        .unwrap();
+        let id = import(&whisper, None, &AtomicBool::new(false)).unwrap();
+        let definition = definition(id);
+        assert!(definition.languages.contains(&"tl"));
+        assert!(
+            !definition.languages.contains(&"fil"),
+            "the file never says fil"
+        );
+        assert!(definition.supports_language("fil"));
+        assert!(definition.language_choices().contains(&"fil"));
+        assert_eq!(definition.runtime_language("fil"), "tl");
+        assert_eq!(definition.runtime_language_hint("fil"), Some("tl"));
+        let selection = TranscriptionSelection {
+            model: TranscriptionModelId::Custom(id),
+            language: "fil".into(),
+        };
+        assert!(super::super::models::validate(&selection).is_ok());
+        // What the file does not list stays refused.
+        assert!(!definition.supports_language("yue"));
+        assert!(!definition.supports_language("ko"));
+        assert_eq!(definition.runtime_language("de"), "de");
+
+        let qwen = models.join("qwen-Q8_0.gguf");
+        fs::write(&qwen, header("qwen3_asr", "qwen3-asr-1.7b", &["en", "fil"])).unwrap();
+        let qwen = super::definition(import(&qwen, None, &AtomicBool::new(false)).unwrap());
+        assert!(qwen.supports_language("fil"));
+        assert_eq!(qwen.runtime_language("fil"), "fil");
+    }
+
     #[test]
     fn unsupported_files_are_refused_with_a_reason() {
         let reason = |bytes: Vec<u8>| {
