@@ -9,7 +9,6 @@
 //! Only there does the audio owner ask or sound.
 
 use super::{Hotkeys, Shortcut};
-use crate::audio::CaptureInstant;
 use crate::dictation::audio::DictationAudio;
 use crate::suppression::{DictationHotkey, HotkeyAction};
 
@@ -51,18 +50,12 @@ pub(super) fn owned(hotkeys: &mut Hotkeys, shortcut: Shortcut, input: &Dictation
     }
 }
 
-/// An input event stamped `at` is about to be handled. The loop drains a whole
-/// batch before it checks the clock, so a release that waited in the queue past
-/// the threshold would end the press before its owned moment was seen. Judge
-/// the moment by the event's own timestamp first.
-pub(super) fn owned_by(hotkeys: &mut Hotkeys, at: CaptureInstant, input: &DictationAudio) {
-    for shortcut in Shortcut::ALL {
-        let due = hotkeys
-            .machine_mut(shortcut)
-            .is_some_and(|machine| machine.take_owned(at));
-        if due {
-            owned(hotkeys, shortcut, input);
-        }
+/// The input just processed ended these shortcuts' presses at or after the
+/// moment Hex owned them. Each is reported before the action that ended it,
+/// which a closed microphone then ignores.
+pub(super) fn owned_before_end(hotkeys: &mut Hotkeys, ended: &[Shortcut], input: &DictationAudio) {
+    for shortcut in ended {
+        owned(hotkeys, *shortcut, input);
     }
 }
 
@@ -70,6 +63,7 @@ pub(super) fn owned_by(hotkeys: &mut Hotkeys, at: CaptureInstant, input: &Dictat
 mod tests {
     use std::time::Duration;
 
+    use super::super::Processed;
     use super::*;
     use crate::app_settings::{FUNCTION_KEY_MASK, OPTION_KEY_MASK, RuntimeHotkey, SHIFT_KEY_MASK};
     use crate::audio::CaptureInstant;
@@ -209,13 +203,13 @@ mod tests {
             }
         }
 
-        /// One queued event, in the loop's order: judged by its own
-        /// timestamp, with no clock check in between (`tick` is the end of a
-        /// batch).
+        /// One queued event, handled as the loop does; `tick` is the clock
+        /// check at the end of a batch.
         fn send(&mut self, event: InputEvent, ms: u64) {
             let at = self.at(ms);
-            owned_by(&mut self.hotkeys, at, &self.audio);
-            for (shortcut, action) in self.hotkeys.process(event, at) {
+            let Processed { owned, actions } = self.hotkeys.process(event, at);
+            owned_before_end(&mut self.hotkeys, &owned, &self.audio);
+            for (shortcut, action) in actions {
                 if action == HotkeyAction::Start {
                     if !self.audio.start(at).unwrap() {
                         start_refused(&mut self.hotkeys, shortcut, &self.audio);
@@ -454,8 +448,10 @@ mod tests {
         }
     }
     /// The listener drains a whole batch of events before it checks the clock.
-    /// A release queued past the threshold must still count the press as the
-    /// person's try, once; one released before it, never.
+    /// The press is the person's try when the event that ends it is stamped at
+    /// or past the threshold, whatever else the batch holds: a release queued
+    /// past it counts, once; one stamped before it never does, even behind a
+    /// later unrelated event.
     #[test]
     fn a_release_queued_past_the_threshold_still_counts_the_press() {
         let bindings = [
@@ -467,43 +463,92 @@ mod tests {
         for binding in bindings {
             for state in REFUSED {
                 let label = format!("{binding:?}, {state:?}");
-                let mut late = Rig::with_binding(state, false, binding);
-                late.press(0);
-                late.release(400);
-                late.tick(401);
                 let asked = if state == PermissionState::NeedsRequest {
                     (1, 0, 0)
                 } else {
                     (0, 1, 1)
                 };
-                assert_eq!(late.noticed(), asked, "{label}: held 400 ms, one batch");
+
+                let mut late = Rig::with_binding(state, false, binding);
+                late.press(0);
+                late.release(400);
+                late.tick(401);
+                assert_eq!(late.noticed(), asked, "{label}: down 0, up 400");
                 assert!(late.leaked.is_empty(), "{label}");
 
                 let mut early = Rig::with_binding(state, false, binding);
                 early.press(0);
                 early.release(250);
                 early.tick(401);
-                assert_eq!(early.noticed(), (0, 0, 0), "{label}: held 250 ms");
+                assert_eq!(early.noticed(), (0, 0, 0), "{label}: down 0, up 250");
             }
         }
     }
 
-    /// Toggle: a start after the 40 ms grace, followed in the same batch by a
-    /// later event, is one try; before the grace it is not yet.
+    /// A later event ahead of the release in the queue (HID and session
+    /// stamps can reorder) must not make a 100 ms tap a try: only the event
+    /// that ends the press decides.
     #[test]
-    fn a_toggle_start_past_its_grace_in_the_same_batch_is_one_try() {
-        for binding in [Binding::Option, Binding::F5] {
-            let mut rig = Rig::with_binding(PermissionState::NeedsRequest, true, binding);
-            rig.press(0);
-            rig.send(InputEvent::MouseDown, 100);
-            rig.tick(101);
-            assert_eq!(rig.noticed(), (1, 0, 0), "{binding:?}");
+    fn an_unrelated_later_event_ahead_of_an_early_release_asks_nothing() {
+        for binding in [
+            Binding::Option,
+            Binding::F5,
+            Binding::OptionE,
+            Binding::Globe,
+        ] {
+            for state in REFUSED {
+                let mut rig = Rig::with_binding(state, false, binding);
+                rig.press(0);
+                rig.send(InputEvent::MouseDown, 400);
+                rig.release(100);
+                rig.tick(401);
+                let label = format!("{binding:?}, {state:?}");
+                assert_eq!(
+                    rig.noticed(),
+                    (0, 0, 0),
+                    "{label}: down 0, other 400, up 100"
+                );
+                assert_eq!(rig.opens.count(), 0, "{label}");
+                assert!(rig.leaked.is_empty(), "{label}: {:?}", rig.leaked);
+            }
+        }
+    }
 
-            let mut quick = Rig::with_binding(PermissionState::NeedsRequest, true, binding);
-            quick.press(0);
-            quick.send(InputEvent::MouseDown, 20);
-            quick.tick(21);
-            assert_eq!(quick.noticed(), (0, 0, 0), "{binding:?}: inside the grace");
+    /// A Hold press past the threshold that another key joins is the person's
+    /// try, as the clock tick would have made it; one joined before it is not.
+    #[test]
+    fn a_key_joining_a_hold_past_the_threshold_counts_the_press() {
+        let join = |gap: u64| {
+            let mut rig = Rig::new(PermissionState::NeedsRequest, false);
+            rig.option(0);
+            rig.send(
+                InputEvent::Key {
+                    code: E_KEY,
+                    down: true,
+                    flags: OPTION_KEY_MASK,
+                },
+                gap,
+            );
+            rig.tick(2_000);
+            (rig.noticed(), rig.leaked.is_empty())
+        };
+        assert_eq!(join(350), ((1, 0, 0), true), "joined at 350 ms");
+        assert_eq!(join(250), ((0, 0, 0), true), "joined at 250 ms");
+    }
+
+    /// Toggle: the tap is the gesture, so a release (the lock) is one try
+    /// whether it comes before the 40 ms grace or after it.
+    #[test]
+    fn a_toggle_release_is_one_try() {
+        for binding in [Binding::Option, Binding::F5] {
+            for release_at in [20, 100] {
+                let mut rig = Rig::with_binding(PermissionState::NeedsRequest, true, binding);
+                rig.press(0);
+                rig.release(release_at);
+                rig.tick(release_at + 1);
+                assert_eq!(rig.noticed(), (1, 0, 0), "{binding:?} up {release_at}");
+                assert!(rig.leaked.is_empty(), "{binding:?}");
+            }
         }
     }
 }

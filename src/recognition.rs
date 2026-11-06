@@ -158,6 +158,13 @@ struct Hotkeys {
     raw_capture: bool,
 }
 
+/// What one input did to the shortcut machines.
+struct Processed {
+    /// Shortcuts whose press the input ended after Hex owned it.
+    owned: Vec<Shortcut>,
+    actions: Vec<(Shortcut, HotkeyAction)>,
+}
+
 impl Hotkeys {
     fn machines(&mut self) -> impl Iterator<Item = &mut DictationHotkey> {
         std::iter::once(&mut self.dictation)
@@ -268,15 +275,22 @@ impl Hotkeys {
     /// Feeds one input to every machine, and returns what each did with
     /// which machine it was. A machine that starts while another records
     /// stands down until its keys come up, and only the dictation machine
-    /// pastes.
-    fn process(&mut self, event: InputEvent, at: CaptureInstant) -> Vec<(Shortcut, HotkeyAction)> {
+    /// pastes. A machine whose press this input ended, at or after the moment
+    /// Hex owned it, is in `owned`: the event's own timestamp decides, so a
+    /// release queued behind later events cannot hide or fake an owned press.
+    fn process(&mut self, event: InputEvent, at: CaptureInstant) -> Processed {
+        let mut owned = Vec::new();
         let mut actions = Vec::new();
         for shortcut in Shortcut::ALL {
             let others_recording = self.recording_besides(shortcut);
             let Some(machine) = self.machine_mut(shortcut) else {
                 continue;
             };
-            match machine.process(event, at) {
+            let action = machine.process(event, at);
+            if machine.take_owned_at_end() {
+                owned.push(shortcut);
+            }
+            match action {
                 Some(HotkeyAction::Start) if others_recording => {
                     machine.suspend();
                 }
@@ -286,7 +300,7 @@ impl Hotkeys {
                 None => {}
             }
         }
-        actions
+        Processed { owned, actions }
     }
 
     /// Stops whichever machine records, as a `stop` or `cancel` command does.
@@ -926,8 +940,9 @@ pub fn listen(
                 hotkeys.track_key_state(input_event, capture_at);
                 continue;
             }
-            gated_press::owned_by(&mut hotkeys, capture_at, &input);
-            for (shortcut, action) in hotkeys.process(input_event, capture_at) {
+            let Processed { owned, actions } = hotkeys.process(input_event, capture_at);
+            gated_press::owned_before_end(&mut hotkeys, &owned, &input);
+            for (shortcut, action) in actions {
                 if action == HotkeyAction::Start {
                     hotkeys.raw_capture = shortcut == Shortcut::Raw;
                 }
@@ -1908,7 +1923,8 @@ mod tests {
             raw: None,
             raw_capture: false,
         };
-        let mut press = |flags: u64, ms: u64| hotkeys.process(InputEvent::Flags(flags), at(ms));
+        let mut press =
+            |flags: u64, ms: u64| hotkeys.process(InputEvent::Flags(flags), at(ms)).actions;
         const START: HotkeyAction = HotkeyAction::Start;
         const FINISH: HotkeyAction = HotkeyAction::Finish;
         const DICTATION: Shortcut = Shortcut::Dictation;

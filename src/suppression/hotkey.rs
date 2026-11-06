@@ -142,6 +142,9 @@ pub struct DictationHotkey {
     /// When Hex owns the press in flight, for any binding (see
     /// [`Self::take_owned`]); `chord_break_at` is its modifier-only twin.
     owned_at: Option<CaptureInstant>,
+    /// The event just processed ended the press at or after its owned moment,
+    /// judged by that event's own timestamp ([`Self::take_owned_at_end`]).
+    owned_at_end: bool,
     modifier_history: ModifierHistory,
     // When each tracked key last went down.
     key_down_at: HashMap<u16, CaptureInstant>,
@@ -191,6 +194,7 @@ impl DictationHotkey {
             physical_key_downs: VecDeque::new(),
             chord_break_at: None,
             owned_at: None,
+            owned_at_end: false,
             modifier_history: ModifierHistory::reset(CaptureInstant::ZERO),
             key_down_at: HashMap::new(),
             side_down_at: HashMap::new(),
@@ -504,6 +508,7 @@ impl DictationHotkey {
 
     pub fn process(&mut self, event: InputEvent, now: CaptureInstant) -> Option<HotkeyAction> {
         let was_locked = matches!(self.state, State::Locked);
+        self.owned_at_end = false;
         let action = self.process_event(event, now);
         self.track_chord_break(event, now, action, was_locked);
         action
@@ -538,8 +543,8 @@ impl DictationHotkey {
                     now + MINIMUM_HOLD_DURATION
                 });
             }
-            Some(_) => self.owned_at = None,
-            None if released => self.owned_at = None,
+            Some(_) => self.end_press(now),
+            None if released => self.end_press(now),
             None => {}
         }
         if self.binding.key_code.is_some() || self.binding.modifiers.function {
@@ -564,6 +569,21 @@ impl DictationHotkey {
             None if released => self.chord_break_at = None,
             None => {}
         }
+    }
+
+    /// The press ends at `now`. If its owned moment had come by the event's
+    /// own timestamp, Hex owned it: a release queued behind later events in
+    /// one batch still counts, while one stamped earlier never does.
+    fn end_press(&mut self, now: CaptureInstant) {
+        self.owned_at_end = self.owned_at.is_some_and(|due_at| now >= due_at);
+        self.owned_at = None;
+    }
+
+    /// Whether the event just processed ended a press Hex already owned (true
+    /// at most once per event). The caller reports the owned press before it
+    /// handles the action that ended it.
+    pub fn take_owned_at_end(&mut self) -> bool {
+        std::mem::take(&mut self.owned_at_end)
     }
 
     /// Whether the held press is due its chord breaker at `now`; true at most

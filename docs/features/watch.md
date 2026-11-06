@@ -209,11 +209,26 @@ Apple Watch                               // watch.pair, watch.dictate
 
 - Known limit (C1, accepted): `listener_ready::current()` says Accessibility and
   the model are ready, but the listener thread starts on the runtime's next
-  tick (about 100 ms to 1 s after setup turns ready, and after its own startup).
-  A recording that arrives in that gap is accepted and queued (capacity 8),
-  and waits until the listener starts reading the queue instead of being
-  refused at once; if the listener never starts, the watch's own 50 s wait ends
-  it with `transcribing`. No test drives that race.
+  tick, after setup turns ready and after its own startup; no bound is
+  measured. While the listener's queue (capacity 8) has a receiver, a
+  recording that arrives in that gap is queued and waits until the listener
+  reads it. If the queue is full or the receiver is gone, `try_send` fails at
+  once and the recording is refused with the reason (500 `failed`), not
+  queued. If a queued recording is still waiting at 50 s, the Mac watch
+  service answers `transcribing` (its own reply deadline, not a wait on the
+  watch); the watch then polls `/status`. No test drives that race.
+- Known limit (C1, accepted): a press counts as owned when the event that ends
+  it (the release, or a chord breaker such as a key joining a held
+  modifier) is stamped at or after the owned moment, judged by that event's
+  own timestamp inside the shortcut machine (`DictationHotkey::process`). So a
+  release queued behind later events in one batch is judged by its own stamp:
+  a tap stamped 100 ms is silent whatever else the batch holds, and one
+  stamped 400 ms asks once. A release that arrives in a later batch than the
+  clock tick that passed the owned moment is not rewound: the tick has
+  already counted the press. A key joining a Hold press after the threshold
+  is a try, as the tick would make it. HID key evidence that falls back to
+  arrival time because its clock can't be read (`src/audio/instant.rs`)
+  predates C1 and can order wrongly; C1 does not change it.
 - A permission revoked while the microphone is warm is applied when a capture
   starts or ends or a setting reloads, and every open the input starts by
   itself (route, device-list, selection change, stream retry) asks the
