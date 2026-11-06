@@ -82,18 +82,27 @@ pub(crate) trait Dictation: Send {
 #[cfg(target_os = "macos")]
 pub(crate) struct ListenerDictation {
     controls: mpsc::SyncSender<RecognitionControl>,
+    /// Whether the listener can run yet; before that nothing reads the queue.
+    ready: fn() -> Result<(), String>,
 }
 
 #[cfg(target_os = "macos")]
 impl ListenerDictation {
-    pub(crate) fn new(controls: mpsc::SyncSender<RecognitionControl>) -> Self {
-        Self { controls }
+    pub(crate) fn new(
+        controls: mpsc::SyncSender<RecognitionControl>,
+        ready: fn() -> Result<(), String>,
+    ) -> Self {
+        Self { controls, ready }
     }
 }
 
 #[cfg(target_os = "macos")]
 impl Dictation for ListenerDictation {
     fn transcribe(&self, samples: Vec<f32>, delivery: WatchDelivery) -> Result<(), String> {
+        // The listener starts once Accessibility and the model are ready, not
+        // the microphone. Until then a queued recording would wait for the
+        // watch's timeout; refuse it with the reason instead.
+        (self.ready)()?;
         self.controls
             .try_send(RecognitionControl::WatchTranscribe { samples, delivery })
             .map_err(|error| match error {
