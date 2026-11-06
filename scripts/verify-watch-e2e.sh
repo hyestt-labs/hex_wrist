@@ -24,6 +24,11 @@
 # logs it, and marks the row INCOMPLETE. Nothing relies on the front window, the
 # front document, "whatever was running at the start", or a whole tty.
 #
+# TERMINAL GATE: Terminal has never been driven by this script on a real Mac, and the person's own terminal sessions
+# live there. No stage that uses Terminal (stage 1 or 2 with --targets terminal, stage 3, stage 4) runs until
+# `--check-terminal` has passed on this Mac for this version of the Terminal code: it opens ONE Terminal window of its
+# own, records its tty, reads text back, closes it, and touches no other window. See terminal_gate_ok.
+#
 # Exit status: 0 every case passed, 1 a case failed, 2 bad usage or a tool is
 # missing, 3 blocked on a human (a permission, a locked screen, an app already
 # running; the output lists each step), 4 nothing failed but a row is BLOCKED
@@ -52,7 +57,7 @@ fc_handle=
 usage() {
   echo "usage: $0 [--all] [--stage 1|2|3|4|all] [--skip-build] [--targets textedit,terminal] [--langs en,zh]"
   echo "          [--only <regex on scenario names>] [--with-agents] [--with-live] [--c1] [--preflight-only]"
-  echo "          [--keep-running] [--selftest]"
+  echo "          [--keep-running] [--selftest] [--check-textedit] [--check-terminal]"
 }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,7 +80,9 @@ while [ $# -gt 0 ]; do
     # A 30-second smoke test of the TextEdit handling on a real Mac: open one document, check it by id, write, read back,
     # close that one, and compare the window list with the one from before. Touches nothing else.
     --check-textedit) mode=check-textedit; shift ;;
-    -h|--help) sed -n 2,36p "$0"; echo; usage; exit 0 ;;
+    # The smoke test of the Terminal handling. NOT YET RUN on this Mac. Until it passes, no Terminal stage runs (see terminal_gate_ok).
+    --check-terminal) mode=check-terminal; shift ;;
+    -h|--help) sed -n 2,40p "$0"; echo; usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
@@ -147,7 +154,7 @@ real_path() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "
 # One tab-separated file, because many calls run in $( ) subshells that cannot
 # hand variables back. Fields: kind, key, extra.
 #   pid       key = pid (also its process group: every process is started by owned_bg), extra = program marker
-#   window    key = textedit:<window id> | terminal:<window id> | chrome:<pid>, extra = document name | tty | debug port
+#   window    key = textedit:<window id> | terminal:<window id> | chrome:<pid>, extra = file path | tty | debug port
 #   tty-proc  key = pid of the one process we run in a Terminal window, extra = that window's tty
 #   path      key = a path under $tmp
 #   testdata  key = one allowlisted file in Wristper Test's data folder (relay room reset)
@@ -387,7 +394,7 @@ sim_udid=
 # =============================================================================
 # Windows and ttys this run made
 # =============================================================================
-# Handles:  textedit "<window id>|<document name>"   terminal "<window id>|<tty>"
+# Handles:  textedit "<window id>|<file path>"   terminal "<window id>|<tty>"
 #           chrome "<pid>:<port>:<profile dir>"
 # Each is registered when made (window, and for Terminal also the one process we run
 # in it). Nothing refers to the front window or document; before each use the live
@@ -409,11 +416,11 @@ win_extra() { # kind handle: what the registry holds for this window
 # more, or its app is not running: the person closed it, nothing is left to act on), other (the registry
 # disagrees, or a Terminal window now shows another tty), unknown (the question itself failed). Only `ours`
 # may be acted on; `other` and `unknown` are refusals; `gone` is a quiet success for cleanup.
-# TextEdit: the identity is the window id. The document name is recorded once, when the window is made, and is
-# NOT compared afterwards: TextEdit renames an edited untitled document after its first line (and autosaves it
-# to a file of that name), so "Untitled 23" becomes "Quarterly Report to Design Team" within a second of a paste.
-# Same app, same registered id, window still exists: the same window. A different id, or one that is not in
-# the registry, is refused. Terminal: the tty of the tab never changes, so it is still compared.
+# TextEdit: this run opens a file of its own (a .txt in a folder under $tmp, never an untitled document: TextEdit
+# autosaves an edited untitled document to iCloud Drive and Trash cannot remove that file). The identity is the window
+# id plus the registered file path: the live document must still be that file. A file-backed document keeps its name
+# and path when it is edited (shown on a real Mac, see docs/features/watch.md); if the path ever differs, the window
+# is not the registered one. Terminal: the tty of the tab never changes, so it is still compared.
 # An app that is not running is never asked (that would launch it again). An empty answer is never "fine".
 win_probe() { # kind handle
   local kind=$1 h=$2 id running got rc
@@ -428,7 +435,14 @@ win_probe() { # kind handle
       if [ "$kind" = textedit ]; then
         got=$(osascript -e "tell application \"TextEdit\" to return exists window id $id" 2>/dev/null); rc=$?
         [ $rc = 0 ] || { echo unknown; return; }
-        case "$got" in true) echo ours ;; false) echo gone ;; *) echo unknown ;; esac
+        case "$got" in
+          true) ;;
+          false) echo gone; return ;;
+          *) echo unknown; return ;;
+        esac
+        got=$(osascript -e "tell application \"TextEdit\" to return path of document of window id $id" 2>/dev/null); rc=$?
+        [ $rc = 0 ] && [ -n "$got" ] || { echo unknown; return; }
+        if [ "$(real_path "$got")" = "$(real_path "${h#*|}")" ]; then echo ours; else echo other; fi
         return
       fi
       got=$(osascript -e 'tell application "Terminal"' -e "if not (exists window id $id) then return \"\"" \
@@ -437,12 +451,6 @@ win_probe() { # kind handle
       if [ -z "$got" ]; then echo gone; elif [ "$got" = "${h#*|}" ]; then echo ours; else echo other; fi ;;
     chrome) if chrome_ready "$(win_extra chrome "$h")"; then echo ours; else echo gone; fi ;;
   esac
-}
-# Says so when TextEdit has renamed the window since it was made (information only; the id is the identity).
-note_rename() { # handle
-  local now
-  now=$(osascript -e "tell application \"TextEdit\" to return name of document of window id ${1%%|*}" 2>/dev/null)
-  [ -z "$now" ] || [ "$now" = "${1#*|}" ] || log "TextEdit renamed window ${1%%|*} from '${1#*|}' to '$now' (it names an edited document after its first line); same window id, still this run's"
 }
 win_live() { [ "$(win_probe "$1" "$2")" = ours ]; }
 
@@ -455,8 +463,7 @@ front_check() {
   case "$kind" in
     textedit)
       [ "$bid" = com.apple.TextEdit ] || return 1
-      # The window id only: the document name changes once TextEdit autosaves an edited untitled document. And the
-      # first window is not always the document: about a second after a new document appears TextEdit shows a small
+      # The window id. And the first window is not always the document: about a second after a new document appears TextEdit shows a small
       # panel (no document, not closeable, 280x168) at the top of its window list. So the window asked about is the
       # first one that has a document, not `front window`.
       [ "$(te_first_document_window)" = "${h%%|*}" ] ;;
@@ -559,24 +566,51 @@ act_write() {
   win_live "$1" "$2" || { refuse window "$(win_key "$1" "$2")" "the live window is not the one this run made ($(win_probe "$1" "$2")); nothing written"; return 1; }
   case "$1" in
     textedit) osascript -e "tell application \"TextEdit\" to set text of document of window id ${2%%|*} to \"$3\"" ;;
+    # Terminal: the text is sent as input to the one process running in this window (the smoke test's cat).
+    terminal) osascript -e "tell application \"Terminal\" to do script \"$3\" in selected tab of window id ${2%%|*}" ;;
     *) return 1 ;;
   esac
 }
 write_target() { local kind; kind=$(kind_of "$1"); owned window "$(win_key "$kind" "$2")" act_write "$kind" "$2" "$3"; }
-# TextEdit autosaves an edited untitled document to a file (iCloud Drive by default) a moment after a paste, and
-# closing with "saving no" does not remove that file. The script does not delete it (it is a file in your own
-# folder, not something this script can prove it may delete); it notes it, and the final table lists it.
-note_leftover_file() { # handle
-  local saved
-  saved=$(osascript -e "tell application \"TextEdit\" to return path of document of window id ${1%%|*}" 2>/dev/null)
-  case "$saved" in ''|'missing value') return 0 ;; esac
-  # Evidence for deciding by hand: is the file's text exactly the document's text?
-  local doc file same=no
-  doc=$(osascript -e "tell application \"TextEdit\" to return text of document of window id ${1%%|*}" 2>/dev/null)
-  file=$(textutil -convert txt -stdout "$saved" 2>/dev/null)
-  if [ -n "$doc" ] && same_text "$doc" "$file"; then same=yes; fi
-  log "LEFT BEHIND: TextEdit autosaved this run's document to $saved (not deleted; file text is exactly the document's text: $same)"
-  printf '%s\t%s\n' "$saved" "TextEdit window ${1%%|*}; file text is exactly the document's text: $same" >> "$out/leftovers.tsv"
+# What the temp file holds when the window closes: information for the log, never a decision. TextEdit may or may not
+# have autosaved the paste into it by then; it is this run's own file either way.
+note_te_file() { # handle
+  local f=${1#*|} bytes
+  bytes=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  log "TextEdit window ${1%%|*}: this run's file $f holds ${bytes:-?} byte(s) at close"
+}
+# The Trash of the TextEdit file this run made, then of the folder it sits in. Each goes through the gate (only a
+# registered path), act_trash_path (only inside the temp root, never through a link), and a shape check here: the
+# file is a regular file named wristper-verify-*.txt in a textedit.* folder. Nothing else is ever trashed by this.
+act_trash_te_file() { # path
+  local f=$1 d
+  d=$(dirname -- "$f")
+  case "$(basename -- "$f")" in wristper-verify-*.txt) ;; *) refuse path "$f" "not a file this run's TextEdit step names (wristper-verify-*.txt)"; return 99 ;; esac
+  case "$(basename -- "$d")" in textedit.*) ;; *) refuse path "$f" "not inside a textedit.* folder this run made"; return 99 ;; esac
+  [ -L "$f" ] && { refuse path "$f" "it is a link"; return 99; }
+  owned path "$f" act_trash_path "$f" || return 1
+  owned path "$d" act_trash_path "$d"
+}
+# A file this run made whose window was never registered (TextEdit opened it, but looking the window up failed or the
+# run was interrupted in between): the window is found again by its document, which must be exactly one of this run's
+# own registered files, and registered, so the cleanup closes it by id like any other. Nothing else is adopted.
+te_adopt_orphans() {
+  local line wid p f
+  [ "$(osascript -e 'application "TextEdit" is running' 2>/dev/null)" = true ] || return 0
+  while IFS= read -r line; do
+    wid=${line%%|*}; p=${line#*|}
+    [[ $wid =~ ^[0-9]+$ ]] && [ -n "$p" ] || continue
+    while IFS=$'\t' read -r f _; do
+      case "$f" in */textedit.*/wristper-verify-*.txt) ;; *) continue ;; esac
+      [ "$(real_path "$p")" = "$(real_path "$f")" ] || continue
+      reg_has window "textedit:$wid" && continue
+      log "TextEdit window $wid shows this run's file $f but was never registered; registering it so it is closed"
+      reg_add window "textedit:$wid" "$f"
+    done < <(reg_list path)
+  done < <(osascript -e 'tell application "TextEdit"' -e 'set found to {}' -e 'set orphanScan to id of every window' \
+    -e 'repeat with wid in orphanScan' -e 'try' -e 'set d to document of window id (contents of wid)' \
+    -e 'if (name of d) starts with "wristper-verify-" then set end of found to ((contents of wid) as text) & "|" & (path of d)' \
+    -e 'end try' -e 'end repeat' -e 'return found' -e 'end tell' 2>/dev/null | tr ',' '\n' | sed 's/^ *//')
 }
 act_close() { # kind handle
   local kind=$1 h=$2 key state pid rest tty found=0 failed=0
@@ -588,11 +622,16 @@ act_close() { # kind handle
   esac
   case "$kind" in
     textedit)
+      # Close the window (only when it is proven ours), then Trash this run's own file and its folder. A window
+      # that is already gone still leaves its file, so that is Trashed too. A failed Trash keeps the registry entry.
       if [ "$state" = ours ]; then
-        note_rename "$h"
-        note_leftover_file "$h"
+        note_te_file "$h"
         osascript -e "tell application \"TextEdit\" to close window id ${h%%|*} saving no" >/dev/null 2>&1
-      fi ;;
+        sleep 0.5
+        [ "$(osascript -e "tell application \"TextEdit\" to return exists window id ${h%%|*}" 2>/dev/null)" = false ] \
+          || { refuse window "$key" "TextEdit did not close the window; its file is left in place"; return 1; }
+      fi
+      act_trash_te_file "${h#*|}" || return 1 ;;
     terminal)
       # The window is closed only after the one process this run started in it is proven ours and stopped.
       # Without that proof, or if stopping fails, the window stays open and the row is INCOMPLETE. (If the
@@ -633,22 +672,38 @@ close_target() {
   owned window "$(win_key "$kind" "$2")" act_close "$kind" "$2"
 }
 
-# TextEdit: a new document, found again by its window id. `make new document` returns a document object, which
-# cannot be turned into a window reference (the -1700 error a first run hit with `first window whose document is d`),
-# so the new window is the one id that was not in the window list before: a stable id, independent of which
-# window is in front. (`before` and `after` are AppleScript words, hence idsBefore and idsAfter.)
+# TextEdit: a document backed by a file this run made. An untitled document would be autosaved by TextEdit into iCloud
+# Drive (and renamed after its first line), and /usr/bin/trash cannot remove that file (NSCocoaErrorDomain 513). So the
+# script makes an empty .txt in its own folder under $tmp (in $TMPDIR, not in iCloud) and opens that file. Both the
+# folder and the file are registered. The window is the new one whose document is named like the file: `open` returns
+# a document object that cannot be turned into a window reference (-1700), and the document-less panel TextEdit shows
+# a second later has no name, so it never matches. Prints "<window id>|<file path>".
 te_open() {
+  local dir file name
+  dir=$(mktemp -d "$tmp/textedit.XXXXXX") || return 1
+  reg_add path "$dir"
+  name="wristper-verify-$RANDOM$RANDOM.txt"
+  file="$dir/$name"
+  : > "$file" || return 1
+  reg_add path "$file"
   osascript -e 'tell application "TextEdit"' -e 'activate' \
     -e 'set idsBefore to id of every window' \
-    -e 'set d to make new document' \
-    -e 'set idsAfter to id of every window' \
-    -e 'set fresh to {}' \
-    -e 'repeat with i in idsAfter' \
-    -e 'if idsBefore does not contain (contents of i) then set end of fresh to (contents of i)' \
+    -e "open (POSIX file \"$file\")" \
+    -e 'set wid to ""' \
+    -e 'repeat 20 times' \
+    -e 'set idsNow to id of every window' \
+    -e 'repeat with i in idsNow' \
+    -e 'if idsBefore does not contain (contents of i) then' \
+    -e 'try' \
+    -e "if (name of document of window id (contents of i)) is \"$name\" then set wid to (contents of i) as text" \
+    -e 'end try' \
+    -e 'end if' \
     -e 'end repeat' \
-    -e 'if (count of fresh) is not 1 then error "expected exactly one new TextEdit window, saw " & (count of fresh)' \
-    -e 'set wid to item 1 of fresh' \
-    -e 'return (wid as text) & "|" & (name of document of window id wid)' \
+    -e 'if wid is not "" then exit repeat' \
+    -e 'delay 0.25' \
+    -e 'end repeat' \
+    -e 'if wid is "" then error "TextEdit opened no window for the file"' \
+    -e "return wid & \"|$file\"" \
     -e 'end tell'
 }
 # Terminal: a new window running CMD. The command first writes its own pid, then (usually) exec's the
@@ -710,6 +765,30 @@ chrome_close() { # handle pid:port:dir
   reg_del window "chrome:$pid"
 }
 
+# --- the Terminal gate ----------------------------------------------------------------------------------------
+# A stamp file proves that `--check-terminal` passed on this Mac. It holds a hash of the functions that drive Terminal;
+# change any of them and the stamp no longer matches, so the smoke test has to pass again. TERMINAL_SMOKE is set only
+# inside check_terminal (the smoke test has to open its own window before any stamp exists).
+TERMINAL_STAMP=${WATCH_E2E_TERMINAL_STAMP:-$root/target/watch-e2e/terminal-smoke.ok}   # the env override is for --selftest
+TERMINAL_SMOKE=0
+terminal_code_hash() {
+  { declare -f term_open open_target act_focus act_read act_write act_close win_probe front_check check_terminal; } | shasum -a 256 | cut -d' ' -f1
+}
+terminal_gate_ok() { [ -f "$TERMINAL_STAMP" ] && [ "$(sed -n 's/^hash=//p' "$TERMINAL_STAMP")" = "$(terminal_code_hash)" ]; }
+# Stage 4's Rust tests (src/watch/live_tests.rs) still make UNTITLED TextEdit documents, which TextEdit autosaves into
+# iCloud Drive where Trash cannot remove them (the problem the file-backed documents above avoid). Until they open a
+# file of their own, stage 4 does not run. Returns 0 (and adds a blocked step) when this run includes stage 4.
+stage4_block() {
+  stage_on 4 || return 1
+  need "Stage 4 (--with-live, --stage 4) is off for now: its Rust tests still open untitled TextEdit documents, which TextEdit saves into iCloud Drive and /usr/bin/trash cannot remove. They must open a file in a temp folder first (as scripts/verify-watch-e2e.sh does for stages 1 to 3). Nothing was run."
+}
+# Adds one blocked step and returns 0 when this run uses Terminal and the smoke test has not passed.
+terminal_gate_block() {
+  uses_app Terminal || return 1
+  terminal_gate_ok && return 1
+  need "Terminal has not been checked on this Mac yet, and your own terminal sessions are there. Run \"$self\" --check-terminal first (it opens one Terminal window of its own, reads text back, closes it, and touches no other window), then run again. Until it passes, no stage that uses Terminal runs; --stage 1 --targets textedit does not need it."
+}
+
 # Prints a handle for the opened target and registers what was made. open_target runs in a subshell,
 # which is why the registry is a file.
 open_target() {
@@ -717,11 +796,17 @@ open_target() {
   case "$1" in
     textedit)
       h=$(te_open) || return 1
-      # Only a real "<window id>|<document name>" is registered. Anything else (an error text, an empty answer) is
-      # not a made window: nothing is registered and the row is INCOMPLETE.
-      [[ $h =~ ^[0-9]+\|.+$ ]] || { log "TextEdit did not return a window id and document name: '${h:0:120}'"; return 1; }
+      # Only a real "<window id>|<file path>" is registered. Anything else (an error text, an empty answer) is
+      # not a made window: nothing is registered and the row is INCOMPLETE. The file is already registered
+      # (te_open); the path must be inside this run's temp root, else the window is not registered at all.
+      [[ $h =~ ^[0-9]+\|/.+$ ]] || { log "TextEdit did not return a window id and file path: '${h:0:120}'"; return 1; }
+      case "$(real_path "${h#*|}")" in "$tmp_real"/*) ;; *) log "TextEdit's file ${h#*|} is not inside the temp root; not registered"; return 1 ;; esac
       reg_add window "textedit:${h%%|*}" "${h#*|}" ;;
     terminal|shell|recorder|claude|codex)
+      if [ "$TERMINAL_SMOKE" != 1 ] && ! terminal_gate_ok; then
+        log "REFUSED: no Terminal window is opened until --check-terminal has passed on this Mac for this version of the script"
+        return 1
+      fi
       pf=$(mktemp "$tmp/pid.XXXXXX") || return 1
       reg_add path "$pf"
       case "$1" in
@@ -840,6 +925,7 @@ teardown() {
   # 1. processes, each as a whole group, until nothing of the group is left
   reap_all
   # 2. TextEdit documents, Terminal windows (and the one process we ran in each), Chrome windows
+  te_adopt_orphans
   while IFS=$'\t' read -r key extra; do
     [ -n "$key" ] || continue
     kind=${key%%:*}; id=${key#*:}
@@ -900,7 +986,7 @@ init() { # prefix
   # codes, the registry, Chrome's profile. Mode 0700, moved to the Trash at exit.
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/wristper-e2e.XXXXXX") || { echo "cannot make a temp folder" >&2; exit 2; }
   tmp_real=$(real_path "$tmp")
-  : > "$tmp/registry.tsv"; : > "$out/refusals.tsv"; : > "$out/leftovers.tsv"; : > "$tmp/row-refused"
+  : > "$tmp/registry.tsv"; : > "$out/refusals.tsv"; : > "$tmp/row-refused"
   reg_add path "$tmp" root
   reg_add switch finder "the app-switch scenario"
   export WATCH_E2E_TMP="$tmp" WATCH_E2E_OUT="$out"   # the gate's helper commands find the registry through these
@@ -1766,6 +1852,10 @@ main() {
     command -v cargo >/dev/null || die "missing tool: cargo (stage 4)" 2
     cargo nextest --version >/dev/null 2>&1 || die "missing cargo-nextest (brew install cargo-nextest)" 2
   fi
+  # The Terminal gate comes first, before anything is built, started, or opened.
+  stage4_block
+  if [ "$mode" != check-terminal ] && terminal_gate_block; then :; fi
+  [ ${#blocked[@]} -eq 0 ] || print_blocked
   # Safety: the test build's data root is its own, and nothing below names the installed app's folder.
   [ "$TEST_DATA" != "$OLD_DATA" ] || die "test data root equals the installed app's" 2
 
@@ -1818,9 +1908,6 @@ main() {
     restored) record x clipboard-restored - PASS 100 verified 0 "" "$(jq -cn --arg d "$CLIP_DETAIL" '{detail:$d}')" ;;
     failed) record x clipboard-restored - FAIL 0 not-restored 0 "" "$(jq -cn --arg d "$CLIP_DETAIL" --arg p "$tmp/clipboard" '{fails:("your clipboard was NOT restored: " + $d + ". Backup kept at " + $p)}')" ;;
   esac
-  if [ -s "$out/leftovers.tsv" ]; then
-    record x leftover-files - NOTE 0 left-behind 0 "" "$(jq -cn --arg r "$(tr '\t\n' ' ;' < "$out/leftovers.tsv")" '{fails:("TextEdit autosaved the test document to a file and this script does not delete it; delete it yourself if you do not want it: " + $r)}')"
-  fi
   if [ -s "$out/refusals.tsv" ]; then
     record x ownership-guard - INCOMPLETE 0 refused 0 "" "$(jq -cn --arg r "$(tr '\t\n' ' ;' < "$out/refusals.tsv")" '{fails:("the gate refused to act on something not in this run'"'"'s registry: " + $r)}')"
   fi
@@ -1833,11 +1920,12 @@ main() {
 # check-textedit: the TextEdit handling, on a real Mac, in about 5 seconds
 # =============================================================================
 check_textedit() {
-  local before_ids= before_names= after_ids after_names h id text back ok=1 started leaked asn icloud_dir icloud_before icloud_after
+  local before_ids= before_names= after_ids after_names h id text back ok=1 started asn icloud_dir icloud_before icloud_after
+  local file dir name live_name live_path filetext tmp_for_check
   started=$(now_ms)
   init "check-textedit-"
   step() { printf '  %-4s %s\n' "$1" "$2"; [ "$1" = PASS ] || ok=0; }
-  echo "check-textedit: one TextEdit document of this run's own, nothing else"
+  echo "check-textedit: one TextEdit document, backed by a file in this run's own temp folder, nothing else"
   if app_running TextEdit; then
     before_ids=$(te_document_window_ids)
     before_names=$(osascript -e 'tell application "TextEdit" to return name of every document' 2>/dev/null)
@@ -1846,22 +1934,22 @@ check_textedit() {
     echo "  (TextEdit is not running; the run starts it and leaves it running)"
   fi
   icloud_dir="$HOME/Library/Mobile Documents/com~apple~TextEdit/Documents"
-  icloud_before=$(ls "$icloud_dir" 2>/dev/null)
+  icloud_before=$(ls -1 "$icloud_dir" 2>/dev/null)
+  echo "  (TextEdit's iCloud folder holds $(grep -c . <<<"$icloud_before") file(s) before; the list must be the same at the end)"
+  tmp_for_check=$tmp
   row_begin
   h=$(open_target textedit) || h=
-  if [ -n "$h" ]; then step PASS "opened a new document: window $h"; else step FAIL "could not open a document ($(tail -1 "$out/run.log" 2>/dev/null))"; fi
+  if [ -n "$h" ]; then step PASS "opened a document from a file: window ${h%%|*}"; else step FAIL "could not open a document ($(tail -1 "$out/run.log" 2>/dev/null))"; fi
   if [ -n "$h" ]; then
-    id=${h%%|*}
-    [ "$(win_probe textedit "$h")" = ours ] && step PASS "the live window $id carries the registered name '${h#*|}'" || step FAIL "the live window is not the registered one"
-    [ "$(reg_get window "textedit:$id")" = "${h#*|}" ] && step PASS "the registry holds window $id and its name" || step FAIL "the registry does not hold the window"
-    # TextEdit renames an edited untitled document after its first line within a second of a paste (and autosaves
-    # it). That cannot be provoked without leaving a file, so the same situation is made here instead: the live
-    # window keeps its real name while the registry (and the handle used from now on) hold a DIFFERENT name for
-    # the same window id. Every step below then runs in the state "same id, name differs".
-    reg_del window "textedit:$id"; reg_add window "textedit:$id" "Untitled 0 (the name it had when it was made)"
-    h="$id|Untitled 0 (the name it had when it was made)"
-    [ "$(win_probe textedit "$h")" = ours ] && step PASS "the name differs from the live one, the id matches and is registered: still ours" || step FAIL "a renamed window is not recognised as ours"
-    [ "$(win_probe textedit "999999|Untitled 0")" = other ] && step PASS "an id that is not in the registry is refused" || step FAIL "an unregistered id was not refused"
+    id=${h%%|*}; file=${h#*|}; dir=$(dirname -- "$file"); name=$(basename -- "$file")
+    case "$(real_path "$file")" in "$tmp_real"/*) step PASS "the file is inside this run's temp folder ($file)" ;; *) step FAIL "the file is outside the temp folder: $file" ;; esac
+    case "$(real_path "$file")" in "$(real_path "$HOME/Library/Mobile Documents")"/*) step FAIL "the file is in iCloud Drive" ;; *) step PASS "the file is not in iCloud Drive" ;; esac
+    [ -f "$file" ] && [ ! -s "$file" ] && step PASS "the file exists and is empty" || step FAIL "the file is missing or not empty"
+    reg_has path "$file" && reg_has path "$dir" && step PASS "the registry holds the file and its folder" || step FAIL "the registry does not hold the file and folder"
+    [ "$(win_probe textedit "$h")" = ours ] && step PASS "the live window $id shows the registered file" || step FAIL "the live window is not the registered one"
+    [ "$(reg_get window "textedit:$id")" = "$file" ] && step PASS "the registry holds window $id and the file path" || step FAIL "the registry does not hold the window"
+    [ "$(win_probe textedit "999999|$file")" = other ] && step PASS "an id that is not in the registry is refused" || step FAIL "an unregistered id was not refused"
+    [ "$(win_probe textedit "$id|$dir/not-the-registered-file.txt")" = other ] && step PASS "the registered id with a path that is not the registered one is refused" || step FAIL "a wrong path was not refused"
     # The two checks stage 1 makes just before audio goes out: focus the window by id, then the front check.
     focus_target textedit "$h" && step PASS "focused window $id by its id" || step FAIL "could not focus window $id"
     sleep 0.5
@@ -1871,23 +1959,36 @@ check_textedit() {
       asn=$(lsappinfo front 2>/dev/null)
       step FAIL "the front check does not see window $id in front (front app: $(lsappinfo info -only bundleid "$asn" 2>/dev/null | tr -s ' ' | tr -d '\n'); TextEdit's first document window: $(te_first_document_window))"
     fi
-    # Everything above is read-only. The write comes last, and the read-back and the close follow at once: TextEdit
-    # autosaves a document that has text to a file in iCloud Drive a few seconds after the first edit, and keeps
-    # it when the document is closed ("saving no" does not remove it). The folder listing is compared afterwards.
-    text="e2e-smoke-$RANDOM$RANDOM$RANDOM"   # exists only at run time, so a search cannot match this script's own text
+    text="e2e-smoke-$RANDOM$RANDOM$RANDOM"   # exists only at run time
     write_target textedit "$h" "$text" >/dev/null && step PASS "wrote text into window $id" || step FAIL "could not write into the window"
     back=$(read_target textedit "$h")
     same_text "$back" "$text" && step PASS "read back the same text" || step FAIL "read back '${back:0:60}', wrote '$text'"
+    # Time for TextEdit's autosave (an untitled document was saved to iCloud within about a second): wait, then look.
+    sleep 5
+    live_name=$(osascript -e "tell application \"TextEdit\" to return name of document of window id $id" 2>/dev/null)
+    live_path=$(osascript -e "tell application \"TextEdit\" to return path of document of window id $id" 2>/dev/null)
+    [ "$live_name" = "$name" ] && step PASS "5 s after the edit the document still has its name ($live_name)" || step FAIL "the document name changed: '$live_name', registered '$name'"
+    [ -n "$live_path" ] && [ "$(real_path "$live_path")" = "$(real_path "$file")" ] && step PASS "…and still has its path" || step FAIL "the document path changed: '$live_path', registered '$file'"
+    [ "$(win_probe textedit "$h")" = ours ] && step PASS "…and the window is still recognised as ours" || step FAIL "the window is no longer recognised as ours after the edit"
+    filetext=$(cat "$file" 2>/dev/null; echo x); filetext=${filetext%x}
+    if [ -z "$filetext" ]; then step PASS "the file is still empty (TextEdit had not saved the edit into it)"
+    elif same_text "$filetext" "$text"; then step PASS "the file holds exactly the text (TextEdit saved the edit into the file)"
+    else step FAIL "the file holds something else: '${filetext:0:60}'"; fi
+    icloud_after=$(ls -1 "$icloud_dir" 2>/dev/null)
+    [ "$icloud_after" = "$icloud_before" ] \
+      && step PASS "5 s after the edit no file appeared in TextEdit's iCloud Drive folder" \
+      || step FAIL "a file appeared in $icloud_dir: $(diff <(echo "$icloud_before") <(echo "$icloud_after") | grep '^>' | tr '\n' ' ')"
     close_target textedit "$h"
     # Asked directly: after the close the registry no longer holds the window, so win_probe would say "other".
     [ "$(osascript -e "tell application \"TextEdit\" to return exists window id $id" 2>/dev/null)" = false ] \
       && step PASS "window $id is gone after the close" || step FAIL "window $id is still there"
-    icloud_after=$(ls "$icloud_dir" 2>/dev/null)
-    [ "$icloud_after" = "$icloud_before" ] && [ ! -s "$out/leftovers.tsv" ] \
-      && step PASS "no file appeared in TextEdit's iCloud Drive folder" \
-      || step FAIL "a file appeared in $icloud_dir: $(diff <(echo "$icloud_before") <(echo "$icloud_after") | grep '^>' | tr '\n' ' ')"
-    leaked=$(mdfind -onlyin "$HOME" "$text" 2>/dev/null | head -3)
-    [ -z "$leaked" ] && step PASS "no file anywhere under your home contains the test text" || step FAIL "a file contains the test text: $leaked"
+    [ ! -e "$file" ] && step PASS "the file was moved to the Trash" || step FAIL "the file is still at $file"
+    [ ! -e "$dir" ] && step PASS "the file's folder was moved to the Trash" || step FAIL "the folder is still at $dir"
+    reg_has window "textedit:$id" && step FAIL "the registry still holds window $id" || step PASS "the registry dropped window $id"
+    icloud_after=$(ls -1 "$icloud_dir" 2>/dev/null)
+    [ "$icloud_after" = "$icloud_before" ] \
+      && step PASS "after the close the iCloud folder list is exactly the one from before" \
+      || step FAIL "the iCloud folder list changed: $(diff <(echo "$icloud_before") <(echo "$icloud_after") | grep '^[<>]' | tr '\n' ' ')"
   fi
   if app_running TextEdit; then
     after_ids=$(te_document_window_ids)
@@ -1899,8 +2000,79 @@ check_textedit() {
   row_refused && step FAIL "the gate refused something: $(tr '\n' ';' < "$tmp/row-refused")" || step PASS "the gate refused nothing"
   echo "  elapsed $(( ($(now_ms) - started) / 1000 )) s"
   teardown
+  [ ! -e "$tmp_for_check" ] && step PASS "the temp folder is gone after the cleanup" || step FAIL "the temp folder is still at $tmp_for_check"
   if [ "$ok" = 1 ]; then echo "check-textedit: PASS"; return 0; fi
   echo "check-textedit: FAIL"; return 1
+}
+
+# =============================================================================
+# check-terminal: the Terminal handling, on a real Mac, in about 10 seconds. WRITTEN, NOT YET RUN on this Mac.
+# =============================================================================
+# One Terminal window of this run's own. It records the window id and the tty, runs `cat` in it (the one registered
+# process), sends one line, reads the window back, and closes it by id after stopping the registered process.
+# Every other Terminal window is only listed (id and tty, read-only) before and after, and the two lists must match.
+# On a pass it writes the stamp that opens the Terminal gate.
+check_terminal() {
+  local before after h id tty text back ok=1 started pid line
+  started=$(now_ms)
+  init "check-terminal-"
+  step() { printf '  %-4s %s\n' "$1" "$2"; [ "$1" = PASS ] || ok=0; }
+  TERMINAL_SMOKE=1
+  echo "check-terminal: one Terminal window of this run's own, nothing else"
+  terminal_window_list() {
+    [ "$(osascript -e 'application "Terminal" is running' 2>/dev/null)" = true ] || return 0
+    osascript -e 'tell application "Terminal"' -e 'set out to {}' -e 'set allIds to id of every window' \
+      -e 'repeat with wid in allIds' -e 'try' -e 'set end of out to ((contents of wid) as text) & ":" & (tty of selected tab of window id (contents of wid))' \
+      -e 'end try' -e 'end repeat' -e 'return out' -e 'end tell' 2>/dev/null | tr ',' '\n' | tr -d ' ' | grep . | sort
+  }
+  if app_running Terminal; then
+    before=$(terminal_window_list)
+    echo "  (Terminal is running with $(grep -c . <<<"$before") window(s); their ids and ttys are recorded, read-only, and must be the same at the end)"
+  else
+    before=
+    echo "  (Terminal is not running; the run starts it and leaves it running)"
+  fi
+  row_begin
+  h=$(open_target terminal) || h=
+  if [ -n "$h" ]; then step PASS "opened a window: $h"; else step FAIL "could not open a window ($(tail -1 "$out/run.log" 2>/dev/null))"; fi
+  if [ -n "$h" ]; then
+    id=${h%%|*}; tty=${h#*|}
+    [[ $id =~ ^[0-9]+$ ]] && [[ $tty == /dev/ttys* ]] && step PASS "window id $id and tty $tty were recorded" || step FAIL "the handle is not a window id and a tty: $h"
+    [ "$(reg_get window "terminal:$id")" = "$tty" ] && step PASS "the registry holds window $id and its tty" || step FAIL "the registry does not hold the window"
+    pid=$(reg_list tty-proc | awk -F'\t' -v t="$tty" '{split($2,a,"\037"); if (a[1]==t) print $1}' | head -1)
+    [ -n "$pid" ] && step PASS "the one process in the window ($pid) is registered with the tty" || step FAIL "no process is registered for the tty"
+    [ "$(win_probe terminal "$h")" = ours ] && step PASS "the live window shows the registered tty" || step FAIL "the live window is not the registered one"
+    [ "$(win_probe terminal "999999|$tty")" = other ] && step PASS "an id that is not in the registry is refused" || step FAIL "an unregistered id was not refused"
+    [ "$(win_probe terminal "$id|/dev/ttys999")" = other ] && step PASS "the registered id with another tty is refused" || step FAIL "a wrong tty was not refused"
+    focus_target terminal "$h" && step PASS "focused window $id by its id" || step FAIL "could not focus window $id"
+    sleep 0.5
+    front_check terminal "$h" && step PASS "the front check says window $id is the one in front" || step FAIL "the front check does not see window $id in front"
+    text="e2e-term-$RANDOM$RANDOM"
+    write_target terminal "$h" "$text" >/dev/null && step PASS "sent one line to the window's process" || step FAIL "could not send a line to the window"
+    sleep 1
+    back=$(read_target terminal "$h")
+    [[ $back == *"$text"* ]] && step PASS "read the line back from the window" || step FAIL "the window does not show '$text'"
+    close_target terminal "$h"
+    [ "$(osascript -e "tell application \"Terminal\" to return exists window id $id" 2>/dev/null)" = false ] \
+      && step PASS "window $id is gone after the close" || step FAIL "window $id is still there"
+    [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null && step PASS "the registered process ($pid) is gone" || step FAIL "the registered process is still running"
+    reg_has window "terminal:$id" && step FAIL "the registry still holds window $id" || step PASS "the registry dropped window $id"
+  fi
+  if app_running Terminal; then
+    after=$(terminal_window_list)
+    [ "$after" = "$before" ] && step PASS "the other Terminal windows (ids and ttys) are exactly the ones from before" || step FAIL "the Terminal window list differs: before [$(tr '\n' ' ' <<<"$before")] after [$(tr '\n' ' ' <<<"$after")]"
+  fi
+  row_refused && step FAIL "the gate refused something: $(tr '\n' ';' < "$tmp/row-refused")" || step PASS "the gate refused nothing"
+  echo "  elapsed $(( ($(now_ms) - started) / 1000 )) s"
+  teardown
+  TERMINAL_SMOKE=0
+  if [ "$ok" = 1 ]; then
+    mkdir -p "$(dirname -- "$TERMINAL_STAMP")"
+    printf 'hash=%s\nat=%s\n' "$(terminal_code_hash)" "$(date '+%Y-%m-%d %H:%M:%S')" > "$TERMINAL_STAMP"
+    echo "check-terminal: PASS (stamp written: $TERMINAL_STAMP)"; return 0
+  fi
+  [ -f "$TERMINAL_STAMP" ] && "$TRASH" "$TERMINAL_STAMP" >/dev/null 2>&1   # a stale stamp from an older version is not left to open the gate
+  echo "check-terminal: FAIL (no stamp; Terminal stages stay refused)"; return 1
 }
 
 # =============================================================================
@@ -1923,6 +2095,15 @@ st_shims() {
 args="$*"
 echo "osascript $args" >> "$STUB_DIR/asc.log"
 case "$args" in
+  *"POSIX file"*)
+    # te_open: the stand-in "opens" the file it was given and answers like the real script does
+    case "$(cat "$STUB_DIR/te-open" 2>/dev/null)" in
+      error) echo "TextEdit got an error: Can’t make document into type reference. (-1700)" >&2; exit 1 ;;
+      garbage) echo "missing value" ;;
+      empty) : ;;
+      outside) echo "101|/etc/hosts" ;;
+      *) f=$(sed -E 's/.*POSIX file "([^"]*)".*/\1/' <<<"$args"); echo "$f" > "$STUB_DIR/te-path"; echo "101|$f" ;;
+    esac ;;
   *"front window"*|*firstDocumentWindow*)
     read -r w rest < "$STUB_DIR/front"; [ -z "$rest" ] || echo "$rest" > "$STUB_DIR/front"
     case "$args" in
@@ -1932,18 +2113,14 @@ case "$args" in
     exit 0 ;;
   *"return exists window id 101"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo true || echo false ;;
   *"return exists window id 202"*) echo false ;;
-  *"make new document"*)
-    case "$(cat "$STUB_DIR/te-open" 2>/dev/null)" in
-      error) echo "TextEdit got an error: Can’t make document into type reference. (-1700)" >&2; exit 1 ;;
-      garbage) echo "missing value" ;;
-      empty) : ;;
-      *) echo "101|Untitled 9" ;;
-    esac ;;
+  *"close window id 101"*) echo gone > "$STUB_DIR/live" ;;
   *"tty of selected tab of window id 303"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo "/dev/ttys303" || echo "" ;;
   *"name of document of window id 101"*)
     [ "$(cat "$STUB_DIR/live")" = live ] || { echo ""; exit 0; }
-    [ "$(cat "$STUB_DIR/name" 2>/dev/null)" = renamed ] && echo "Quarterly Report to Design Team" || echo "Untitled 9" ;;
-  *"path of document of window id 101"*) [ "$(cat "$STUB_DIR/name" 2>/dev/null)" = renamed ] && echo "/stub/Quarterly Report to Design Team.rtf" || echo "missing value" ;;
+    basename "$(cat "$STUB_DIR/te-path")" ;;
+  *"path of document of window id 101"*)
+    [ "$(cat "$STUB_DIR/name" 2>/dev/null)" = moved ] && echo "/stub/Elsewhere.txt" || cat "$STUB_DIR/te-path" ;;
+  *orphanScan*) cat "$STUB_DIR/orphans" 2>/dev/null ;;
   *documentWindowIds*) grep ':doc' "$STUB_DIR/windows" 2>/dev/null | cut -d: -f1 | paste -sd, - | sed 's/,/, /g' ;;
   *"id of every window"*) cut -d: -f1 "$STUB_DIR/windows" 2>/dev/null | paste -sd, - | sed 's/,/, /g' ;;
   *"is running"*) cat "$STUB_DIR/running" ;;
@@ -1992,7 +2169,7 @@ selftest_main() {
   init "selftest-"
   STUB_DIR="$tmp/stub"; mkdir -p "$STUB_DIR"
   export STUB_DIR
-  st_set running true; st_set te-open ok; st_set name original
+  st_set running true; st_set te-open ok; st_set name original; st_set te-path /nonexistent
   st_shims
   PATH="$tmp/bin:$PATH"; export PATH
   sim="$tmp/fake-sim"
@@ -2043,28 +2220,143 @@ selftest_main() {
   FAILS=; finish 9 focus-fails en 0
   st_check "the row is INCOMPLETE" bash -c "jq -e 'select(.target==\"focus-fails\" and .result==\"INCOMPLETE\")' '$results' >/dev/null"
 
-  echo "[2c] TextEdit renames the document after its first line (the real cause of run 2's INCOMPLETE): same id, still ours"
-  st_reset; st_set live live; st_set front ok; st_set name renamed
-  : > "$out/leftovers.tsv"
+  echo "[2c] TextEdit opens a file this run made (never an untitled document, which TextEdit autosaves into iCloud)"
+  st_reset; st_set live live; st_set front ok; st_set name original
   sim_run textedit en
-  st_check "no abort although the live name is not the registered one" test -z "$ABORT_NOTE"
+  st_check "no abort" test -z "$ABORT_NOTE"
+  tf=$(cat "$STUB_DIR/te-path"); td=$(dirname "$tf")
+  st_check "the file is inside the temp folder, in a textedit.* folder, named wristper-verify-*.txt" bash -c "case '$tf' in '$tmp'/textedit.*/wristper-verify-*.txt) exit 0 ;; *) exit 1 ;; esac"
+  st_check "the file exists and is empty" bash -c "[ -f '$tf' ] && [ ! -s '$tf' ]"
+  st_check "the file and its folder are registered, and so is the window with the file path" bash -c "grep -q \"^path.$tf\" '$tmp/registry.tsv' && grep -q \"^path.$td\" '$tmp/registry.tsv' && grep -q \"^window.textedit:101.$tf\" '$tmp/registry.tsv'"
   st_check "the audio was sent (focus and the front check use the window id)" bash -c "[ \"$(st_sent)\" = 1 ]"
   st_check "the read-back was not refused" bash -c "[ ! -s '$tmp/row-refused' ]"
   sim_close textedit
-  st_check "…and the renamed window was closed by its id" bash -c "grep -q 'close window id 101' '$STUB_DIR/asc.log'"
+  st_check "the window was closed by its id" bash -c "grep -q 'close window id 101' '$STUB_DIR/asc.log'"
+  st_check "…its file was moved to the Trash" bash -c "[ ! -e '$tf' ]"
+  st_check "…and its folder was moved to the Trash" bash -c "[ ! -e '$td' ]"
   st_check "…with no refusal" bash -c "[ ! -s '$tmp/row-refused' ]"
-  st_check "the autosaved file is noted (not deleted)" bash -c "grep -q 'Quarterly Report to Design Team.rtf' '$out/leftovers.tsv'"
-  FAILS=; finish 9 renamed-window en 0
-  st_check "the row is PASS" bash -c "jq -e 'select(.target==\"renamed-window\" and .result==\"PASS\")' '$results' >/dev/null"
-  # the same id with a name that is not the one registered for it is still refused: the registry decides
+  st_check "…and the registry dropped the window" bash -c "! grep -q 'textedit:101' '$tmp/registry.tsv'"
+  FAILS=; finish 9 own-file en 0
+  st_check "the row is PASS" bash -c "jq -e 'select(.target==\"own-file\" and .result==\"PASS\")' '$results' >/dev/null"
+  # The registry decides: the same id with another path, and an id that is not registered, are refused.
+  st_reset; st_set live live; st_set name original
+  h=$(open_target textedit)
+  tf=$(cat "$STUB_DIR/te-path"); td=$(dirname "$tf")
+  st_check "(setup) a second document is registered" bash -c "[ '$h' = '101|$tf' ] && [ \"$(win_probe textedit "$h")\" = ours ]"
+  st_check "a handle whose path is not the registered one is refused" bash -c "[ \"$(win_probe textedit "101|$td/wristper-verify-0.txt")\" = other ]"
+  st_check "an id that is not in the registry is refused" bash -c "[ \"$(win_probe textedit "555|$tf")\" = other ]"
   st_reset
-  st_check "a handle whose registered name differs from the registry's is refused" bash -c "[ \"$(win_probe textedit '101|Not the registered name')\" = other ]"
-  st_check "an id that is not in the registry is refused" bash -c "[ \"$(win_probe textedit '555|Untitled 9')\" = other ]"
-  st_reset
-  close_target textedit "555|Untitled 9"
+  close_target textedit "555|$tf"
   st_check "closing an unregistered id is refused even though TextEdit would answer for it" row_refused
   st_check "…and no close command was sent" bash -c "! grep -q 'close window id 555' '$STUB_DIR/asc.log'"
-  st_set name original
+  st_check "…and the file is still there" test -f "$tf"
+  # TextEdit shows the registered id with another file (the person saved it elsewhere): not ours, nothing closed or trashed
+  st_reset; st_set name moved
+  st_check "a live document whose path is not the registered file is not ours" bash -c "[ \"$(win_probe textedit "$h")\" = other ]"
+  close_target textedit "$h"
+  st_check "closing it is refused" row_refused
+  st_check "…no close command was sent, and the file was not Trashed" bash -c "! grep -q 'close window id 101' '$STUB_DIR/asc.log' && [ -f '$tf' ]"
+  st_set name original; st_reset
+  close_target textedit "$h"
+  st_check "(test cleanup) the same window closes once it shows the registered file again" bash -c "[ ! -e '$tf' ] && [ ! -s '$tmp/row-refused' ]"
+  st_set te-open outside; st_reset
+  h=$(open_target textedit)
+  st_check "a file outside the temp folder is not registered as a window" bash -c "[ -z '$h' ] && ! grep -q 'textedit:101' '$tmp/registry.tsv'"
+  st_set te-open ok
+
+  echo "[2g] a window whose registration was lost is found again by its own file, and only by that"
+  mkdir "$tmp/textedit.orph"; : > "$tmp/textedit.orph/wristper-verify-8.txt"
+  reg_add path "$tmp/textedit.orph"; reg_add path "$tmp/textedit.orph/wristper-verify-8.txt"
+  st_reset; st_set live live; st_set name original; st_set te-path "$tmp/textedit.orph/wristper-verify-8.txt"
+  printf '%s\n' "101|$tmp/textedit.orph/wristper-verify-8.txt, 102|/Users/someone/Documents/wristper-verify-9.txt, 103|$tmp/other.dir/wristper-verify-3.txt" > "$STUB_DIR/orphans"
+  te_adopt_orphans
+  st_check "the window that shows this run's registered file is registered" bash -c "grep -q 'window.textedit:101.$tmp/textedit.orph/wristper-verify-8.txt' '$tmp/registry.tsv'"
+  st_check "a window with a wristper-verify name that shows another file is not registered" bash -c "! grep -q 'textedit:102' '$tmp/registry.tsv'"
+  st_check "a window showing a file that is not a registered TextEdit file is not registered" bash -c "! grep -q 'textedit:103' '$tmp/registry.tsv'"
+  close_target textedit "101|$tmp/textedit.orph/wristper-verify-8.txt"
+  st_check "the adopted window is closed by its id and its file Trashed" bash -c "grep -q 'close window id 101' '$STUB_DIR/asc.log' && [ ! -e '$tmp/textedit.orph' ] && [ ! -s '$tmp/row-refused' ]"
+  : > "$STUB_DIR/orphans"; st_set live live
+
+  echo "[2f] only this run's own TextEdit file is ever Trashed"
+  mkdir "$tmp/textedit.unreg"; : > "$tmp/textedit.unreg/wristper-verify-1.txt"
+  st_reset
+  act_trash_te_file "$tmp/textedit.unreg/wristper-verify-1.txt"
+  st_check "a file that is not in the registry is refused" bash -c "[ -f '$tmp/textedit.unreg/wristper-verify-1.txt' ] && [ -s '$tmp/row-refused' ]"
+  outside_dir=$(mktemp -d /tmp/textedit.XXXXXX); : > "$outside_dir/wristper-verify-2.txt"
+  reg_add path "$outside_dir"; reg_add path "$outside_dir/wristper-verify-2.txt"
+  st_reset
+  act_trash_te_file "$outside_dir/wristper-verify-2.txt"
+  st_check "a registered file outside the temp folder is refused" bash -c "[ -f '$outside_dir/wristper-verify-2.txt' ] && [ -s '$tmp/row-refused' ]"
+  "$TRASH" "$outside_dir"   # the test's own folder
+  mkdir "$tmp/textedit.shape"; : > "$tmp/textedit.shape/notes.txt"; reg_add path "$tmp/textedit.shape"; reg_add path "$tmp/textedit.shape/notes.txt"
+  st_reset
+  act_trash_te_file "$tmp/textedit.shape/notes.txt"
+  st_check "a registered file with another name is refused" bash -c "[ -f '$tmp/textedit.shape/notes.txt' ] && [ -s '$tmp/row-refused' ]"
+  mkdir "$tmp/other.dir"; : > "$tmp/other.dir/wristper-verify-3.txt"; reg_add path "$tmp/other.dir"; reg_add path "$tmp/other.dir/wristper-verify-3.txt"
+  st_reset
+  act_trash_te_file "$tmp/other.dir/wristper-verify-3.txt"
+  st_check "a registered file in a folder that is not textedit.* is refused" bash -c "[ -f '$tmp/other.dir/wristper-verify-3.txt' ] && [ -s '$tmp/row-refused' ]"
+  mkdir "$tmp/textedit.link"; ln -s /etc/hosts "$tmp/textedit.link/wristper-verify-4.txt"
+  reg_add path "$tmp/textedit.link"; reg_add path "$tmp/textedit.link/wristper-verify-4.txt"
+  st_reset
+  act_trash_te_file "$tmp/textedit.link/wristper-verify-4.txt"
+  st_check "a link is refused, and its target is untouched" bash -c "[ -L '$tmp/textedit.link/wristper-verify-4.txt' ] && [ -f /etc/hosts ] && [ -s '$tmp/row-refused' ]"
+  mkdir "$tmp/textedit.ok"; : > "$tmp/textedit.ok/wristper-verify-5.txt"; reg_add path "$tmp/textedit.ok"; reg_add path "$tmp/textedit.ok/wristper-verify-5.txt"
+  st_reset
+  act_trash_te_file "$tmp/textedit.ok/wristper-verify-5.txt"
+  st_check "(control) a registered wristper-verify-*.txt in a textedit.* folder inside the temp folder IS Trashed, with its folder" bash -c "[ ! -e '$tmp/textedit.ok' ] && [ ! -s '$tmp/row-refused' ]"
+  failing=$tmp/failing-trash-te; printf '#!/bin/sh\nexit 1\n' > "$failing"; chmod +x "$failing"
+  mkdir "$tmp/textedit.fail"; : > "$tmp/textedit.fail/wristper-verify-6.txt"; reg_add path "$tmp/textedit.fail"; reg_add path "$tmp/textedit.fail/wristper-verify-6.txt"
+  st_reset; keep_trash=$TRASH; TRASH=$failing
+  act_trash_te_file "$tmp/textedit.fail/wristper-verify-6.txt"
+  TRASH=$keep_trash
+  st_check "a Trash that fails is reported (nothing is removed another way)" bash -c "[ -f '$tmp/textedit.fail/wristper-verify-6.txt' ] && [ -s '$tmp/row-refused' ]"
+  st_reset
+
+  echo "[2h] the Terminal gate: no Terminal stage runs before --check-terminal has passed"
+  TERMINAL_STAMP="$tmp/terminal-smoke.ok"
+  st_reset; : > "$STUB_DIR/asc.log"
+  st_check "no stamp: the gate is closed" st_not terminal_gate_ok
+  h=$(open_target terminal)
+  st_check "no stamp: open_target terminal refuses, and no Terminal window was asked for" bash -c "[ -z '$h' ] && ! grep -q 'do script' '$STUB_DIR/asc.log'"
+  for k in shell recorder claude codex; do
+    h=$(open_target $k)
+    st_check "no stamp: open_target $k refuses too" bash -c "[ -z '$h' ] && ! grep -q 'do script' '$STUB_DIR/asc.log'"
+  done
+  printf 'hash=0000\nat=never\n' > "$TERMINAL_STAMP"
+  st_check "a stamp for other code does not open the gate" st_not terminal_gate_ok
+  h=$(open_target terminal)
+  st_check "…and open_target still refuses" bash -c "[ -z '$h' ] && ! grep -q 'do script' '$STUB_DIR/asc.log'"
+  printf 'at=now\n' > "$TERMINAL_STAMP"
+  st_check "a stamp with no hash does not open the gate" st_not terminal_gate_ok
+  : > "$TERMINAL_STAMP"
+  st_check "an empty stamp does not open the gate" st_not terminal_gate_ok
+  printf 'hash=%s\nat=test\n' "$(terminal_code_hash)" > "$TERMINAL_STAMP"
+  st_check "(control) a stamp for this code opens the gate" terminal_gate_ok
+  open_target terminal >/dev/null
+  st_check "(control) …and then open_target does ask Terminal for a window (so the refusals above can be seen)" bash -c "grep -q 'do script' '$STUB_DIR/asc.log'"
+  st_check "the hash covers the Terminal code: a changed term_open changes it" bash -c "$(declare -f terminal_code_hash term_open open_target act_focus act_read act_write act_close win_probe front_check check_terminal); term_open() { : changed; }; a=\$(terminal_code_hash); [ \"\$a\" != '$(terminal_code_hash)' ]"
+  : > "$TERMINAL_STAMP"
+  st_check "(a stage run) stage 1 with --targets textedit does not use Terminal" bash -c "stage=1; with_live=0; targets=textedit; $(declare -f stage_on uses_app); ! uses_app Terminal"
+  for cfg in "1 terminal" "1 textedit,terminal" "2 terminal" "3 textedit" "all textedit,terminal"; do
+    st_check "(a stage run) stage ${cfg%% *} with targets ${cfg#* } uses Terminal" bash -c "stage=${cfg%% *}; with_live=0; targets=${cfg#* }; $(declare -f stage_on uses_app); uses_app Terminal"
+  done
+  st_check "(a stage run) stage 4 uses Terminal" bash -c "stage=4; with_live=1; targets=textedit; $(declare -f stage_on uses_app); uses_app Terminal"
+  blocked=(); stage=1; targets=terminal; with_live=0
+  terminal_gate_block
+  st_check "a Terminal run without the stamp is blocked, with the --check-terminal instruction" bash -c "[ '${#blocked[@]}' = 1 ] && [[ '${blocked[0]}' == *--check-terminal* ]]"
+  blocked=(); targets=textedit
+  st_check "a TextEdit-only run is not blocked by the gate" st_not terminal_gate_block
+  blocked=(); targets=textedit,terminal; printf 'hash=%s\n' "$(terminal_code_hash)" > "$TERMINAL_STAMP"
+  st_check "(control) a Terminal run with a valid stamp is not blocked" st_not terminal_gate_block
+  blocked=(); stage=4; with_live=1
+  stage4_block
+  st_check "stage 4 is blocked (its Rust tests still make untitled TextEdit documents)" bash -c "[ '${#blocked[@]}' = 1 ] && [[ '${blocked[0]}' == *'untitled TextEdit'* ]]"
+  blocked=(); stage=1; with_live=0
+  st_check "stages 1 to 3 are not blocked by it" st_not stage4_block
+  stage=all; targets=textedit,terminal; blocked=()
+  : > "$TERMINAL_STAMP"
+  st_check "the real script refuses a Terminal stage before building anything (exit 3, names --check-terminal)" bash -c "o=\$(WATCH_E2E_TERMINAL_STAMP='$tmp/no-such-stamp' /bin/bash '$self' --stage 1 --targets terminal --skip-build 2>&1); rc=\$?; [ \$rc = 3 ] && grep -q -- '--check-terminal' <<<\"\$o\" && ! grep -q 'building Wristper Test' <<<\"\$o\""
 
   echo "[3] positive control: focus and front both fine, audio IS sent"
   st_reset; st_set live live; st_set front "ok"
@@ -2102,7 +2394,7 @@ selftest_main() {
   fi
 
   echo "[2b] TextEdit cannot make the document (the -1700 a first run hit): INCOMPLETE, never PASS, no audio"
-  for mode in error garbage empty; do
+  for mode in error garbage empty outside; do
     st_reset; st_set live live; st_set front ok; st_set te-open "$mode"
     sim_run textedit en
     st_check "[$mode] sim_run aborted" test -n "$ABORT_NOTE"
@@ -2208,9 +2500,12 @@ selftest_main() {
 
   echo "[8] an app the person quit is not launched again by the cleanup"
   st_reset; st_set running false
-  reg_add window textedit:202 "Untitled 5"
-  close_target textedit "202|Untitled 5"
+  mkdir "$tmp/textedit.gone"; : > "$tmp/textedit.gone/wristper-verify-7.txt"
+  reg_add path "$tmp/textedit.gone"; reg_add path "$tmp/textedit.gone/wristper-verify-7.txt"
+  reg_add window textedit:202 "$tmp/textedit.gone/wristper-verify-7.txt"
+  close_target textedit "202|$tmp/textedit.gone/wristper-verify-7.txt"
   st_check "no window command was sent to the quit TextEdit" bash -c "! grep -q 'tell application \"TextEdit\"' '$STUB_DIR/asc.log'"
+  st_check "…its file was still Trashed (it is this run's own)" bash -c "[ ! -e '$tmp/textedit.gone' ]"
   st_check "…and a window that is simply gone is not a refusal (nothing was left to close)" bash -c "[ ! -s '$tmp/row-refused' ]"
   st_check "…its registry entry is dropped" bash -c "! grep -q 'textedit:202' '$tmp/registry.tsv'"
   st_set running true
@@ -2316,6 +2611,7 @@ selftest_main() {
 # =============================================================================
 case "$mode" in
   check-textedit) check_textedit; exit $? ;;
+  check-terminal) check_terminal; exit $? ;;
   front-check) front_check "$fc_kind" "$fc_handle"; exit $? ;;
   switch-away) tmp=${WATCH_E2E_TMP:-}; out=${WATCH_E2E_OUT:-}; [ -f "$tmp/registry.tsv" ] || exit 1
                owned switch finder act_switch_away; exit $? ;;

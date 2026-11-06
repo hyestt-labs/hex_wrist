@@ -206,7 +206,14 @@ Apple Watch                               // watch.pair, watch.dictate
   and the simulator it registered itself, checks the front app before any audio
   or key goes out, and lists every missing step with exit status 3. The first
   real run is `--stage 1 --targets textedit --langs en`; `--selftest` checks
-  the ownership rules without an app or window.
+  the ownership rules without an app or window. TextEdit targets open a `.txt`
+  the script made in its own temp folder (never an untitled document, which
+  TextEdit autosaves into iCloud Drive where Trash cannot remove it), find the
+  window by its document name, and move only that file and folder to the
+  Trash after closing the window; `--check-textedit` proves this on a real Mac.
+  No Terminal stage runs until `--check-terminal` has passed on that Mac
+  (`--check-terminal` is written, not yet run), and stage 4 is off until its
+  Rust tests open a file of their own.
 - C1: `dictation::microphone_access` covers the gate (a refused start
   records nothing, opens nothing, and says nothing; an intentional try asks
   once, then sounds; a grant restores the saved policy; a revoke closes the
