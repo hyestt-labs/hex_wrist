@@ -292,10 +292,17 @@ reap_all() { # every registered process group
 #         Trashed only once it is empty. A listing that fails keeps everything.
 #   The temp root itself (kind path, extra `root`) is Trashed last, and only when it is empty.
 # Every Trash of this script goes through do_trash, which refuses a path that is, or holds, a te-keep file.
-do_trash() { # [--final] path
-  local p k keeps final=0
-  if [ "$1" = --final ]; then final=1; shift; fi
+do_trash() { # [--final|--testdata] path
+  local p k keeps final=0 testdata=0
+  case "$1" in --final) final=1; shift ;; --testdata) testdata=1; shift ;; esac
   p=$1
+  # Nothing is Trashed once the run has frozen Trash (a registry list that could not be read during the teardown).
+  [ "${TRASH_FROZEN:-0}" = 0 ] || { log "kept: $p (Trash is frozen: $TRASH_FROZEN_WHY)"; return 94; }
+  # Only paths inside this run's own temp root, apart from the four registered Wristper Test data files (act_trash_testdata,
+  # which passes --testdata). Anything else is refused here, whoever asks.
+  if [ $testdata = 0 ]; then
+    case "$p" in "$tmp"|"$tmp"/*) ;; *) log "kept: $p (not inside this run's temp root $tmp, so it is never Trashed)"; return 93 ;; esac
+  fi
   # --final is only for the last two steps of cleanup_root (the script's own bookkeeping files, then the EMPTY root): the
   # registry is among the things being removed, so there is nothing left to check it against.
   if [ $final = 0 ]; then
@@ -309,6 +316,10 @@ do_trash() { # [--final] path
   fi
   "$TRASH" "$p" >/dev/null 2>&1
 }
+# Freeze Trash for the rest of the run (in this shell and everything started from it): used when a registry list the cleanup
+# depends on cannot be read, because then nothing can prove which files and windows are this run's to settle.
+TRASH_FROZEN=0; TRASH_FROZEN_WHY=
+trash_freeze() { log "FREEZING TRASH: $1"; TRASH_FROZEN=1; TRASH_FROZEN_WHY=$1; }
 # dir_state DIR: empty | nonempty | unknown (the listing failed: never treated as empty)
 dir_state() {
   local l
@@ -386,7 +397,7 @@ act_trash_testdata() {
   case "$name" in relay-room|relay-secret|paired-devices.json|delivered-ids.json) ;; *) refuse testdata "$p" "not on the allowlist"; return 99 ;; esac
   wt_running && { refuse testdata "$p" "Wristper Test is running"; return 99; }
   [ -e "$p" ] || return 0
-  do_trash "$p"; rc=$?
+  do_trash --testdata "$p"; rc=$?
   if [ $rc -ne 0 ] || [ -e "$p" ]; then
     refuse testdata "$p" "Trash failed (exit $rc) and the file is still there"
     return 1
@@ -746,8 +757,13 @@ te_close_by_id() { # id
 # run and are registered; a window that was already there before shows a file that did not exist then, so it cannot
 # be ours and nothing is closed or Trashed on its account. A scan that fails keeps the file.
 te_adopt_orphans() {
-  local f before ids id
-  te_running >/dev/null || { while IFS=$'\t' read -r f _; do te_keep "$f" "could not ask whether TextEdit is running"; done < <(reg_list te-before); return 0; }
+  local f before ids id tb
+  # The list of this run's files is read once and checked: a registry that cannot be read is not an empty list.
+  tb=$(reg_list te-before) || { trash_freeze "the registry could not be read (te-before) while looking for windows of this run's files"; return 1; }
+  if ! te_running >/dev/null; then
+    while IFS=$'\t' read -r f _; do [ -n "$f" ] && te_keep "$f" "could not ask whether TextEdit is running"; done <<<"$tb"
+    return 0
+  fi
   [ "$(te_running)" = true ] || return 0
   while IFS=$'\t' read -r f before; do
     [ -n "$f" ] || continue
@@ -760,7 +776,7 @@ te_adopt_orphans() {
         reg_add window "textedit:$id" "$f"
       fi
     done
-  done < <(reg_list te-before)
+  done <<<"$tb"
 }
 # The last step for a TextEdit file: close every window that shows it, prove none is left, then Trash the file and
 # (only when empty) its folder. Anything unproven keeps the file (see the rule above).
@@ -990,6 +1006,12 @@ terminal_gate_problem() {
   return 0
 }
 terminal_gate_ok() { [ -z "$(terminal_gate_problem)" ]; }
+# Close the gate for a stamp that is there: its content is overwritten with `invalid`, which the gate cannot read as host, script
+# hash, and time, so it is refused. The file is not Trashed (it is not this run's registered item and is outside the temp root).
+invalidate_terminal_stamp() {
+  [ -f "$TERMINAL_STAMP" ] || return 0
+  printf 'invalid\n' > "$TERMINAL_STAMP" 2>/dev/null || log "could not overwrite the stale stamp $TERMINAL_STAMP; delete it yourself or run --check-terminal again"
+}
 # The one-time token for the Rust live tests (src/watch/live_tests.rs). It exists only after the Terminal gate is open,
 # in a file of this run's temp root and in an environment variable of the cargo child; the test that uses it empties the
 # file (consumes it), so a second use, or a cargo run started by hand, has none.
@@ -1146,6 +1168,7 @@ clip_restore() {
 # and the root only when it is empty.
 cleanup_root() {
   local entry kept=0 internal
+  [ "${TRASH_FROZEN:-0}" = 0 ] || { log "the temp root $tmp stays: Trash is frozen ($TRASH_FROZEN_WHY)"; return 0; }
   for entry in "$tmp"/* "$tmp"/.[!.]*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     case "$entry" in "$tmp/registry.tsv"|"$tmp/registry.new"|"$tmp/row-refused") continue ;; esac
@@ -1178,11 +1201,12 @@ teardown() {
   mask_signals
   TORN_DOWN=1
   [ -n "$tmp" ] || return 0
-  local key extra kind id name entry f
+  local key extra kind id name entry f wins tfiles
   # 1. processes, each as a whole group, until nothing of the group is left
   reap_all
   # 2. TextEdit documents, Terminal windows (and the one process we ran in each), Chrome windows
   te_adopt_orphans
+  wins=$(reg_list window) || { trash_freeze "the registry could not be read (window) while closing this run's windows"; wins=; }
   while IFS=$'\t' read -r key extra; do
     [ -n "$key" ] || continue
     kind=${key%%:*}; id=${key#*:}
@@ -1190,7 +1214,7 @@ teardown() {
       textedit) owned window "$key" act_close textedit "$id|$extra" ;;
       terminal) owned window "$key" act_close terminal "$id|$extra" ;;
     esac
-  done < <(reg_list window)
+  done <<<"$wins"
   # 3. the person's clipboard and the setting this run changed
   clip_restore
   if [ -n "$keep_setting_original" ] && [ -x "$hex" ]; then
@@ -1205,7 +1229,8 @@ teardown() {
   fi
   # 5. every TextEdit file of this run is settled (windows proven gone, or the file kept), then the temp root is
   # cleaned item by item (see cleanup_root).
-  while IFS=$'\t' read -r key extra; do te_settle_file "$key"; done < <(reg_list te-before)
+  tfiles=$(reg_list te-before) || { trash_freeze "the registry could not be read (te-before) while settling this run's TextEdit files"; tfiles=; }
+  while IFS=$'\t' read -r key extra; do [ -n "$key" ] && te_settle_file "$key"; done <<<"$tfiles"
   cleanup_root
   return 0
 }
@@ -2348,7 +2373,7 @@ check_terminal() {
     printf 'host=%s\nscript=%s\nissued=%s\nat=%s\n' "$(machine_id)" "$(script_sha)" "$(date +%s)" "$(date '+%Y-%m-%d %H:%M:%S')" > "$TERMINAL_STAMP"
     echo "check-terminal: PASS (stamp written: $TERMINAL_STAMP)"; return 0
   fi
-  [ -f "$TERMINAL_STAMP" ] && do_trash "$TERMINAL_STAMP"   # a stale stamp from an older version is not left to open the gate
+  invalidate_terminal_stamp   # a stale stamp from an older version is not left to open the gate
   echo "check-terminal: FAIL (no stamp; Terminal stages stay refused)"; return 1
 }
 
@@ -2703,6 +2728,79 @@ selftest_main() {
   st_run_sub do_trash "$sub/g.txt"
   st_check "(f) (control) …and do_trash Trashes the file" bash -c "[ ! -e '$sub/g.txt' ]"
   "$TRASH" "$sub"
+
+  echo "[1e] a failed --check-terminal closes the gate by overwriting its stamp, and nothing outside this run's temp root is ever Trashed"
+  TERMINAL_STAMP="$tmp/stamp-test.ok"; reg_add path "$TERMINAL_STAMP"
+  me=$(machine_id); sha=$(script_sha); now=$(date +%s)
+  invalidate_terminal_stamp
+  st_check "(a) with no stamp, invalidating makes none" bash -c "[ ! -e '$TERMINAL_STAMP' ]"
+  printf 'host=%s\nscript=%s\nissued=%s\n' "$me" "$sha" "$now" > "$TERMINAL_STAMP"
+  st_check "(a) (control) a valid stamp opens the gate until it is invalidated" terminal_gate_ok
+  invalidate_terminal_stamp
+  st_check "(a) after a failed check the stamp still exists (it was overwritten, not Trashed)" test -f "$TERMINAL_STAMP"
+  st_check "(a) …it now holds the invalid marker and the gate is closed" bash -c "[ \"\$(cat '$TERMINAL_STAMP')\" = invalid ] && ! ( $(declare -f terminal_gate_problem terminal_gate_ok machine_id script_sha); TERMINAL_STAMP='$TERMINAL_STAMP'; self='$self'; TERMINAL_STAMP_MAX_AGE=86400; terminal_gate_ok )"
+  st_check "(a) the check's failure path calls it (and nothing else touches the stamp)" bash -c "$(declare -f check_terminal) ; declare -f check_terminal | grep -q invalidate_terminal_stamp && ! declare -f check_terminal | grep -q 'do_trash'"
+  # (b) do_trash never touches a path outside the run's temp root, whoever asks
+  st_sub inroot; sub=$SUB
+  : > "$sub/in.txt"; : > "$tmp/outside-test.txt"; reg_add path "$tmp/outside-test.txt"
+  st_run_sub do_trash "$tmp/outside-test.txt"
+  st_check "(b) a path outside the run's temp root is refused by do_trash itself, and stays" test -f "$tmp/outside-test.txt"
+  st_run_sub do_trash "$sub/in.txt"
+  st_check "(b) (control) a path inside the root is Trashed" bash -c "[ ! -e '$sub/in.txt' ]"
+  "$TRASH" "$sub"; "$TRASH" "$tmp/outside-test.txt"
+
+  echo "[1f] a registry list the cleanup depends on that cannot be read freezes Trash: nothing is Trashed, no window result is skipped"
+  st_failing_list() { # kind nth command... : the nth call of reg_list for KIND (0 = every call) fails
+    FAILKIND=$1; FAILNTH=$2; shift 2
+    reg_list() {
+      if [ "$1" = "$FAILKIND" ]; then
+        n=$(cat "$STUB_DIR/list-count" 2>/dev/null); n=$((n + 1)); echo "$n" > "$STUB_DIR/list-count"
+        { [ "$FAILNTH" = 0 ] || [ "$n" = "$FAILNTH" ]; } && return 1
+      fi
+      [ -r "$tmp/registry.tsv" ] || return 1
+      K="$1" awk -F'\t' '$1==ENVIRON["K"] {print $2 "\t" $3}' "$tmp/registry.tsv"
+    }
+    "$@"
+  }
+  st_te_fixture() { # name: a sub root with a registered TextEdit file whose window 101 is open
+    st_sub "$1"; sub=$SUB; f="$sub/textedit.FFFFFF/wristper-verify-6.txt"
+    mkdir "$sub/textedit.FFFFFF"; : > "$f"
+    printf 'path\t%s\t\npath\t%s\t\nte-before\t%s\t7 \nwindow\ttextedit:101\t%s\n' "$sub/textedit.FFFFFF" "$f" "$f" "$f" >> "$sub/registry.tsv"
+    st_reset; st_set live live; st_set name original; st_set te-path "$f"; printf '101|%s\n' "$f" > "$STUB_DIR/scan"; : > "$STUB_DIR/list-count"; : > "$STUB_DIR/asc.log"
+  }
+  # (a) the list of windows cannot be read during the teardown: no window is closed on a guess, nothing is Trashed
+  st_te_fixture lw
+  st_td_frozen() { teardown; echo "$TRASH_FROZEN" > "$STUB_DIR/td-frozen"; }
+  st_run_sub st_failing_list window 0 st_td_frozen
+  st_check "(a) window list unreadable: the file, its folder, and the root are all still there" bash -c "[ -f '$f' ] && [ -d '$sub/textedit.FFFFFF' ] && [ -d '$sub' ]"
+  st_check "(a) …and Trash was frozen for the rest of the run" bash -c "[ \"\$(cat '$STUB_DIR/td-frozen')\" = 1 ]"
+  "$TRASH" "$sub"
+  # (b) the list of TextEdit files cannot be read when the teardown settles them
+  st_te_fixture lt
+  awk -F'\t' '!($1=="window")' "$sub/registry.tsv" > "$sub/registry.new" && mv -f "$sub/registry.new" "$sub/registry.tsv"; : > "$STUB_DIR/scan"   # no registered window and none open (empty scan): only the settle step can touch the file
+  st_run_sub st_failing_list te-before 2 st_td_frozen
+  st_check "(b) settle list unreadable: the file, its folder, and the root are all still there" bash -c "[ -f '$f' ] && [ -d '$sub' ]"
+  st_check "(b) …and Trash was frozen (the unread list is not taken for an empty one)" bash -c "[ \"\$(cat '$STUB_DIR/td-frozen')\" = 1 ]"
+  "$TRASH" "$sub"
+  # (c) the same list cannot be read when looking for windows (te_adopt_orphans): it reports the failure and freezes Trash
+  st_te_fixture la
+  st_adopt_frozen() { te_adopt_orphans; echo "rc=$? frozen=$TRASH_FROZEN" > "$STUB_DIR/adopt-result"; }
+  st_run_sub st_failing_list te-before 1 st_adopt_frozen
+  st_check "(c) te_adopt_orphans with an unreadable list fails and freezes Trash" bash -c "[ \"\$(cat '$STUB_DIR/adopt-result')\" = 'rc=1 frozen=1' ]"
+  "$TRASH" "$sub"
+  # (d) do_trash itself keeps while frozen; (control) it Trashes when not
+  st_sub frz; sub=$SUB; : > "$sub/z.txt"
+  st_frozen_trash() { trash_freeze "test"; do_trash "$1"; }
+  st_run_sub st_frozen_trash "$sub/z.txt"
+  st_check "(d) a frozen Trash keeps even an ordinary item" test -f "$sub/z.txt"
+  st_run_sub do_trash "$sub/z.txt"
+  st_check "(d) (control) not frozen, the same item is Trashed" bash -c "[ ! -e '$sub/z.txt' ]"
+  "$TRASH" "$sub"
+  # (e) (control) with every list readable the same teardown settles and Trashes
+  st_te_fixture lok
+  st_run_sub teardown
+  st_check "(e) (control) with every list readable the teardown closes the window and Trashes file, folder, and root" bash -c "grep -q 'close window id 101' '$STUB_DIR/asc.log' && [ ! -e '$sub' ]"
+  : > "$STUB_DIR/scan"
 
   echo "[1d] the TextEdit scan reads window by window; one unreadable window fails the whole scan and no later window clears it"
   st_set live live; st_set running true
