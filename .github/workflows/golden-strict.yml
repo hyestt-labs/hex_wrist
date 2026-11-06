@@ -46,8 +46,15 @@ jobs:
         with:
           ref: ${{ inputs.ref || 'dev' }}
           persist-credentials: false
+      # The comparison tool comes from the ref the workflow was dispatched on,
+      # so a branch cut before it existed can still be checked.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: golden-tool
+          sparse-checkout: scripts
+          persist-credentials: false
       - name: Test the comparison tool
-        run: python3 scripts/test-golden-diff.py
+        run: python3 golden-tool/scripts/test-golden-diff.py
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -93,7 +100,7 @@ jobs:
         id: compare
         run: |
           set +e
-          python3 scripts/golden-diff.py \
+          python3 golden-tool/scripts/golden-diff.py \
             --golden "$RUNNER_TEMP/golden-approved" \
             --renders "$RUNNER_TEMP/golden-renders" \
             --newer-than "$RUNNER_TEMP/render-start" \
