@@ -946,18 +946,30 @@ teardown() {
   elif [ -n "$sim_udid" ]; then
     log "--keep-running: simulator $sim_name ($sim_udid) stays; remove it with: xcrun simctl delete $sim_udid"
   fi
-  # 5. the temp root. If the clipboard could not be put back, its backup stays (everything else goes).
-  if [ "$CLIP_STATE" = failed ] || [ "$CLIP_STATE" = saved ]; then
+  # 5. the temp root. If the clipboard could not be put back, its backup stays (everything else goes). A TextEdit
+  # window that is still registered here (it would not close) still has its file open: that file and its folder stay
+  # too, so the window never points at a file in the Trash. They are named in the log.
+  local keep_dirs=() d keepit
+  while IFS=$'\t' read -r key extra; do
+    case "$key" in textedit:*) keep_dirs+=("$(dirname -- "$extra")"); log "TextEdit window ${key#textedit:} is still open: its file $extra stays in place (not Trashed)" ;; esac
+  done < <(reg_list window)
+  if [ "$CLIP_STATE" = failed ] || [ "$CLIP_STATE" = saved ] || [ ${#keep_dirs[@]} -gt 0 ]; then
     for entry in "$tmp"/* "$tmp"/.[!.]*; do
       [ -e "$entry" ] || continue
       # The backup stays. The registry and the row marker stay too: the gate still needs them to run, and
       # they hold no secret.
-      case "$entry" in "$tmp/clipboard"|"$tmp/registry.tsv"|"$tmp/registry.new"|"$tmp/row-refused") continue ;; esac
+      case "$entry" in "$tmp/registry.tsv"|"$tmp/registry.new"|"$tmp/row-refused") continue ;; esac
+      case "$entry" in "$tmp/clipboard") { [ "$CLIP_STATE" = failed ] || [ "$CLIP_STATE" = saved ]; } && continue ;; esac
+      keepit=0
+      for d in ${keep_dirs[@]+"${keep_dirs[@]}"}; do [ "$entry" = "$d" ] && keepit=1; done
+      [ $keepit = 1 ] && continue
       trash_own "$entry"
     done
-    log "YOUR CLIPBOARD WAS NOT PUT BACK. The backup is kept at $tmp/clipboard. Restore it with: \"$pbtool\" restore \"$tmp/clipboard\""
-    echo "YOUR CLIPBOARD WAS NOT PUT BACK. The backup is kept at $tmp/clipboard" >&2
-    echo "Restore it with: \"$pbtool\" restore \"$tmp/clipboard\"" >&2
+    if [ "$CLIP_STATE" = failed ] || [ "$CLIP_STATE" = saved ]; then
+      log "YOUR CLIPBOARD WAS NOT PUT BACK. The backup is kept at $tmp/clipboard. Restore it with: \"$pbtool\" restore \"$tmp/clipboard\""
+      echo "YOUR CLIPBOARD WAS NOT PUT BACK. The backup is kept at $tmp/clipboard" >&2
+      echo "Restore it with: \"$pbtool\" restore \"$tmp/clipboard\"" >&2
+    fi
   else
     trash_own "$tmp"
   fi
@@ -2586,6 +2598,33 @@ selftest_main() {
 
   echo "[13] a signal cannot cut the cleanup short"
   st_check "teardown masks INT, TERM, and HUP" bash -c "$(declare -f mask_signals); mask_signals; trap -p | grep -c SIG | grep -qx 3"
+
+  echo "[13b] a TextEdit window that will not close keeps its file (the window must never point at a file in the Trash)"
+  mkdir "$tmp/textedit.stuck"; : > "$tmp/textedit.stuck/wristper-verify-9.txt"
+  reg_add path "$tmp/textedit.stuck"; reg_add path "$tmp/textedit.stuck/wristper-verify-9.txt"
+  reg_add window textedit:101 "$tmp/textedit.stuck/wristper-verify-9.txt"
+  st_reset; st_set live live; st_set name original; st_set te-path "$tmp/textedit.stuck/wristper-verify-9.txt"
+  # a stand-in TextEdit that ignores the close command: the window stays
+  sed -i '' 's|  \*"close window id 101"\*) echo gone > "$STUB_DIR/live" ;;|  *"close window id 101"*) : ;;|' "$tmp/bin/osascript"
+  close_target textedit "101|$tmp/textedit.stuck/wristper-verify-9.txt"
+  st_check "a close that does not take is refused" row_refused
+  st_check "…the file is still there (not Trashed while its window is open)" test -f "$tmp/textedit.stuck/wristper-verify-9.txt"
+  st_check "…and the registry still holds the window" reg_has window textedit:101
+  : > "$out/refusals.tsv"
+  teardown_keep=$TORN_DOWN; TORN_DOWN=0
+  mkdir "$tmp/other-secret"; : > "$tmp/other-secret/x"
+  keep_clip=$CLIP_STATE; CLIP_STATE=none
+  teardown
+  st_check "the cleanup keeps that window's file and folder" test -f "$tmp/textedit.stuck/wristper-verify-9.txt"
+  st_check "…keeps the temp root with it" test -d "$tmp"
+  st_check "…but still Trashes everything else in the temp root" bash -c "[ ! -e '$tmp/other-secret' ]"
+  CLIP_STATE=$keep_clip; TORN_DOWN=$teardown_keep
+  # that cleanup also moved the stand-ins and the stub state in the temp root to the Trash: make them again
+  mkdir -p "$STUB_DIR"; st_set running true; st_set te-open ok; st_set name original; st_set te-path /nonexistent
+  st_set live live; st_set front ok; : > "$STUB_DIR/windows"; : > "$STUB_DIR/sim-calls"; : > "$STUB_DIR/asc.log"
+  st_shims
+  reg_del window textedit:101
+  trash_own "$tmp/textedit.stuck"
 
   echo "[14] the clipboard cannot be put back: its backup stays, the other secrets go, the gate refuses nothing"
   mkdir -p "$tmp/clipboard"; echo '{"items":[]}' > "$tmp/clipboard/manifest.json"
