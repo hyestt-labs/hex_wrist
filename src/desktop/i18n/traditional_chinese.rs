@@ -4,7 +4,9 @@
 //! Taiwan wording first ([`PHRASES`]: 設定, 預設, 檔案, 快速鍵, 貼上),
 //! then character by character ([`CHARACTERS`]), so a new Simplified string
 //! is never left untranslated here. Characters the table doesn't know pass
-//! through unchanged. Not yet reviewed by a native speaker.
+//! through unchanged. The Apple Watch strings are written out in Taiwan
+//! wording instead (`apple_watch::TRADITIONAL`). Not yet reviewed by a
+//! native speaker.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -18,8 +20,8 @@ pub(super) fn table() -> &'static HashMap<&'static str, String> {
             .iter()
             .map(|(english, translated)| (*english, convert(translated[simplified])))
             .chain(
-                super::apple_watch::simplified()
-                    .map(|(english, translated)| (english, convert(translated))),
+                super::apple_watch::traditional()
+                    .map(|(english, translated)| (english, translated.to_owned())),
             )
             .collect()
     })

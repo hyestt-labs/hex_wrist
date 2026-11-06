@@ -1,11 +1,12 @@
 //! The Apple Watch strings (Wristper fork): the Apple Watch pane and its
 //! first-run page, in every interface language. They live apart from
 //! [`super::TRANSLATIONS`] so that table stays under its size cap; each
-//! language's table takes its column from here ([`column`]), and
-//! Traditional Chinese is converted from the Simplified one as everywhere
-//! else. Columns: Polish, Chinese (Simplified), Japanese, German, Spanish,
-//! Ukrainian, Brazilian Portuguese, French, Russian. Not reviewed by native
-//! speakers.
+//! language's table takes its column from here ([`column`]). Traditional
+//! Chinese is written out in Taiwan wording ([`TRADITIONAL`]) rather than
+//! converted from the Simplified column, whose conversion read like a
+//! character swap (手表, 连接 → 連接, 代码 → 程式碼). Columns: Polish,
+//! Chinese (Simplified), Japanese, German, Spanish, Ukrainian, Brazilian
+//! Portuguese, French, Russian. Not reviewed by native speakers.
 
 /// Columns of [`TRANSLATIONS`] in the order of [`super::column_for_code`]'s
 /// first six languages, then Portuguese, French, and Russian.
@@ -33,9 +34,9 @@ pub(super) fn russian() -> impl Iterator<Item = (&'static str, &'static str)> {
     column(RUSSIAN)
 }
 
-/// The Simplified Chinese column, which Traditional Chinese converts.
-pub(super) fn simplified() -> impl Iterator<Item = (&'static str, &'static str)> {
-    column(1)
+/// The Traditional Chinese (Taiwan) strings.
+pub(super) fn traditional() -> impl Iterator<Item = (&'static str, &'static str)> {
+    TRADITIONAL.iter().copied()
 }
 
 #[rustfmt::skip]
@@ -83,6 +84,52 @@ pub(super) const TRANSLATIONS: &[(&str, [&str; LANGUAGES])] = &[
     ("Pastes what you dictate on your watch into the app you're using", ["Wkleja to, co podyktujesz na zegarku, do używanej aplikacji", "把你在手表上听写的内容粘贴到你正在使用的 App 中", "ウォッチで音声入力した内容を、使っている App に貼り付けます", "Fügt, was du auf der Uhr diktierst, in die App ein, die du gerade benutzt", "Pega lo que dictas en el reloj en la app que estás usando", "Вставляє те, що ви продиктували на годиннику, в застосунок, яким ви користуєтеся", "Cola o que você dita no relógio no app que você está usando", "Colle ce que vous dictez sur la montre dans l'app que vous utilisez", "Вставляет то, что вы продиктовали на часах, в приложение, которым вы пользуетесь"]),
 ];
 
+/// Traditional Chinese in Taiwan wording, by the English source string.
+#[rustfmt::skip]
+const TRADITIONAL: &[(&str, &str)] = &[
+    ("Apple Watch", "Apple Watch"),
+    ("This Mac", "這台 Mac"),
+    ("Connection", "連線"),
+    ("Connected", "已連線"),
+    ("Offline: check the network", "離線：請檢查網路"),
+    ("Another Mac took over this pairing", "另一台 Mac 已接手這組配對"),
+    ("Name on your watch", "手錶上顯示的名稱"),
+    ("What the watch shows for this Mac", "手錶上這台 Mac 的名稱"),
+    ("Pair a watch", "配對手錶"),
+    ("Pairing code", "配對碼"),
+    ("On your watch, open Wristper › Pair a Mac and type the code it shows", "在手錶上打開 Wristper › 配對 Mac，再輸入手錶顯示的配對碼"),
+    ("Get the watch app", "取得手錶 App"),
+    ("Paired watches", "已配對的手錶"),
+    ("Remove…", "移除…"),
+    ("No watches paired yet", "尚未配對任何手錶"),
+    ("Couldn't remove {name}: {error}", "無法移除 {name}：{error}"),
+    ("Last seen {}", "上次連線：{}"),
+    ("Pair it again to use it", "請重新配對才能使用"),
+    ("Waiting for the keychain", "正在等待鑰匙圈"),
+    ("Status and paste", "狀態與貼上"),
+    ("Status capsule", "狀態膠囊"),
+    ("Shows what a watch dictation is doing, near the bottom of the screen", "在螢幕底部附近顯示手錶聽寫的進度"),
+    ("Follow the pointer", "跟隨指標"),
+    ("Shows the capsule on the screen the pointer is on", "在指標所在的螢幕上顯示膠囊"),
+    ("A watch dictation stays on the clipboard after it pastes", "手錶聽寫的內容貼上後會留在剪貼簿"),
+    ("The Apple Watch service isn't running", "Apple Watch 服務沒有在執行"),
+    ("Type the six digits your watch shows", "請輸入手錶上顯示的六位數字"),
+    ("Hex can't reach the relay. Check the network and try again", "Hex 無法連上中繼伺服器。請檢查網路後再試一次"),
+    ("The relay didn't answer. Try again", "中繼伺服器沒有回應。請再試一次"),
+    ("No watch is showing that code. It may have expired", "沒有手錶顯示這組配對碼，可能已經過期"),
+    ("Too many wrong codes. Wait 10 minutes", "輸入錯誤次數太多，請等 10 分鐘"),
+    ("The relay refused the code ({})", "中繼伺服器拒絕了這組配對碼（{}）"),
+    ("Pairing…", "正在配對…"),
+    ("Finish on your watch…", "請在手錶上完成…"),
+    ("Paired with {}", "已與 {} 配對"),
+    ("The watch didn't finish pairing. Update Wristper on the watch and try again", "手錶沒有完成配對。請更新手錶上的 Wristper 後再試一次"),
+    ("Set up your Apple Watch", "設定你的 Apple Watch"),
+    ("Dictate from your wrist and Hex pastes the words on this Mac.", "在手腕上聽寫，Hex 會把文字貼到這台 Mac。"),
+    ("Pair later", "稍後配對"),
+    ("Let Hex type for you", "讓 Hex 替你輸入"),
+    ("Pastes what you dictate on your watch into the app you're using", "把你在手錶上聽寫的內容貼到正在使用的 App"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +156,76 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_string_has_one_taiwan_translation_with_its_placeholders() {
+        let english: std::collections::BTreeSet<_> =
+            TRANSLATIONS.iter().map(|(english, _)| *english).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for (source, translated) in TRADITIONAL {
+            assert!(
+                english.contains(source),
+                "{source:?} is not an Apple Watch string"
+            );
+            assert!(seen.insert(*source), "{source:?} is listed twice");
+            for placeholder in ["{}", "{name}", "{error}"] {
+                assert_eq!(
+                    source.contains(placeholder),
+                    translated.contains(placeholder),
+                    "{source:?}: {placeholder}"
+                );
+            }
+        }
+        assert_eq!(seen, english, "every Apple Watch string has one");
+    }
+
+    /// What zh-Hant shows, through the table the interface reads.
+    #[test]
+    fn traditional_chinese_reads_as_taiwan_wording() {
+        let table = super::super::traditional_chinese::table();
+        for (english, _) in TRANSLATIONS {
+            let shown = &table[english];
+            for mainland in [
+                "設置",
+                "設備",
+                "連接",
+                "粘貼",
+                "信息",
+                "軟件",
+                "網絡",
+                "手表",
+                "程式碼",
+                "獲取",
+                "響應",
+                "指針",
+                "鑰匙串",
+                "線上",
+            ] {
+                assert!(
+                    !shown.contains(mainland),
+                    "{english:?}: {shown:?} has {mainland}"
+                );
+            }
+        }
+        for (english, word) in [
+            ("Connection", "連線"),
+            ("Paired watches", "手錶"),
+            ("Pairing code", "配對"),
+            ("Remove…", "移除"),
+            ("Status and paste", "貼上"),
+            (
+                "A watch dictation stays on the clipboard after it pastes",
+                "剪貼簿",
+            ),
+            ("Set up your Apple Watch", "設定"),
+        ] {
+            assert!(
+                table[english].contains(word),
+                "{english:?}: {}",
+                table[english]
+            );
         }
     }
 }
