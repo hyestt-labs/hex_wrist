@@ -298,7 +298,12 @@ pub(crate) fn tr_named(template: &str, values: &[(&str, &str)]) -> String {
 
 /// A compact, translated age label for an event timestamp.
 pub(crate) fn event_age(timestamp_ms: u64) -> String {
-    let seconds = crate::history::now_ms().saturating_sub(timestamp_ms) / 1_000;
+    event_age_at(timestamp_ms, crate::history::now_ms())
+}
+
+/// The same label as of `now_ms`, for a view that holds its own clock.
+pub(crate) fn event_age_at(timestamp_ms: u64, now_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(timestamp_ms) / 1_000;
     let (template, value) = match seconds {
         0..=59 => ("{}s ago", seconds),
         60..=3_599 => ("{}m ago", seconds / 60),
