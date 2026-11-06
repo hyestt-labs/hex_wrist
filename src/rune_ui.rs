@@ -1489,6 +1489,9 @@ mod offscreen;
 mod accessibility_tests;
 
 #[cfg(test)]
+mod activity_clock_tests;
+
+#[cfg(test)]
 mod snap_isolation;
 
 #[cfg(test)]
