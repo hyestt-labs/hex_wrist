@@ -40,7 +40,6 @@ pub(crate) mod screen;
 pub(crate) mod service;
 pub(crate) mod status;
 pub(crate) mod suspect;
-pub(crate) mod zh;
 
 use std::io::{self, Write};
 use std::path::Path;

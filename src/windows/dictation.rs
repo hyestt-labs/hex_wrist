@@ -930,7 +930,6 @@ fn process_dictation_job(
         }
         if let Some(history) = history {
             let mut draft = crate::dictation::modes::history_draft(
-                raw_text,
                 &processed,
                 application.clone(),
                 job.audio_ms,

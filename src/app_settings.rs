@@ -1167,6 +1167,15 @@ fn set_transcription_selection(selection: &TranscriptionSelection) {
     }
 }
 
+/// Tests of what the model's language decides run in this language.
+#[cfg(test)]
+pub(crate) fn set_language_for_test(language: &str) {
+    set_transcription_selection(&TranscriptionSelection {
+        language: language.into(),
+        ..transcription_selection().1
+    });
+}
+
 pub fn transcription_selection() -> (u64, TranscriptionSelection) {
     let state = TRANSCRIPTION_SELECTION.get_or_init(Default::default);
     let state = state.read().unwrap_or_else(|error| error.into_inner());

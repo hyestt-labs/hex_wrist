@@ -252,6 +252,9 @@ pub struct Profiles {
     /// Global's corrections, run before the selected mode's own on every
     /// dictation, as the Windows and Linux listeners do.
     global: ReplacementSet,
+    /// The language the recording itself names (a watch's), ahead of the
+    /// one the model runs in, when the Chinese characters step reads it.
+    language: String,
 }
 
 impl Profiles {
@@ -260,7 +263,13 @@ impl Profiles {
             default,
             contextual: Vec::new(),
             global: ReplacementSet::default(),
+            language: String::new(),
         }
+    }
+
+    pub(crate) fn language_hint(mut self, language: impl Into<String>) -> Self {
+        self.language = language.into();
+        self
     }
 
     pub(crate) fn global_replacements(mut self, replacements: ReplacementSet) -> Self {
@@ -315,11 +324,48 @@ impl Profiles {
         profile.ai_enabled || !profile.transformations.is_empty()
     }
 
+    /// The whole pipeline for one dictation: Chinese characters first (the
+    /// result is what the person heard, `Processed::heard`), then the
+    /// Labs steps, corrections, and the optional rewrite.
     pub fn process_cancellable(
         &self,
         transcript: &str,
         context: &ContextSnapshot,
         cancelled: &AtomicBool,
+    ) -> Processed {
+        let heard = crate::dictation::chinese_output::apply(transcript, &self.language);
+        self.run(&heard, &heard, context, cancelled, generate_observed)
+    }
+
+    /// The pipeline for a listener that already converted the dictation to
+    /// `heard` and ran the global corrections on it (`input`): Windows and
+    /// Linux, whose order is corrections, then Labs steps, so the
+    /// conversion is theirs and runs once, ahead of both.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub(crate) fn process_converted(
+        &self,
+        heard: &str,
+        input: &str,
+        context: &ContextSnapshot,
+        cancelled: &AtomicBool,
+    ) -> Processed {
+        self.run(heard, input, context, cancelled, generate_observed)
+    }
+
+    fn run(
+        &self,
+        heard: &str,
+        transcript: &str,
+        context: &ContextSnapshot,
+        cancelled: &AtomicBool,
+        generate: impl FnOnce(
+            &str,
+            Option<&Model>,
+            Duration,
+            &AtomicBool,
+            &str,
+            Instant,
+        ) -> (Option<String>, ProcessingObservation),
     ) -> Processed {
         let profile = self.select(context);
         // Labs › Spoken formatting starts here, ahead of every mode's
@@ -368,6 +414,7 @@ impl Profiles {
         if !profile.ai_enabled || numbers_only {
             return Processed {
                 text: corrected,
+                heard: heard.to_owned(),
                 observation: None,
                 transformations: profile.transformations.clone(),
             };
@@ -381,7 +428,7 @@ impl Profiles {
                 &crate::dictation::vocabulary::entries(),
             ),
         );
-        let (text, observation) = generate_observed(
+        let (text, observation) = generate(
             &prompt,
             profile.model.as_ref(),
             profile.deadline,
@@ -402,8 +449,12 @@ impl Profiles {
                 "dictation post-processing failed; pasting the corrected transcript"
             ),
         }
+        // A rewrite often comes back in the other script, so it is
+        // converted again; its fallback is `corrected`, already converted.
+        let text = text.map(|text| crate::dictation::chinese_output::apply(&text, &self.language));
         Processed {
             text: text.unwrap_or(corrected),
+            heard: heard.to_owned(),
             observation: Some(observation),
             transformations: profile.transformations.clone(),
         }
@@ -798,6 +849,9 @@ fn opencode_api<T: for<'de> Deserialize<'de>>(service: &Service, path: &str) -> 
 
 pub struct Processed {
     pub text: String,
+    /// What the person heard: the dictation in the chosen Chinese characters,
+    /// before any correction or rewrite. History keeps it as the raw text.
+    pub heard: String,
     pub observation: Option<ProcessingObservation>,
     pub transformations: Vec<String>,
 }
@@ -811,6 +865,7 @@ impl Processed {
     pub fn unchanged(text: &str) -> Self {
         Self {
             text: text.to_string(),
+            heard: text.to_string(),
             observation: None,
             transformations: Vec::new(),
         }
@@ -1424,6 +1479,116 @@ mod tests {
         assert_eq!(processed.text, "Use OpenCode.");
         assert_eq!(processed.transformations, ["lowercase"]);
         assert!(processed.observation.is_none());
+    }
+
+    mod chinese_output {
+        use super::*;
+        use crate::dictation::chinese_output::{self, ChineseOutput};
+        use crate::dictation::text_replacements::TextReplacement;
+
+        fn replacing(from: &str, to: &str) -> ReplacementSet {
+            ReplacementSet::new(&[TextReplacement {
+                matched_phrase: from.into(),
+                output: to.into(),
+            }])
+        }
+
+        fn run(profiles: &Profiles, text: &str) -> Processed {
+            profiles.process_cancellable(text, &context("Zed", None), &AtomicBool::new(false))
+        }
+
+        #[test]
+        fn mac_mic_simplified_becomes_traditional() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            let profiles = Profiles::new(Profile::new("Global", "")).language_hint("zh");
+            let processed = run(&profiles, "今天天气很好");
+            assert_eq!(processed.text, "今天天氣很好");
+            assert_eq!(processed.heard, "今天天氣很好");
+        }
+
+        #[test]
+        fn conversion_runs_before_replacements() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            // The person's replacement matches the characters they see.
+            let profiles =
+                Profiles::new(Profile::new("Global", "").replacements(replacing("頭髮", "hair")))
+                    .global_replacements(replacing("後來", "later"))
+                    .language_hint("zh");
+            let processed = run(&profiles, "头发 后来");
+            assert_eq!(processed.text, "hair later");
+            assert_eq!(
+                processed.heard, "頭髮 後來",
+                "heard is before the corrections"
+            );
+        }
+
+        #[test]
+        fn as_heard_changes_nothing() {
+            chinese_output::set_live(ChineseOutput::AsHeard);
+            let profiles = Profiles::new(Profile::new("Global", "")).language_hint("zh");
+            let processed = run(&profiles, "今天天气很好");
+            assert_eq!(
+                (processed.text.as_str(), processed.heard.as_str()),
+                ("今天天气很好", "今天天气很好")
+            );
+        }
+
+        #[test]
+        fn rewrite_output_is_converted_again() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            let profiles = Profiles::new(Profile::new("Global", "fix it").ai_enabled(true))
+                .language_hint("zh");
+            let observation = ProcessingObservation {
+                profile: "Global".into(),
+                latency_ms: 0,
+                fallback: None,
+            };
+            let mut prompts = Vec::new();
+            let processed = profiles.run(
+                "头发",
+                "头发",
+                &context("Zed", None),
+                &AtomicBool::new(false),
+                |prompt, _, _, _, _, _| {
+                    prompts.push(prompt.to_owned());
+                    // The model answers in Simplified characters.
+                    (Some("今天头发很好".into()), observation)
+                },
+            );
+            assert_eq!(processed.text, "今天頭髮很好");
+            assert_eq!(processed.heard, "头发");
+            assert_eq!(prompts.len(), 1);
+        }
+
+        #[test]
+        fn a_failed_rewrite_keeps_the_converted_transcript() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            let profiles = Profiles::new(Profile::new("Global", "fix it").ai_enabled(true))
+                .language_hint("zh");
+            let failed = ProcessingObservation {
+                profile: "Global".into(),
+                latency_ms: 0,
+                fallback: Some("down".into()),
+            };
+            let heard = chinese_output::apply("头发", "zh");
+            let processed = profiles.run(
+                &heard,
+                &heard,
+                &context("Zed", None),
+                &AtomicBool::new(false),
+                |_, _, _, _, _, _| (None, failed),
+            );
+            assert_eq!(processed.text, "頭髮");
+        }
+
+        #[test]
+        fn one_conversion_per_dictation_without_a_rewrite() {
+            chinese_output::set_live(ChineseOutput::Traditional);
+            let profiles = Profiles::new(Profile::new("Global", ""));
+            let before = chinese_output::calls();
+            run(&profiles, "头发");
+            assert_eq!(chinese_output::calls() - before, 1);
+        }
     }
 
     #[test]

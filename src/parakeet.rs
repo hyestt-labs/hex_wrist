@@ -614,7 +614,7 @@ fn run_processor_worker(
                 target: job.target,
                 result: Box::new(Ok(CompletedTranscript {
                     text: processed.text,
-                    raw: job.text,
+                    raw: processed.heard,
                     application: job.context.application,
                     timings: job.timings,
                     processing: processed.observation,
@@ -634,7 +634,14 @@ fn process_job_text(
     profiles: impl FnOnce() -> crate::dictation::processor::Profiles,
     processing: impl FnOnce(),
 ) -> crate::dictation::processor::Processed {
-    let profiles = profiles();
+    // A watch recording names its own language, which the Chinese
+    // characters step reads before the model's.
+    let profiles = match &job.target {
+        TranscriptionTarget::Watch(delivery) => {
+            profiles().language_hint(delivery.job().language.clone())
+        }
+        _ => profiles(),
+    };
     if profiles.processes(&job.context) {
         processing();
     }
