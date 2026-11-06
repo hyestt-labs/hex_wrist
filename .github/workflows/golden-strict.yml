@@ -16,8 +16,6 @@ name: Golden strict
 # ones neither honour HEX_REQUIRE_GPU nor write HEX_GOLDEN_RENDERS, so a
 # render older than the run's marker counts as skipped.
 on:
-  push:
-    branches: [ci/golden-strict] # TEMPORARY: first run before the file is on dev
   workflow_dispatch:
     inputs:
       ref:
