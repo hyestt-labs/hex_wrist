@@ -162,6 +162,7 @@ const PATHS: &[(&str, &str)] = &[
     ("sound-sets", "Window/Sounds/Sheet"),
     ("sound-sets-playing", "Window/Sounds/Playing"),
     ("output", "Window/Output/Steps"),
+    ("output-chinese", "Window/Output/Chinese characters"),
     ("output-open", "Window/Output/App rule open"),
     ("output-trust", "Window/Output/Trust prompt"),
     ("output-empty", "Window/Output/Empty"),

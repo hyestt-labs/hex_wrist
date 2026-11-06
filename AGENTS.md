@@ -60,7 +60,9 @@ Chinese characters in dictation (`chinese_output`: Traditional, Simplified, or
 as heard) is not Labs either (decided 2026-11-05, unit G): it follows the
 system language order by default, applies to every processed dictation on
 every OS, and "Dictate without processing" skips it like every other Output
-step.
+step. Its row is a card in the Output pane above Every dictation, on every OS,
+shown only while the speech model writes Chinese or Cantonese or a value is
+saved (G2).
 Watch-only setup asks for no Microphone (user decision 2026-11-04).
 Catalog speech models added by this fork (Whisper large-v3, medium, and
 small, Breeze ASR 25, Qwen3-ASR 1.7B) are not in Labs either: like NB-Whisper,

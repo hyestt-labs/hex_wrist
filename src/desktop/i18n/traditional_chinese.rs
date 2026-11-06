@@ -5,7 +5,7 @@
 //! then character by character ([`CHARACTERS`]), so a new Simplified string
 //! is never left untranslated here. Characters the table doesn't know pass
 //! through unchanged. The Apple Watch strings are written out in Taiwan
-//! wording instead (`apple_watch::TRADITIONAL`). Not yet reviewed by a
+//! wording instead (`apple_watch::TRADITIONAL`, `chinese_output::TRADITIONAL`). Not yet reviewed by a
 //! native speaker.
 
 use std::collections::HashMap;
@@ -21,6 +21,7 @@ pub(super) fn table() -> &'static HashMap<&'static str, String> {
             .map(|(english, translated)| (*english, convert(translated[simplified])))
             .chain(
                 super::apple_watch::traditional()
+                    .chain(super::chinese_output::traditional())
                     .map(|(english, translated)| (english, translated.to_owned())),
             )
             .collect()

@@ -15,6 +15,7 @@ pub(super) fn table() -> &'static HashMap<&'static str, &'static str> {
             .iter()
             .copied()
             .chain(super::apple_watch::russian())
+            .chain(super::chinese_output::russian())
             .collect()
     })
 }
