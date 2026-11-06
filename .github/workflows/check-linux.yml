@@ -44,6 +44,7 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Install native libraries
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake pkg-config python3 libasound2-dev \
