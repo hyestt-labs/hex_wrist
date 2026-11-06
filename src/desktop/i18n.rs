@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 mod apple_watch;
+mod chinese_output;
 mod french;
 mod locale;
 mod portuguese;
@@ -322,6 +323,7 @@ fn tables() -> &'static [HashMap<&'static str, &'static str>; 6] {
                 .iter()
                 .map(|(english, translated)| (*english, translated[column]))
                 .chain(apple_watch::column(column))
+                .chain(chinese_output::column(column))
                 .collect()
         })
     })
@@ -1733,6 +1735,7 @@ mod tests {
             .chain(
                 super::apple_watch::TRANSLATIONS
                     .iter()
+                    .chain(super::chinese_output::TRANSLATIONS)
                     .map(|(english, translated)| (*english, translated.as_slice())),
             )
             .collect();

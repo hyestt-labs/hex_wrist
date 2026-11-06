@@ -9,17 +9,19 @@ use rune::{El, TextEdit, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, TextInput};
 
 use super::controls::{
-    ButtonKind, CardRow, DESCRIPTION, METRICS, Paint, PushSize, button, card, folding, note, page,
-    raised, status_dot,
+    ButtonKind, CardRow, Choice, DESCRIPTION, METRICS, Paint, PushSize, button, card, folding,
+    note, page, raised, select_sized, setting_row, status_dot,
 };
 use super::icons::MIC;
 use super::lists::{Tone, tone_tag};
 use super::modes::{application_icon, monogram};
 use super::spark::{Spark, spark};
-use super::{ShortcutTarget, Ui};
+use super::{Menu, ShortcutTarget, Ui};
 use crate::app_settings::DictationMode;
 use crate::desktop::i18n::{tr, tr_fill};
+use crate::dictation::chinese_output::ChineseOutput;
 use crate::dictation::text_replacements::ReplacementSet;
+use crate::transcription::models as transcription_models;
 
 mod examples;
 
@@ -38,6 +40,9 @@ const RULE_STEPS: [&str; 8] = [
 ];
 /// The transformation API's docs, written for coding agents.
 const TRANSFORMS_DOCS: &str = "https://anoma.ly/hex/docs/transforms";
+/// The Chinese characters select, wide enough for "System (Traditional)" and
+/// its longer translations.
+const CHINESE_SELECT_WIDTH: f32 = 260.0;
 /// A step's number sits in a disc this wide, on the row text's edge.
 const STEP_BADGE: f32 = 20.0;
 
@@ -190,11 +195,12 @@ fn preview(mode: &DictationMode, input: &str) -> String {
 // ---------------------------------------------------------------------------
 // View
 
-pub(super) fn pane(ui: &Ui, p: Paint, reduced: bool) -> El {
+pub(super) fn pane(ui: &Ui, p: Paint, reduced: bool, layer: &mut Vec<El>) -> El {
     let processing = &ui.settings.dictation_processing;
     let mut content = page("output-content")
         .children(trust_card(ui, p))
         .child(agent_card(ui, p, reduced))
+        .children(chinese_card(ui, p, layer))
         .child(every_dictation(ui, p, &processing.default_mode))
         .child(try_card(ui, p, &processing.default_mode));
     if !processing.modes.is_empty() {
@@ -336,6 +342,98 @@ fn trust_card(ui: &Ui, p: Paint) -> Option<El> {
                 .child(allow),
         ),
     )
+}
+
+/// Whether the Chinese characters card shows: the speech model can write
+/// Chinese or Cantonese, or a choice is saved (so it can be changed back
+/// after a model switch).
+fn shows_chinese_characters(ui: &Ui) -> bool {
+    let model = transcription_models::definition(ui.settings.transcription.model);
+    ui.settings.chinese_output.is_some()
+        || model.supports_language("zh")
+        || model.supports_language("yue")
+}
+
+/// What "System" resolves to. A fixture reads a Traditional system, never
+/// this computer's languages.
+fn system_chinese_output(ui: &Ui) -> ChineseOutput {
+    let locales = if ui.is_fixture() {
+        vec!["zh-Hant-TW".to_owned()]
+    } else {
+        crate::desktop::i18n::preferred_locales()
+    };
+    crate::dictation::chinese_output::resolve(None, &locales)
+}
+
+fn chinese_output_name(output: ChineseOutput) -> &'static str {
+    match output {
+        ChineseOutput::Traditional => tr("Traditional"),
+        ChineseOutput::Simplified => tr("Simplified"),
+        ChineseOutput::AsHeard => tr("As heard"),
+    }
+}
+
+/// Saves `choice` as `chinese_output`; `None` follows the system.
+fn choose_chinese_output(ui: &mut Ui, choice: Option<ChineseOutput>) {
+    ui.open = None;
+    if ui.settings.chinese_output != choice {
+        ui.update(|settings| settings.chinese_output = choice);
+    }
+}
+
+/// Which Chinese characters a dictation comes out in. It is an output step
+/// that "Dictate without processing" skips, so it sits above the steps.
+fn chinese_card(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> Option<El> {
+    if !shows_chinese_characters(ui) {
+        return None;
+    }
+    let saved = ui.settings.chinese_output;
+    let system = tr_fill(
+        "System ({})",
+        chinese_output_name(system_chinese_output(ui)),
+    );
+    let mut choices = vec![Choice {
+        label: system.clone(),
+        detail: None,
+        selected: saved.is_none(),
+        choose: Box::new(|ui: &mut Ui| choose_chinese_output(ui, None)),
+    }];
+    for choice in [
+        ChineseOutput::Traditional,
+        ChineseOutput::Simplified,
+        ChineseOutput::AsHeard,
+    ] {
+        choices.push(Choice {
+            label: chinese_output_name(choice).to_owned(),
+            detail: None,
+            selected: saved == Some(choice),
+            choose: Box::new(move |ui: &mut Ui| choose_chinese_output(ui, Some(choice))),
+        });
+    }
+    let current = saved.map_or(system, |choice| chinese_output_name(choice).to_owned());
+    let control = select_sized(
+        p,
+        "chinese-output",
+        tr("Chinese characters"),
+        &current,
+        None,
+        ui.open == Some(Menu::Pick("chinese-output")),
+        choices,
+        |ui: &mut Ui| super::settings::toggle_menu(ui, Menu::Pick("chinese-output")),
+        layer,
+        CHINESE_SELECT_WIDTH,
+    );
+    Some(card(
+        p,
+        "chinese-characters",
+        vec![setting_row(
+            p,
+            "chinese-output-row",
+            tr("Chinese characters"),
+            Some(tr("Only changes Chinese and Cantonese text")),
+            control,
+        )],
+    ))
 }
 
 /// The steps every dictation goes through, numbered in order.
@@ -792,6 +890,15 @@ pub(super) fn fixture(ui: &mut Ui) {
     modes[1].applications = vec!["WezTerm".into(), "Zed".into()];
     modes[1].replacements = vec![pair("dash dash", "--")];
     ui.output.trial = TextEdit::new("Um, open code shipped the hex app today.".to_string());
+}
+
+/// The fixture with a speech model that writes Chinese, so the Chinese
+/// characters card shows.
+pub(super) fn chinese_fixture(ui: &mut Ui) {
+    ui.settings.transcription = transcription_models::TranscriptionSelection {
+        model: transcription_models::TranscriptionModelId::BreezeAsr25,
+        language: "zh".into(),
+    };
 }
 
 /// The fixture with a config asking to fetch and run programs.

@@ -18,7 +18,7 @@ Hex                                      // macOS release
 ├── Dictate                              // hold OR double-tap lock, or from an Apple Watch
 ├── Use the result                       // paste, paste-last, History
 ├── Adjust behavior                      // shortcut, microphone, recording preferences
-├── Process text                         // Output tab + context-selected Modes
+├── Process text                         // Output tab (Chinese characters card shows for Chinese models) + Modes
 ├── Opt in                               // Meetings: off by default
 ├── Recover                              // prove the next attempt works
 └── Maintain the app                     // menu bar, login, updates, quit

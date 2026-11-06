@@ -86,6 +86,14 @@ pub(super) const SCENES: &[Scene] = &[
         output::fixture(ui);
         ui.pane = Pane::Output;
     }),
+    // A Chinese speech model, Chinese characters following a Traditional
+    // system: the card that English models never show.
+    ("output-chinese", |ui| {
+        *ui = portal_fixture();
+        output::fixture(ui);
+        output::chinese_fixture(ui);
+        ui.pane = Pane::Output;
+    }),
     ("output-open", |ui| {
         *ui = portal_fixture();
         output::fixture(ui);

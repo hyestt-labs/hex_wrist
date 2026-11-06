@@ -228,7 +228,8 @@ does not prove the physical dictation shortcut; see the [feature index](README.m
 
 Wristper fork (unit G; not Labs). Whether Chinese dictation comes out in
 Traditional or Simplified characters, or as the model wrote it. It follows the
-system language order unless chosen; the window's row is unit G2.
+system language order unless chosen. The window's row is Output › Chinese
+characters.
 
 ```ts
 Settings: chinese_output  (hex settings set chinese_output traditional|simplified|as_heard|none)
@@ -242,6 +243,18 @@ Settings: chinese_output  (hex settings set chinese_output traditional|simplifie
 │   ├── traditional | simplified | as-transcribed      -> traditional | simplified | as_heard
 │   ├── read-only: the file is never written; migration wristper-chinese-script marks it done
 │   └── test builds (Wristper Test) and a chosen value never import
+Output pane > Chinese characters (a card above Every dictation, every OS)   // cn.row
+├── shown only when the speech model can write Chinese or Cantonese (zh or yue in its
+│   languages), or a value is saved; an English model and no saved value hides it,
+│   so English users see no change; a saved value keeps it after a model switch
+├── choices: System ({Traditional | Simplified | As heard}), Traditional, Simplified, As heard
+│   ├── System saves none (follows the system) and names what it resolves to now
+│   ├── the other three save traditional, simplified, as_heard
+│   └── the same setting and `hex settings` key as above; choosing what is already
+│       chosen saves nothing; the change applies to the next dictation
+├── "Dictate without processing" skips the step, as the card sits with the Output steps
+└── interface strings: desktop/i18n/chinese_output.rs, nine columns; zh-Hant is
+    written in Taiwan wording (中文字體, 跟隨系統（{}）, 繁體中文, 簡體中文, 照辨識結果)
 Every processed dictation (macOS, Linux, Windows; paste, --print, watch)
 ├── 1. convert the transcript                           -> Processed.heard, History raw   // cn.convert
 │   ├── table: Mandarin s2tw / tw2s, Cantonese (yue) s2hk / hk2s; no phrase step
@@ -274,7 +287,12 @@ dictations keep their unconverted text as raw. History search matches raw and
 final, so for a new processed entry the raw text is the converted one: a search
 in the other script may not find it.
 
-Checks: `dictation::chinese_output` (tables, `tw2s` keeps 軟體, Cantonese
+Checks (window): `rune_ui::chinese_output_tests` (runs on every OS: hidden for an
+English model with nothing saved and shown for a Chinese model or a saved value;
+System saves none and the others their value; a repeat choice saves nothing;
+options are named), `desktop::i18n::chinese_output` (Taiwan wording, no Mainland
+terms in zh-Hant, every column filled), scene `output-chinese` (light and dark
+goldens, Linux only). Checks: `dictation::chinese_output` (tables, `tw2s` keeps 軟體, Cantonese
 `里面` → `裏面`, Japanese untouched, explicit zh/yue with kana untouched,
 re-transcription `auto` ignoring the model's language, system resolution),
 `app_settings::chinese_output` (Wristper import once, never overwriting,

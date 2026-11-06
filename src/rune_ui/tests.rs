@@ -2545,6 +2545,7 @@ fn goldens() {
             "history",
             "mac-labs-link",
             "output",
+            "output-chinese",
             "modes",
             "modes-picker",
             "picker-downloading",
