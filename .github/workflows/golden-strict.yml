@@ -16,6 +16,8 @@ name: Golden strict
 # ones neither honour HEX_REQUIRE_GPU nor write HEX_GOLDEN_RENDERS, so a
 # render older than the run's marker counts as skipped.
 on:
+  push:
+    branches: [ci/golden-strict] # TEMPORARY: first run before the file is on dev
   workflow_dispatch:
     inputs:
       ref:
@@ -42,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || 'dev' }}
           persist-credentials: false
       - name: Test the comparison tool
         run: python3 scripts/test-golden-diff.py
