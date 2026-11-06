@@ -585,14 +585,15 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
     live.using_file = using_file;
     // A resumed setup chooses between the watch page and the permissions
     // once the service says whether a watch is paired.
-    let resume = live.watch.resume_until;
+    // A snapshot after the wait leaves the page alone.
+    let in_time = live.watch.resume_until.is_some_and(|until| now < until);
     let (offered, is_paired) = (live.watch.offered(), live.watch.is_paired());
-    if resume.is_some() && (has_snapshot || now >= resume.unwrap_or(f64::MAX)) {
+    if has_snapshot || !in_time {
         live.watch.resume_until = None;
     }
     s.granted = granted;
     s.caps = caps;
-    if resume.is_some() && has_snapshot && offered && !is_paired && s.step == Step::Permissions {
+    if in_time && has_snapshot && offered && !is_paired && s.step == Step::Permissions {
         s.jump_to_watch();
     }
     if let Some(download) = s.download.as_mut() {

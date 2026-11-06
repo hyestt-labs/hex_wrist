@@ -436,6 +436,9 @@ pub(super) const SCENES: &[Scene] = &[
     ("mac-watch-remove", |ui| {
         watch_pane::scene(ui, watch_pane::Scene::Remove)
     }),
+    ("mac-watch-revoke-error", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::RevokeError)
+    }),
     ("mac-watch-unavailable", |ui| {
         watch_pane::scene(ui, watch_pane::Scene::Unavailable)
     }),

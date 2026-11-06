@@ -118,6 +118,10 @@ const PATHS: &[(&str, &str)] = &[
     ("mac-watch-error", "Window/Apple Watch/Code not found"),
     ("mac-watch-remove", "Window/Apple Watch/Remove · confirm"),
     (
+        "mac-watch-revoke-error",
+        "Window/Apple Watch/Remove · couldn't write",
+    ),
+    (
         "mac-watch-unavailable",
         "Window/Apple Watch/Service not running",
     ),

@@ -189,6 +189,26 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
+/// One store shared by a `PairedDevices` and the test that checks it.
+#[cfg(test)]
+impl SecretStore for std::rc::Rc<MemorySecretStore> {
+    fn load(&self, device_id: &str) -> Result<Option<DeviceSecret>, String> {
+        (**self).load(device_id)
+    }
+    fn save(&self, device_id: &str, secret: &DeviceSecret) -> Result<(), String> {
+        (**self).save(device_id, secret)
+    }
+    fn delete(&self, device_id: &str) -> Result<(), String> {
+        (**self).delete(device_id)
+    }
+    fn migration_completed(&self) -> Result<bool, String> {
+        (**self).migration_completed()
+    }
+    fn mark_migration_completed(&self) -> Result<(), String> {
+        (**self).mark_migration_completed()
+    }
+}
+
 /// One entry of `paired-devices.json`. Unknown keys (Wristper's `push`
 /// destination, anything newer) round-trip untouched.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -231,7 +251,9 @@ pub(crate) enum DeviceStatus {
 pub(crate) struct DeviceSummary {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) paired_at: String,
+    /// When it last paired (a watch paired again keeps its first
+    /// `paired_at`), so the window tells a new pairing from the old one.
+    pub(crate) last_paired_at: String,
     pub(crate) last_seen: String,
     pub(crate) last_protocol: u32,
     pub(crate) last_app_version: String,
@@ -263,8 +285,6 @@ pub(crate) struct PairedDevices {
     /// Why the file is not a device list Hex can rewrite; while set, every
     /// save fails rather than replace it.
     unwritable: Option<String>,
-    /// The last save failed: the file still holds what memory no longer does.
-    unsaved: bool,
     /// What happened while loading, for the process log.
     pub(crate) notes: Vec<String>,
 }
@@ -295,7 +315,6 @@ impl PairedDevices {
             clock,
             unparsed: Vec::new(),
             unwritable: None,
-            unsaved: false,
             notes: Vec::new(),
         };
         match devices_file::read(path) {
@@ -593,37 +612,28 @@ impl PairedDevices {
         Some(token)
     }
 
-    /// Forgets `id` in memory at once, then writes the file and deletes
-    /// the store's item, in that order (Swift's `revoke`). `Err` names the
-    /// list Hex could not write: until a later save succeeds, a restart
-    /// reads the watch back, and only a deleted item keeps it out. An item
-    /// left behind with the list written is harmless, since only listed
-    /// devices load secrets. Revoking again retries both steps.
+    /// Writes the list without `id` first; only once it is written does
+    /// Hex forget the watch in memory and delete the store's item. A list
+    /// Hex could not write changes nothing: the watch stays listed and
+    /// served, its item stays, and `Err` says why, so Remove can try again.
+    /// An item left behind once the list is written is harmless, since only
+    /// listed devices load secrets.
     pub(crate) fn revoke(&mut self, id: &str) -> Result<bool, String> {
-        let listed = self.position(id).is_some();
-        self.devices.retain(|device| device.id != id);
-        self.forget_secret(id);
-        let list = if listed || self.unsaved {
-            self.save().err().map(|error| error.to_string())
-        } else {
-            None
-        };
-        let item = self.store.delete(id).err();
-        match (list, item) {
-            (None, None) => Ok(listed),
-            (None, Some(error)) => {
-                self.note(format!(
-                    "revoked {id} but its secret stayed in the keychain: {error}"
-                ));
-                Ok(listed)
+        let index = self.position(id);
+        if let Some(index) = index {
+            let device = self.devices.remove(index);
+            if let Err(error) = self.save() {
+                self.devices.insert(index, device);
+                return Err(format!("could not write {FILE_NAME}: {error}"));
             }
-            (Some(list), item) => Err(match item {
-                None => format!("could not write {FILE_NAME}: {list}"),
-                Some(item) => format!(
-                    "could not write {FILE_NAME} ({list}) or delete the keychain item ({item})"
-                ),
-            }),
+            self.forget_secret(id);
         }
+        if let Err(error) = self.store.delete(id) {
+            self.note(format!(
+                "revoked {id} but its secret stayed in the keychain: {error}"
+            ));
+        }
+        Ok(index.is_some())
     }
 
     /// Drops every copy of `id`'s secret Hex holds outside the store.
@@ -728,7 +738,10 @@ impl PairedDevices {
             .map(|device| DeviceSummary {
                 id: device.id.clone(),
                 name: device.name.clone(),
-                paired_at: device.paired_at.clone(),
+                last_paired_at: device
+                    .last_paired_at
+                    .clone()
+                    .unwrap_or_else(|| device.paired_at.clone()),
                 last_seen: device.last_seen.clone(),
                 last_protocol: device.last_protocol.unwrap_or(super::MINIMUM_PEER_PROTOCOL),
                 last_app_version: device.last_app_version.clone().unwrap_or_default(),
@@ -751,6 +764,12 @@ impl PairedDevices {
     #[cfg(test)]
     pub(crate) fn refuse_saves(&mut self, why: &str) {
         self.unwritable = Some(why.to_owned());
+    }
+
+    /// Undoes [`Self::refuse_saves`].
+    #[cfg(test)]
+    pub(crate) fn allow_saves(&mut self) {
+        self.unwritable = None;
     }
 
     pub(crate) fn devices(&self) -> &[PairedDevice] {
@@ -792,7 +811,6 @@ impl PairedDevices {
             Some(reason) => Err(io::Error::other(reason.clone())),
             None => devices_file::write(&self.path, devices, &self.unparsed),
         };
-        self.unsaved = written.is_err();
         if let Err(error) = &written {
             self.note(format!("could not write {FILE_NAME}: {error}"));
         }
@@ -809,26 +827,6 @@ mod tests {
     use p256::elliptic_curve::sec1::ToSec1Point;
     use std::cell::Cell;
     use std::rc::Rc;
-
-    struct Shared(Rc<MemorySecretStore>);
-
-    impl SecretStore for Shared {
-        fn load(&self, id: &str) -> Result<Option<DeviceSecret>, String> {
-            self.0.load(id)
-        }
-        fn save(&self, id: &str, secret: &DeviceSecret) -> Result<(), String> {
-            self.0.save(id, secret)
-        }
-        fn delete(&self, id: &str) -> Result<(), String> {
-            self.0.delete(id)
-        }
-        fn migration_completed(&self) -> Result<bool, String> {
-            self.0.migration_completed()
-        }
-        fn mark_migration_completed(&self) -> Result<(), String> {
-            self.0.mark_migration_completed()
-        }
-    }
 
     /// A store whose writes fail while `refusing` is set; reads and
     /// deletes go through.
@@ -864,7 +862,7 @@ mod tests {
     }
 
     fn load(dir: &Path, store: Rc<MemorySecretStore>) -> PairedDevices {
-        PairedDevices::load(&dir.join(FILE_NAME), Box::new(Shared(store)))
+        PairedDevices::load(&dir.join(FILE_NAME), Box::new(store))
     }
 
     /// A clock the test moves by hand.
@@ -875,7 +873,7 @@ mod tests {
     ) -> PairedDevices {
         PairedDevices::load_with_clock(
             &dir.join(FILE_NAME),
-            Box::new(Shared(store)),
+            Box::new(store),
             Box::new(move || clock.get()),
         )
     }
@@ -1582,42 +1580,42 @@ mod tests {
     }
 
     #[test]
-    fn a_revoke_whose_list_and_keychain_both_fail_reports_it_and_denies_the_watch() {
+    fn a_revoke_whose_list_cannot_be_written_changes_nothing() {
         let dir = temp_dir("revoke-unsaved");
         let store = Rc::new(MemorySecretStore::default());
         let (mut paired, token) = paired_w1(&dir, &store);
-        paired.unwritable = Some("disk full".into());
-        store.undeletable.borrow_mut().insert("w1".into());
+        paired.refuse_saves("disk full");
         let error = paired.revoke("w1").unwrap_err();
-        assert!(error.contains("disk full"), "{error}");
-        assert!(error.contains("deleting w1 refused"), "{error}");
-        assert_eq!(paired.device_for_token(&token), None);
-        assert_eq!(paired.token_for("w1"), None);
-        assert!(paired.devices().is_empty());
-        paired.unwritable = None;
+        assert_eq!(error, format!("could not write {FILE_NAME}: disk full"));
+        assert_eq!(paired.devices().len(), 1, "the watch is still listed");
+        assert_eq!(status(&mut paired, "w1"), DeviceStatus::Ready);
+        assert_eq!(paired.device_for_token(&token).as_deref(), Some("w1"));
         assert_eq!(
-            paired.revoke("w1"),
-            Ok(false),
-            "trying again writes the list"
+            store.load("w1").unwrap().map(|secret| secret.token),
+            Some(token.clone()),
+            "the keychain item was not touched"
         );
+        // Memory and disk still agree: a restart reads the same watch.
         let mut restarted = load(&dir, store.clone());
-        assert_eq!(restarted.device_for_token(&token), None);
-        assert!(restarted.devices().is_empty());
+        assert_eq!(restarted.device_for_token(&token).as_deref(), Some("w1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_revoke_whose_list_fails_leaves_no_secret_to_come_back_with() {
-        let dir = temp_dir("revoke-list-fails");
+    fn a_revoke_tried_again_after_a_failure_removes_the_watch() {
+        let dir = temp_dir("revoke-again");
         let store = Rc::new(MemorySecretStore::default());
         let (mut paired, token) = paired_w1(&dir, &store);
-        paired.unwritable = Some("disk full".into());
+        paired.refuse_saves("disk full");
         assert!(paired.revoke("w1").is_err());
+        paired.allow_saves();
+        assert_eq!(paired.revoke("w1"), Ok(true));
+        assert!(paired.devices().is_empty());
+        assert_eq!(paired.device_for_token(&token), None);
         assert_eq!(store.load("w1").unwrap(), None);
         let mut restarted = load(&dir, store.clone());
-        assert_eq!(restarted.devices().len(), 1, "the list was never written");
+        assert!(restarted.devices().is_empty());
         assert_eq!(restarted.device_for_token(&token), None);
-        assert_eq!(status(&mut restarted, "w1"), DeviceStatus::NeedsRepair);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,8 +1,10 @@
 //! The window's view of the service is pushed from the `watch` thread when
 //! the relay, the pairing, or the list of watches changes.
 
+use std::rc::Rc;
+
 use super::*;
-use crate::watch::pairing::DeviceStatus;
+use crate::watch::pairing::{DeviceStatus, PairedDevices};
 
 type Seen = Arc<Mutex<Vec<WatchSnapshot>>>;
 
@@ -23,6 +25,24 @@ fn revoke(h: &mut Harness, id: &str) -> Result<bool, String> {
         h.now,
     );
     answer.try_recv().unwrap()
+}
+
+/// Swaps in a keychain the test can read, before any watch pairs.
+fn shared_keychain(h: &mut Harness) -> Rc<MemorySecretStore> {
+    let store = Rc::new(MemorySecretStore::default());
+    h.core.paired = PairedDevices::load(&h.dir.join(pairing::FILE_NAME), Box::new(store.clone()));
+    store
+}
+
+/// The status `/health` answers the watch's token.
+fn health(h: &mut Harness, watch: &Watch) -> u16 {
+    let headers = h.device_headers(watch);
+    h.request("GET", "/health", &[], &headers, &[]).unwrap().0
+}
+
+fn listed(seen: &Seen) -> Vec<String> {
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    last.devices.into_iter().map(|device| device.id).collect()
 }
 
 #[test]
@@ -107,20 +127,19 @@ fn an_unchanged_state_is_not_pushed_again() {
 #[test]
 fn revoke_removes_the_watch_and_pushes_the_list() {
     let mut h = harness("view-revoke");
+    let store = shared_keychain(&mut h);
     let seen = watching(&mut h);
     let watch = h.pair("watch-1");
-    assert_eq!(seen.lock().unwrap().last().unwrap().devices.len(), 1);
-    assert_eq!(
-        h.core.paired.device_for_token(&watch.token).as_deref(),
-        Some("watch-1")
-    );
+    assert_eq!(listed(&seen), ["watch-1"]);
+    assert_eq!(health(&mut h, &watch), 200);
     assert_eq!(revoke(&mut h, "watch-1"), Ok(true));
-    assert!(seen.lock().unwrap().last().unwrap().devices.is_empty());
+    assert!(listed(&seen).is_empty());
     assert_eq!(
-        h.core.paired.device_for_token(&watch.token),
-        None,
+        health(&mut h, &watch),
+        403,
         "the revoked watch's token no longer works"
     );
+    assert_eq!(store.load("watch-1").unwrap(), None);
     assert_eq!(
         revoke(&mut h, "watch-1"),
         Ok(false),
@@ -129,14 +148,75 @@ fn revoke_removes_the_watch_and_pushes_the_list() {
 }
 
 #[test]
-fn revoke_reports_the_list_it_could_not_write() {
+fn a_revoke_that_cannot_write_the_list_keeps_the_watch_listed_and_served() {
     let mut h = harness("view-revoke-unsaved");
+    let store = shared_keychain(&mut h);
     let seen = watching(&mut h);
     let watch = h.pair("watch-1");
     h.core.paired.refuse_saves("disk full");
     let error = revoke(&mut h, "watch-1").expect_err("a list that was not written is not removed");
     assert!(error.contains("disk full"), "{error}");
-    // The service stops serving it at once even so, and says so.
-    assert!(seen.lock().unwrap().last().unwrap().devices.is_empty());
-    assert_eq!(h.core.paired.device_for_token(&watch.token), None);
+    assert_eq!(listed(&seen), ["watch-1"], "the window still lists it");
+    let snapshot = h.core.snapshot();
+    assert_eq!(snapshot.devices.len(), 1);
+    assert_eq!(snapshot.devices[0].status, DeviceStatus::Ready);
+    assert_eq!(
+        store.load("watch-1").unwrap().map(|secret| secret.token),
+        Some(watch.token.clone()),
+        "the keychain item was not touched"
+    );
+    assert_eq!(health(&mut h, &watch), 200, "its next request is served");
+}
+
+#[test]
+fn a_revoke_tried_again_after_a_failure_removes_the_watch() {
+    let mut h = harness("view-revoke-again");
+    let store = shared_keychain(&mut h);
+    let seen = watching(&mut h);
+    let watch = h.pair("watch-1");
+    h.core.paired.refuse_saves("disk full");
+    assert!(revoke(&mut h, "watch-1").is_err());
+    h.core.paired.allow_saves();
+    assert_eq!(revoke(&mut h, "watch-1"), Ok(true));
+    assert!(listed(&seen).is_empty());
+    assert_eq!(store.load("watch-1").unwrap(), None);
+    assert_eq!(health(&mut h, &watch), 403);
+}
+
+#[test]
+fn pairing_a_watch_again_pushes_when_it_last_paired() {
+    let mut h = harness("view-repair");
+    let seen = watching(&mut h);
+    let watch = h.pair("watch-1");
+    let paired_at = |seen: &Seen| {
+        let last = seen.lock().unwrap().last().cloned().unwrap();
+        let [device] = &last.devices[..] else {
+            panic!("one watch is listed: {:?}", last.devices);
+        };
+        (device.id.clone(), device.last_paired_at.clone())
+    };
+    let (_, first) = paired_at(&seen);
+    h.advance(Duration::from_secs(60));
+    // A reinstalled watch: a new id from the relay, and its old token.
+    h.approve("watch-1b");
+    let (status, body) = h
+        .request(
+            "POST",
+            "/pairing/request",
+            &[],
+            &[],
+            json!({
+                "device_id": "watch-1b",
+                "name": "Test Watch",
+                "previous_token": watch.token,
+                "e2ee_public_key": public_key_base64(&watch_secret()),
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+    assert_eq!(status, 200, "{body}");
+    let (id, again) = paired_at(&seen);
+    assert_eq!(id, "watch-1", "the old entry is paired again");
+    assert_ne!(again, first, "the window sees a new pairing at once");
 }

@@ -22,8 +22,8 @@ pub(in crate::rune_ui) enum Tone {
     Bad,
 }
 
-/// The paired watches as (id, when each paired), to tell a new pairing from
-/// one that was already there.
+/// The paired watches as (id, when each last paired), to tell a new pairing
+/// from one that was already there.
 type Known = Vec<(String, String)>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -56,7 +56,7 @@ pub(super) fn known(snapshot: Option<&WatchSnapshot>) -> Known {
             snapshot
                 .devices
                 .iter()
-                .map(|device| (device.id.clone(), device.paired_at.clone()))
+                .map(|device| (device.id.clone(), device.last_paired_at.clone()))
                 .collect()
         })
         .unwrap_or_default()
@@ -96,10 +96,9 @@ impl Pair {
             return self.clone();
         };
         let arrived = snapshot.and_then(|snapshot| {
-            snapshot
-                .devices
-                .iter()
-                .find(|device| !before.contains(&(device.id.clone(), device.paired_at.clone())))
+            snapshot.devices.iter().find(|device| {
+                !before.contains(&(device.id.clone(), device.last_paired_at.clone()))
+            })
         });
         if let Some(device) = arrived {
             Self::Paired(device.name.clone())
@@ -178,14 +177,15 @@ pub(super) fn last_seen(stamp: &str, now: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::watch::pairing::{DeviceStatus, DeviceSummary};
+    use crate::watch::e2ee::SharedKey;
+    use crate::watch::pairing::{DeviceStatus, DeviceSummary, MemorySecretStore, PairedDevices};
     use crate::watch::relay::RelayState;
 
     fn device(id: &str, name: &str, paired_at: &str) -> DeviceSummary {
         DeviceSummary {
             id: id.into(),
             name: name.into(),
-            paired_at: paired_at.into(),
+            last_paired_at: paired_at.into(),
             last_seen: paired_at.into(),
             last_protocol: 4,
             last_app_version: "0.4.0".into(),
@@ -267,23 +267,37 @@ mod tests {
     }
 
     #[test]
-    fn pairing_a_watch_again_counts_by_when_it_paired() {
-        let then = "2026-11-01T10:00:00.000000+00:00";
-        let before = snapshot(vec![device("w", "Series 9", then)]);
+    fn pairing_a_watch_again_settles_as_soon_as_it_has() {
+        // The list a real `PairedDevices` reports: a watch paired again
+        // (with `previous_token`, the same entry) keeps its first
+        // `paired_at`.
+        let dir = std::env::temp_dir().join(format!(
+            "hex-watch-pane-repair-{}-{:?}",
+            std::process::id(),
+            Instant::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paired = PairedDevices::load(
+            &dir.join(crate::watch::pairing::FILE_NAME),
+            Box::new(MemorySecretStore::default()),
+        );
+        let key = SharedKey::from_base64("w9fFiEsXKqe7xFZ8w+SKs5nTn9bYRhMYXEOB17J8uO0=").unwrap();
+        let then = Timestamp::parse("2026-11-01T10:00:00.000000+00:00").unwrap();
+        paired.enroll("w", "Series 9", &key, then).unwrap();
+        let before = snapshot(paired.summary());
         let mut view = WatchView::default();
         typed(&mut view, "217400", Some(&before));
         let ok = ClaimOk {
-            device_id: "w".into(),
+            device_id: "w-reinstalled".into(),
             device_name: "Series 9".into(),
         };
         view.pair = view.pair.claimed(Ok(ok), Some(&before));
         assert!(!view.settle(Some(&before), Instant::now()), "same pairing");
-        let again = snapshot(vec![device(
-            "w",
-            "Series 9",
-            "2026-11-05T09:00:00.000000+00:00",
-        )]);
-        assert!(view.settle(Some(&again), Instant::now()));
+        paired
+            .enroll("w", "Series 9", &key, then + Duration::from_secs(60))
+            .unwrap();
+        let again = snapshot(paired.summary());
+        assert!(view.settle(Some(&again), Instant::now()), "no 120 s wait");
         assert_eq!(view.pair, Pair::Paired("Series 9".into()));
     }
 

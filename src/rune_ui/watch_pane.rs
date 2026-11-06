@@ -56,7 +56,8 @@ pub(super) struct WatchView {
     pub(super) pair: Pair,
     /// The watch whose Remove was pressed once.
     removing: Option<String>,
-    /// A Remove that could not write the list: the watch's name and why.
+    /// A Remove that could not write the list: the watch's id, and what to
+    /// say under its row.
     remove_error: Option<(String, String)>,
     /// What "last seen" counts from; scenes fix it so their images don't move.
     pub(super) now: Option<SystemTime>,
@@ -102,8 +103,14 @@ impl WatchView {
                 self.code = TextEdit::default();
                 self.pair = self.pair.claimed(result, snapshot);
             }
-            WatchEvent::Revoked { name, result, .. } => {
-                self.remove_error = result.err().map(|error| (name, error));
+            WatchEvent::Revoked { id, name, result } => {
+                self.remove_error = result.err().map(|error| {
+                    let words = tr_named(
+                        "Couldn't remove {name}: {error}",
+                        &[("name", &name), ("error", &error)],
+                    );
+                    (id, words)
+                });
             }
         }
         true
@@ -277,16 +284,18 @@ fn device_rows(ui: &Ui, p: Paint, snapshot: &WatchSnapshot) -> Vec<super::contro
             )
             .into(),
         );
+        // A Remove that changed nothing says why under the watch it kept.
+        if let Some((_, words)) = ui
+            .watch
+            .remove_error
+            .as_ref()
+            .filter(|(failed, _)| *failed == device.id)
+        {
+            rows.push(note("watch-remove-error", words, p.danger()).into());
+        }
     }
     if snapshot.devices.is_empty() {
         rows.push(note("watch-none", tr("No watches paired yet"), p.muted()).into());
-    }
-    if let Some((name, error)) = &ui.watch.remove_error {
-        let words = tr_named(
-            "Couldn't remove {name}: {error}",
-            &[("name", name), ("error", error)],
-        );
-        rows.push(note("watch-remove-error", &words, p.danger()).into());
     }
     rows
 }

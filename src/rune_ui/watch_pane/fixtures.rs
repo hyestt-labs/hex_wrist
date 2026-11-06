@@ -21,7 +21,7 @@ fn device(id: &str, name: &str, status: DeviceStatus, seen_ago: u64) -> DeviceSu
     DeviceSummary {
         id: id.into(),
         name: name.into(),
-        paired_at: seen.clone(),
+        last_paired_at: seen.clone(),
         last_seen: seen,
         last_protocol: 4,
         last_app_version: "0.4.0".into(),
@@ -63,6 +63,7 @@ pub(in crate::rune_ui) enum Scene {
     Paired,
     Error,
     Remove,
+    RevokeError,
     Unavailable,
 }
 
@@ -92,6 +93,14 @@ pub(in crate::rune_ui) fn scene(ui: &mut Ui, scene: Scene) {
         Scene::Paired => ui.watch.pair = Pair::Paired("Glen's Apple Watch".into()),
         Scene::Error => ui.watch.pair = Pair::Failed(Failure::Claim(ClaimError::CodeNotFound)),
         Scene::Remove => ui.watch.removing = Some("series-9".into()),
+        Scene::RevokeError => {
+            let refused = super::WatchEvent::Revoked {
+                id: "series-9".into(),
+                name: "Glen's Apple Watch".into(),
+                result: Err("could not write paired-devices.json: disk full".into()),
+            };
+            ui.watch.apply(refused, ui.platform.watch.as_ref());
+        }
         Scene::Unavailable => ui.platform.watch = None,
     }
 }

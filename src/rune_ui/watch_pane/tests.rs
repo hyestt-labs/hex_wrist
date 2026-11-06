@@ -194,7 +194,7 @@ fn remove_needs_two_presses() {
 }
 
 #[test]
-fn a_remove_that_could_not_write_says_why() {
+fn a_remove_that_could_not_write_says_why_under_the_watch_it_kept() {
     let mut rt = runtime("mac-watch");
     rt.state.platform.watch_events.push(WatchEvent::Revoked {
         id: "series-9".into(),
@@ -206,6 +206,18 @@ fn a_remove_that_could_not_write_says_why() {
         &rt,
         "Couldn't remove Glen's Apple Watch: could not write paired-devices.json: disk full"
     ));
+    let y = |rt: &Runtime<Ui>, key: &str| {
+        rt.presented(key)
+            .map(|(rect, _)| rect[1])
+            .unwrap_or_else(|| panic!("no {key}"))
+    };
+    assert!(y(&rt, "watch-device-series-9") < y(&rt, "watch-remove-error"));
+    assert!(
+        y(&rt, "watch-remove-error") < y(&rt, "watch-device-series-4"),
+        "the error sits under its own watch, not at the end of the card"
+    );
+    // Remove stays there to try again, and a success clears the error.
+    assert!(rt.find("watch-remove").is_some());
     rt.state.platform.watch_events.push(WatchEvent::Revoked {
         id: "series-9".into(),
         name: "Glen's Apple Watch".into(),
@@ -216,6 +228,13 @@ fn a_remove_that_could_not_write_says_why() {
         rt.find("watch-remove-error").is_none(),
         "a success clears it"
     );
+}
+
+#[test]
+fn the_revoke_error_scene_keeps_the_watch_and_says_why() {
+    let rt = runtime("mac-watch-revoke-error");
+    assert!(rt.find("watch-device-series-9").is_some());
+    assert!(rt.find("watch-remove-error").is_some());
 }
 
 #[test]
@@ -422,6 +441,72 @@ mod first_run {
             refresh(&mut rt);
             assert_eq!(page(&rt), Some(expected), "paired: {paired}");
         }
+    }
+
+    /// A setup resumed (the tour quit at setup) before the service's first
+    /// snapshot arrived: the permissions show while it waits.
+    fn resumed_without_a_snapshot() -> Runtime<Ui> {
+        let mut rt = runtime("mac-onboarding-watch");
+        rt.update(|ui, _| {
+            ui.platform.watch = None;
+            ui.first_run = None;
+            live::open(ui);
+        });
+        refresh(&mut rt);
+        assert_eq!(page(&rt), Some(Page::Permissions));
+        rt
+    }
+
+    /// The first snapshot, with no watch paired, `after` seconds later on
+    /// the story's clock; nothing polled in between.
+    fn first_snapshot_after(rt: &mut Runtime<Ui>, after: f64) {
+        rt.update(|ui, tx| {
+            if let Some(s) = ui.first_run.as_mut() {
+                s.now += after;
+            }
+            ui.platform.watch = Some(crate::rune_ui::watch_pane::scene_snapshot(Vec::new()));
+            live::poll(ui, tx);
+        });
+        refresh(rt);
+    }
+
+    #[test]
+    fn a_resumed_setup_moves_to_the_watch_page_when_the_service_reports_in_time() {
+        let mut rt = resumed_without_a_snapshot();
+        first_snapshot_after(&mut rt, 1.0);
+        assert_eq!(page(&rt), Some(Page::Watch));
+    }
+
+    #[test]
+    fn a_resumed_setup_stops_waiting_after_a_moment_and_carries_on() {
+        let mut rt = resumed_without_a_snapshot();
+        first_snapshot_after(&mut rt, 1.6);
+        assert_eq!(
+            page(&rt),
+            Some(Page::Permissions),
+            "a snapshot after the wait never pulls the page away"
+        );
+        // Not stuck: the permissions page goes on once they're granted.
+        rt.update(|ui, tx| {
+            ui.platform.permissions.microphone = PermissionState::Ready;
+            ui.platform.permissions.accessibility = PermissionState::Ready;
+            live::poll(ui, tx);
+        });
+        for _ in 0..40 {
+            if page(&rt) != Some(Page::Permissions) {
+                break;
+            }
+            rt.update(|ui, tx| {
+                if let Some(s) = ui.first_run.as_mut() {
+                    s.now += 1.0;
+                    s.move_on();
+                }
+                live::poll(ui, tx);
+            });
+            refresh(&mut rt);
+        }
+        assert_ne!(page(&rt), Some(Page::Permissions));
+        assert_ne!(page(&rt), Some(Page::Watch));
     }
 
     #[test]

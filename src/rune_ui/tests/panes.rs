@@ -1593,6 +1593,7 @@ fn platform_goldens() {
             "mac-watch-paired",
             "mac-watch-error",
             "mac-watch-remove",
+            "mac-watch-revoke-error",
             "mac-watch-unavailable",
             "mac-input-source-models",
             "meetings",
