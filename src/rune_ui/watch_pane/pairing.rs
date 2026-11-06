@@ -271,10 +271,12 @@ mod tests {
         // The list a real `PairedDevices` reports: a watch paired again
         // (with `previous_token`, the same entry) keeps its first
         // `paired_at`.
+        let mut nonce = [0u8; 8];
+        getrandom::fill(&mut nonce).unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "hex-watch-pane-repair-{}-{:?}",
+            "hex-watch-pane-repair-{}-{:016x}",
             std::process::id(),
-            Instant::now()
+            u64::from_le_bytes(nonce)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let mut paired = PairedDevices::load(
