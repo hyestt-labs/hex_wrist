@@ -138,6 +138,11 @@ On a machine without a GPU, render on lavapipe with
 `tests/golden/` and are compared within a small per-pixel tolerance. The golden
 tests run only on Linux; from a Mac, dispatch `check-linux.yml` on the branch
 and take its `golden-actual` artifact. Look at every changed image and commit
-it with the change that caused it. A scene is a fixture, not native end-to-end
+it with the change that caused it. The in-test tolerance lets 0.2% of pixels
+move, so a UI PR also runs `gh workflow run golden-strict.yml --ref <branch>
+-f ref=<branch>` and pastes its table: a scene fails for any single pixel
+whose channel differs by more than 12 (`scripts/golden-diff.py`, tested by
+`scripts/test-golden-diff.py`), and a golden the run did not render fails
+too. Look at and regenerate every failing scene. A scene is a fixture, not native end-to-end
 proof: the meeting capsules and the HUD have no scene, and the real window,
 overlays, and input still need a person on each OS.

@@ -1,0 +1,130 @@
+name: Golden strict
+
+# The strict, rerunnable golden check. The golden tests allow 0.2% of pixels
+# past a per-channel difference of 12, and skip without a GPU. This workflow
+# renders every golden scene on lavapipe (a missing adapter fails), then
+# compares each render with the approved tests/golden/ and fails when any
+# scene has one pixel past the tolerance (scripts/golden-diff.py). Run it on
+# every UI pull request and paste the table in the description:
+#
+#   gh workflow run golden-strict.yml --ref <branch> -f ref=<ref to check>
+#
+# It never changes the repository: the checkout's tests/golden is rewritten
+# by HEX_UPDATE_GOLDENS=1 inside the runner only, after the approved copy is
+# set aside, and the renders go up as the golden-renders artifact. Rewriting
+# is the one way to reach every golden test: the capture and meeting capsule
+# ones neither honour HEX_REQUIRE_GPU nor write HEX_GOLDEN_RENDERS, so a
+# render older than the run's marker counts as skipped.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The branch, tag, or commit whose renders to check
+        required: false
+        default: dev
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  golden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      SOURCE_DATE_EPOCH: "0"
+      BLA_VENDOR: OpenBLAS
+      OPENSSL_NO_VENDOR: "1"
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || 'dev' }}
+          persist-credentials: false
+      # The comparison tool comes from the ref the workflow was dispatched on,
+      # so a branch cut before it existed can still be checked.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: golden-tool
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Test the comparison tool
+        run: python3 golden-tool/scripts/test-golden-diff.py
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+      - name: Install native libraries
+        timeout-minutes: 15
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get install -y -o Dpkg::Options::=--force-confnew clang cmake pkg-config python3 libasound2-dev \
+            libssl-dev libgtk-3-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libfontconfig1-dev libfreetype-dev \
+            libxcursor-dev libxi-dev libxrandr-dev libopenblas-dev libvulkan-dev \
+            glslc libshaderc-dev mesa-vulkan-drivers
+      - name: Require a GPU adapter (lavapipe)
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -n 1 || true)
+          if [ -z "$icd" ]; then
+            echo "::error::No lavapipe ICD (mesa-vulkan-drivers); renders would skip."
+            exit 1
+          fi
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          cat "$icd"
+      - name: Set the approved goldens aside
+        run: |
+          cp -a tests/golden "$RUNNER_TEMP/golden-approved"
+          touch "$RUNNER_TEMP/render-start"
+      - name: Render every golden scene
+        id: render
+        run: |
+          set +e
+          HEX_UPDATE_GOLDENS=1 HEX_REQUIRE_GPU=1 \
+            cargo test --locked --bin hex rune_ui 2>&1 | tee "$RUNNER_TEMP/render.log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cp -a tests/golden "$RUNNER_TEMP/golden-renders"
+          exit 0
+      - name: Compare with the approved goldens
+        id: compare
+        run: |
+          set +e
+          python3 golden-tool/scripts/golden-diff.py \
+            --golden "$RUNNER_TEMP/golden-approved" \
+            --renders "$RUNNER_TEMP/golden-renders" \
+            --newer-than "$RUNNER_TEMP/render-start" \
+            --skip 'capture-capsule-*=macOS-only goldens (cfg(target_os = "macos")); check on a Mac' \
+            --diff-dir "$RUNNER_TEMP/golden-diffs" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload the renders
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: golden-renders
+          path: ${{ runner.temp }}/golden-renders
+          if-no-files-found: ignore
+      - name: Upload the difference images
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: golden-diffs
+          path: ${{ runner.temp }}/golden-diffs
+          if-no-files-found: ignore
+      - name: Fail on any scene past the tolerance
+        env:
+          RENDER_STATUS: ${{ steps.render.outputs.status }}
+          COMPARE_STATUS: ${{ steps.compare.outputs.status }}
+        run: |
+          [ "$RENDER_STATUS" = 0 ] || echo "::error::The render run failed (exit $RENDER_STATUS); see its log."
+          [ "$COMPARE_STATUS" = 0 ] || echo "::error::A scene is past the tolerance, missing, or was not rendered; see the table."
+          [ "$RENDER_STATUS" = 0 ] && [ "$COMPARE_STATUS" = 0 ]
