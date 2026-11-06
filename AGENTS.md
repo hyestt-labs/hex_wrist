@@ -51,7 +51,15 @@ Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 core is dictating from an Apple Watch. The watch service (`watch`) is not a
 Labs feature: it starts with the macOS app, on by default, with no toggle.
 Watch-only setup asks for no Microphone (user decision 2026-11-04).
-Everything else in this section still holds for new features.
+Catalog speech models added by this fork (Whisper large-v3, medium, and
+small, Breeze ASR 25, Qwen3-ASR 1.7B) are not in Labs either: like NB-Whisper,
+Granite, and GigaAM they are plain catalog entries, never recommended, and
+only Parakeet Ultra and imports sit behind Labs. Known risks of those
+models: a Hex build older than them runs the default model for their saved IDs
+and a later save from it can replace the choice; an imported file is stored
+apart from the catalog copy, so one file can take disk twice (see
+`docs/features/dictation.md`). Everything else in this section still holds for
+new features.
 
 ## Feature Map
 
