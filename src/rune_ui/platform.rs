@@ -65,6 +65,10 @@ pub(super) struct Capabilities {
     /// The Apple Watch service (`watch`): the relay connection, pairing, and
     /// recordings pasted as dictations. Only the macOS app starts it so far.
     pub(super) watch: bool,
+    /// The system's whole preferred-language list is read, so the Chinese
+    /// characters setting that follows the system looks past a first
+    /// non-Chinese language (`desktop::i18n::preferred_locales`).
+    pub(super) preferred_language_list: bool,
 }
 
 impl Capabilities {
@@ -84,6 +88,7 @@ impl Capabilities {
         modifier_sides: false,
         keyboard_model_switching: true,
         watch: false,
+        preferred_language_list: false,
     };
 
     pub(super) const MACOS: Self = Self {
@@ -102,6 +107,7 @@ impl Capabilities {
         modifier_sides: true,
         keyboard_model_switching: true,
         watch: true,
+        preferred_language_list: true,
     };
 
     pub(super) const WINDOWS: Self = Self {
@@ -120,6 +126,7 @@ impl Capabilities {
         modifier_sides: true,
         keyboard_model_switching: true,
         watch: false,
+        preferred_language_list: false,
     };
 
     /// This OS's capabilities, with the rows its window host decides.
@@ -851,6 +858,13 @@ const DIFFERENCES: &[(&str, Difference)] = &[
         Difference::Impossible("X11 grabs and the Wayland portal see no sides"),
     ),
     (
+        "preferred_language_list",
+        Difference::Pending(
+            "Linux and Windows read only the first locale (`LANG`, the user locale); \
+             `LANGUAGE` and `GetUserPreferredUILanguages` have no adapter yet",
+        ),
+    ),
+    (
         "watch",
         Difference::Pending(
             "the relay, pairing, and delivery are cross-platform; only `macos_rune` starts the \
@@ -862,7 +876,7 @@ const DIFFERENCES: &[(&str, Difference)] = &[
 impl Capabilities {
     /// Every capability by name. Destructuring makes a new capability a
     /// compile error here until it is named.
-    pub(super) fn fields(self) -> [(&'static str, bool); 14] {
+    pub(super) fn fields(self) -> [(&'static str, bool); 15] {
         let Self {
             os: _,
             meetings,
@@ -879,6 +893,7 @@ impl Capabilities {
             modifier_sides,
             keyboard_model_switching,
             watch,
+            preferred_language_list,
         } = self;
         [
             ("meetings", meetings),
@@ -895,6 +910,7 @@ impl Capabilities {
             ("modifier_sides", modifier_sides),
             ("keyboard_model_switching", keyboard_model_switching),
             ("watch", watch),
+            ("preferred_language_list", preferred_language_list),
         ]
     }
 }
