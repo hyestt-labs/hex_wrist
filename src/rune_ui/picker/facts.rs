@@ -249,6 +249,15 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::GigaAmV3 => tr("Russian, with punctuation. A small download"),
         M::NbWhisperMedium => tr("Whisper, tuned for Norwegian by its National Library"),
         M::GraniteSpeech5 => tr("IBM's model for seven languages, with punctuation"),
+        M::WhisperLargeV3 => tr("The full Whisper, in almost any language. Slow outside a Mac"),
+        M::WhisperMedium => tr("Whisper, mid-size, in almost any language"),
+        M::WhisperSmall => tr("Whisper, small and quick, in almost any language"),
+        M::BreezeAsr25 => {
+            tr("Whisper, tuned for Chinese and English by MediaTek. Slow outside a Mac")
+        }
+        M::Qwen3Asr17B => {
+            tr("The larger Qwen3-ASR: Chinese and 29 more, and it reads your vocabulary")
+        }
         M::AppleSpeech => tr("Apple's speech recognition, kept up to date by macOS"),
         M::Custom(_) => "",
     }
