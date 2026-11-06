@@ -207,6 +207,18 @@ Apple Watch                               // watch.pair, watch.dictate
 
 ## Gaps And Constraints
 
+- Known limit (C1, accepted): `listener_ready::current()` says Accessibility and
+  the model are ready, but the listener thread starts on the runtime's next
+  tick (about 100 ms to 1 s after setup turns ready, and after its own startup).
+  A recording that arrives in that gap is accepted and queued (capacity 8),
+  and waits until the listener starts reading the queue instead of being
+  refused at once; if the listener never starts, the watch's own 50 s wait ends
+  it with `transcribing`. No test drives that race.
+- A permission revoked while the microphone is warm is applied when a capture
+  starts or ends or a setting reloads, and every open the input starts by
+  itself (route, device-list, selection change, stream retry) asks the
+  permission again first and is dropped when it is gone; the warm stream itself
+  closes at the next such moment.
 - The live checks above have not been observed to pass in this unit's
   worktree: no real Apple Watch, no real Accessibility session, no Orca,
   Ghostty, Warp, or Claude Code and Codex inside a terminal yet. Linux and

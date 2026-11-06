@@ -277,13 +277,16 @@ impl DictationAudio {
     }
 
     fn with_input(
-        input: RecoveringAudioInput,
+        mut input: RecoveringAudioInput,
         device_name: String,
         recording_environment: RecordingEnvironmentController,
         pending_input: PendingInputEvents,
         access: MicrophoneAccess,
         engine: Option<Arc<TranscriptionEngine>>,
     ) -> Result<Self> {
+        // Every later open asks the permission again, whatever policy the
+        // owner last computed from it.
+        input.set_open_gate(access.open_gate());
         let (owner, mut audio) = Owner::new(
             input,
             device_name,
@@ -2618,7 +2621,7 @@ mod tests {
             RecordingEnvironmentController::for_test(),
             PendingInputEvents::default(),
             MicrophoneAccess::with_permission(
-                Box::new(Fake::new(
+                std::sync::Arc::new(Fake::new(
                     crate::desktop::onboarding::PermissionState::NeedsSettings,
                 )),
                 wanted,

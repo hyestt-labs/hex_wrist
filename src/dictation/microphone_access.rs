@@ -8,6 +8,7 @@
 //! hold threshold, Toggle's grace, `hex dictation`, `/dictations`) is an
 //! intentional try, and only then does [`MicrophoneAccess::intentional`] ask.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::desktop::onboarding::{self, PermissionState};
@@ -24,7 +25,7 @@ pub(crate) fn take_settings_request() -> bool {
 }
 
 /// What the owner reads and does about the permission. Tests replace it.
-pub(crate) trait Permission: Send {
+pub(crate) trait Permission: Send + Sync {
     fn state(&self) -> PermissionState;
     /// macOS's own prompt. It opens no stream.
     fn ask(&self);
@@ -58,7 +59,7 @@ impl Permission for System {
 /// The owner's view of the microphone permission and of what the person
 /// asked for (`Release microphone while idle`).
 pub(crate) struct MicrophoneAccess {
-    permission: Box<dyn Permission>,
+    permission: Arc<dyn Permission>,
     wanted: bool,
     /// macOS's prompt was shown this launch.
     asked: bool,
@@ -68,16 +69,23 @@ pub(crate) struct MicrophoneAccess {
 
 impl MicrophoneAccess {
     pub(crate) fn system(wanted: bool) -> Self {
-        Self::with_permission(Box::new(System), wanted)
+        Self::with_permission(Arc::new(System), wanted)
     }
 
-    pub(crate) fn with_permission(permission: Box<dyn Permission>, wanted: bool) -> Self {
+    pub(crate) fn with_permission(permission: Arc<dyn Permission>, wanted: bool) -> Self {
         Self {
             permission,
             wanted,
             asked: false,
             window_requested: false,
         }
+    }
+
+    /// Asked before every stream the input is about to open, so a permission
+    /// revoked since the open was requested stops it.
+    pub(crate) fn open_gate(&self) -> crate::audio::OpenGate {
+        let permission = self.permission.clone();
+        Arc::new(move || permission.state() == PermissionState::Ready)
     }
 
     pub(crate) fn set_wanted(&mut self, wanted: bool) {
@@ -143,7 +151,7 @@ impl Permission for Granted {
 #[cfg(test)]
 impl MicrophoneAccess {
     pub(crate) fn unrestricted(wanted: bool) -> Self {
-        Self::with_permission(Box::new(Granted), wanted)
+        Self::with_permission(Arc::new(Granted), wanted)
     }
 }
 
@@ -241,6 +249,12 @@ pub(crate) mod fakes {
         pub(crate) fn count(&self) -> usize {
             self.count.load(Ordering::SeqCst)
         }
+
+        /// Every stream opened so far stops delivering: the owner sees a
+        /// failure and tries to reopen.
+        pub(crate) fn break_streams(&self) {
+            self.senders.lock().unwrap().clear();
+        }
     }
 
     /// A dictation owner on the fake permission and the counting opener.
@@ -252,7 +266,7 @@ pub(crate) mod fakes {
         use crate::audio::recording_environment::RecordingEnvironmentController;
         use crate::suppression::PendingInputEvents;
         crate::dictation::audio::DictationAudio::open_through(
-            super::MicrophoneAccess::with_permission(Box::new(permission.clone()), wanted),
+            super::MicrophoneAccess::with_permission(Arc::new(permission.clone()), wanted),
             opens.opener(),
             None,
             0,
@@ -603,6 +617,52 @@ mod tests {
                 (0, 0),
                 "{state:?}: nothing opened, nothing logged"
             );
+        }
+    }
+    /// A permission revoked while the microphone is warm: the owner only
+    /// re-reads it at a start or the end of a capture, but a route change, a
+    /// device-list change, a selection change, or a failed stream starts an
+    /// open on its own. Each open asks again first.
+    #[test]
+    fn a_revoked_permission_stops_every_open_the_owner_starts_by_itself() {
+        type Trigger = fn(&DictationAudio, &Opens);
+        let triggers: [(&str, Trigger); 4] = [
+            ("default input or device list changed", |_, _| {
+                crate::audio::notify_input_route_changed();
+            }),
+            ("lid closed", |_, _| {
+                crate::audio::notify_input_route_changed()
+            }),
+            ("selection changed", |audio, _| {
+                audio.request_selection(7, Some("Studio Display Microphone"));
+            }),
+            ("stream failed, so a retry", |_, opens| {
+                opens.break_streams()
+            }),
+        ];
+        for (name, trigger) in triggers {
+            for revoked in [false, true] {
+                let permission = Fake::new(PermissionState::Ready);
+                let opens = Opens::default();
+                let audio = open_audio(&permission, &opens, false);
+                assert_eq!(opens.count(), 1, "warm open at startup");
+                if revoked {
+                    permission.set(PermissionState::NeedsSettings);
+                }
+                trigger(&audio, &opens);
+                settle(&audio);
+                // Retries back off from 250 ms; give them time to fire.
+                std::thread::sleep(Duration::from_millis(700));
+                settle(&audio);
+                if revoked {
+                    assert_eq!(opens.count(), 1, "{name}: opened after the revoke");
+                } else {
+                    assert!(
+                        opens.count() >= 2,
+                        "{name}: the trigger must open when allowed"
+                    );
+                }
+            }
         }
     }
 }

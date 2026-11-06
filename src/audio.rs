@@ -304,6 +304,9 @@ impl OpenRequest {
     }
 }
 
+/// Whether the microphone may be opened now.
+pub(crate) type OpenGate = Arc<dyn Fn() -> bool + Send + Sync>;
+
 pub(crate) type Opener = Arc<dyn Fn(&OpenRequest) -> Result<Opened> + Send + Sync>;
 
 pub struct RecoveringAudioInput {
@@ -323,6 +326,9 @@ pub struct RecoveringAudioInput {
     opener: Opener,
     route_generation_source: fn() -> u64,
     outage: Option<Option<String>>, // why no input opens; `Some(None)` once taken
+    /// Asked before every open that starts: false means the owner may not
+    /// open the microphone now (permission), so the open is dropped.
+    may_open: Option<OpenGate>,
 }
 
 /// Whether a listener's capture is idle, so [`RecoveringAudioInput`] may
@@ -700,7 +706,15 @@ impl RecoveringAudioInput {
             opener,
             route_generation_source: input_route_generation,
             outage: None,
+            may_open: None,
         }
+    }
+
+    /// From now on every open (a start, a retry, a route or selection change)
+    /// first asks `gate`, and is dropped when it says no.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn set_open_gate(&mut self, gate: OpenGate) {
+        self.may_open = Some(gate);
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -924,6 +938,13 @@ impl RecoveringAudioInput {
     }
 
     fn start_replacement(&mut self) {
+        if self.may_open.as_ref().is_some_and(|gate| !gate()) {
+            // The permission went away since the open was asked for: drop it,
+            // and any recovery that wanted it, instead of opening a stream.
+            tracing::info!("microphone open skipped: not allowed");
+            self.recovery.recovered();
+            return;
+        }
         let revision = self
             .recovery
             .target_revision
