@@ -343,6 +343,15 @@ First run (macOS, the service has reported once)
   item registered when onboarding finishes; the practice with a watch; a QR
   code; showing the watch's 426 `watch_outdated` on the Mac; licensing and the
   quota (units D, E); the capsule in other languages; Windows and Linux.
+- A paired watch's "Last seen" is as old as the last pushed snapshot: a
+  request from the watch does not push one (`PairedDevices::touch` is silent),
+  so the age moves only when the relay, a pairing, or a Remove changes.
+- C2's own code that has not run on a real Mac: where the capsule lands with
+  Follow the pointer on (and the default placement coming back when it is
+  turned off), and the threads that run a claim and a Remove. The Apple Watch
+  strings in Traditional Chinese are converted from the Simplified ones and
+  are not reviewed by a native speaker; the other languages' strings have no
+  native review either.
 - Not observed on a real Mac: whether listing devices without opening a
   stream raises the Microphone prompt, `requestAccess`' timing, the first key
   after a grant, and the path that opens Settings after a refusal (C1's list),
