@@ -53,8 +53,8 @@ Labs feature: it starts with the macOS app, on by default, with no toggle.
 Chinese characters in dictation (`chinese_output`: Traditional, Simplified, or
 as heard) is not Labs either (decided 2026-11-05, unit G): it follows the
 system language order by default, applies to every processed dictation on
-every OS, and is the only Output step that does not skip for "Dictate without
-processing" because that mode skips every step, this one included.
+every OS, and "Dictate without processing" skips it like every other Output
+step.
 Catalog speech models added by this fork (Whisper large-v3, medium, and
 small, Breeze ASR 25, Qwen3-ASR 1.7B) are not in Labs either: like NB-Whisper,
 Granite, and GigaAM they are plain catalog entries, never recommended, and

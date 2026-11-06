@@ -368,6 +368,14 @@ mod tests {
             &transformations,
         );
         assert_eq!(processed.text, "write AT-SIGN now");
+        // The control: with no correction the Labs step does run, so the
+        // order above is what kept it from turning the words into "@".
+        let unchanged = self::runtime(|_| {}).process(
+            "write at sign now",
+            &crate::dictation::context::ContextSnapshot::default(),
+            &transformations,
+        );
+        assert!(unchanged.text.contains('@'), "{}", unchanged.text);
     }
 
     #[test]
