@@ -32,6 +32,20 @@ struct Request {
     counted: bool,
 }
 
+/// How many admissions the service remembers for the window.
+const ADMISSIONS_KEPT: usize = 8;
+
+/// Which `/pairing/request` spent which claim's approval: the id the relay
+/// gave the watch that claimed, and the entry the request enrolled (an
+/// older one when `previous_token` named it). `serial` rises with each, so
+/// a window that waits for one tells it from any it saw before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Admission {
+    pub(crate) serial: u64,
+    pub(crate) claimed_device_id: String,
+    pub(crate) device_id: String,
+}
+
 /// A `POST /pairing/request` after its body was read.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PairingRequest<'a> {
@@ -63,6 +77,8 @@ pub(crate) struct PairingRequests {
     order: Vec<String>,
     approval: Option<Approval>,
     finished: u32,
+    admissions: Vec<Admission>,
+    serial: u64,
 }
 
 impl Default for PairingRequests {
@@ -78,7 +94,14 @@ impl PairingRequests {
             order: Vec::new(),
             approval: None,
             finished: 0,
+            admissions: Vec::new(),
+            serial: 0,
         }
+    }
+
+    /// The newest admissions, oldest first.
+    pub(crate) fn admissions(&self) -> &[Admission] {
+        &self.admissions
     }
 
     /// Called on `claim_ok`. One watch at a time; a later claim replaces
@@ -177,6 +200,17 @@ impl PairingRequests {
             None => Outcome::Failed(ENCRYPTION_FAILED),
         };
         let id = new_request_id()?;
+        if matches!(outcome, Outcome::Issued { .. }) {
+            self.serial += 1;
+            self.admissions.push(Admission {
+                serial: self.serial,
+                claimed_device_id: claimed_device_id.to_owned(),
+                device_id: device_id.to_owned(),
+            });
+            if self.admissions.len() > ADMISSIONS_KEPT {
+                self.admissions.remove(0);
+            }
+        }
         self.items.insert(
             id.clone(),
             Request {

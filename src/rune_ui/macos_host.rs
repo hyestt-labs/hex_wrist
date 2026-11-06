@@ -760,7 +760,7 @@ impl NativeHost for MacHost {
             }
             #[cfg(hex_capture)]
             PlatformRequest::Scrawl(request) => self.scrawl.send(request),
-            PlatformRequest::WatchPair(_) | PlatformRequest::WatchRevoke { .. } => {
+            PlatformRequest::WatchPair { .. } | PlatformRequest::WatchRevoke { .. } => {
                 self.watch.send(&request);
             }
         }

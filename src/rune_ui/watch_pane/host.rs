@@ -39,12 +39,12 @@ impl WatchFeed {
     pub(in crate::rune_ui) fn send(&self, request: &PlatformRequest) -> bool {
         let (events, wake) = (self.events.clone(), Arc::clone(&self.wake));
         match request.clone() {
-            PlatformRequest::WatchPair(code) => spawn("hex-watch-pair", move || {
+            PlatformRequest::WatchPair { code, generation } => spawn("hex-watch-pair", move || {
                 let result = match crate::watch::service() {
                     Some(service) => service.claim(&code),
                     None => Err(ClaimError::Unavailable),
                 };
-                let _ = events.send(WatchEvent::Claimed(result));
+                let _ = events.send(WatchEvent::Claimed { generation, result });
                 wake();
             }),
             PlatformRequest::WatchRevoke { id, name } => spawn("hex-watch-revoke", move || {

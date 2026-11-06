@@ -33,7 +33,7 @@ mod view;
 const M4A: &[u8] = include_bytes!("../../../tests/fixtures/watch-audio/tone-440-16k.m4a");
 const ID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
 const OTHER_ID: &str = "11111111-2222-3333-4444-555555555555";
-const MAC_NAME: &str = "Glen's Mac";
+const MAC_NAME: &str = "Test Mac";
 const APP_VERSION: &str = "3.0.0-test";
 
 struct Sink {
@@ -1820,6 +1820,41 @@ fn a_recording_before_the_listener_can_run_is_refused_at_once() {
         Err("Hex needs Accessibility to paste on this Mac".to_owned())
     );
     assert!(queue.try_recv().is_err(), "nothing was queued");
+}
+
+/// A Mac set up for the watch alone and continued without a speech model
+/// (#894): Accessibility is ready, the Microphone never asked, no model. The
+/// real listener check refuses a watch recording at once with its reason,
+/// and the watch reads it as the documented 500, not after the 50 s wait.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_watch_only_mac_without_a_model_refuses_a_recording_at_once_with_the_reason() {
+    use crate::desktop::onboarding::{PermissionState, SetupStatus};
+    let mut h = harness("no-model");
+    let watch = h.pair("watch-1");
+    let (controls, queue) = mpsc::sync_channel(8);
+    h.core.dictation = Box::new(ListenerDictation::new(controls, || {
+        let watch_only_without_a_model = SetupStatus {
+            microphone: PermissionState::NeedsRequest,
+            accessibility: PermissionState::Ready,
+            transcription_model: false,
+        };
+        match crate::watch::listener_ready::blocker(watch_only_without_a_model) {
+            Some(why) => Err(why.to_owned()),
+            None => Ok(()),
+        }
+    }));
+    let head = audio_head(&watch, ID, "current", h.now.epoch());
+    let answer = h.send_audio(&watch, &head, M4A).unwrap();
+    assert_eq!((answer.status, answer.sealed), (500, true));
+    assert_eq!(answer.body["state"], "failed");
+    assert_eq!(
+        answer.body["error"],
+        "Hex has no speech model installed on this Mac"
+    );
+    assert!(queue.try_recv().is_err(), "nothing was queued");
+    let status = h.query(&watch, "/status", &[("id", ID)]).unwrap();
+    assert_eq!(status.body["state"], "failed", "no 50 s wait for a verdict");
 }
 
 #[test]

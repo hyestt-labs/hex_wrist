@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::pairing::{Failure, known};
+use super::pairing::Failure;
 use super::{Pair, Ui};
 use crate::rune_ui::sidebar::Pane;
 use crate::watch::Timestamp;
@@ -31,10 +31,10 @@ fn device(id: &str, name: &str, status: DeviceStatus, seen_ago: u64) -> DeviceSu
 
 fn watches() -> Vec<DeviceSummary> {
     vec![
-        device("series-9", "Glen's Apple Watch", DeviceStatus::Ready, 180),
+        device("device-0001", "Test watch", DeviceStatus::Ready, 180),
         device(
-            "series-4",
-            "Old Apple Watch",
+            "device-0002",
+            "Test watch 2",
             DeviceStatus::NeedsRepair,
             86_400 * 9,
         ),
@@ -47,9 +47,10 @@ pub(in crate::rune_ui) fn snapshot(
 ) -> WatchSnapshot {
     WatchSnapshot {
         relay,
-        mac_name: "Glen's MacBook Pro".into(),
+        mac_name: "Test Mac".into(),
         replaced: false,
         devices,
+        admissions: Vec::new(),
     }
 }
 
@@ -80,23 +81,25 @@ pub(in crate::rune_ui) fn scene(ui: &mut Ui, scene: Scene) {
         Scene::Pairing => {
             ui.watch.code = rune::TextEdit::new("217400");
             ui.watch.pair = Pair::Pairing {
-                before: known(ui.platform.watch.as_ref()),
+                generation: 0,
+                seen: 0,
             };
         }
         Scene::Waiting => {
             ui.watch.code = rune::TextEdit::new("217400");
             ui.watch.pair = Pair::Waiting {
-                before: known(ui.platform.watch.as_ref()),
+                claim_id: "device-0003".into(),
+                seen: 0,
                 since: Instant::now(),
             };
         }
-        Scene::Paired => ui.watch.pair = Pair::Paired("Glen's Apple Watch".into()),
+        Scene::Paired => ui.watch.pair = Pair::Paired("Test watch".into()),
         Scene::Error => ui.watch.pair = Pair::Failed(Failure::Claim(ClaimError::CodeNotFound)),
-        Scene::Remove => ui.watch.removing = Some("series-9".into()),
+        Scene::Remove => ui.watch.removing = Some("device-0001".into()),
         Scene::RevokeError => {
             let refused = super::WatchEvent::Revoked {
-                id: "series-9".into(),
-                name: "Glen's Apple Watch".into(),
+                id: "device-0001".into(),
+                name: "Test watch".into(),
                 result: Err("could not write paired-devices.json: disk full".into()),
             };
             ui.watch.apply(refused, ui.platform.watch.as_ref());
@@ -122,7 +125,7 @@ pub(in crate::rune_ui) fn first_run(
     };
     ui.platform.watch = Some(snapshot(RelayState::Connected, devices));
     if paired {
-        ui.watch.pair = Pair::Paired("Glen's Apple Watch".into());
+        ui.watch.pair = Pair::Paired("Test watch".into());
     }
     onboarding::mac_fixture(ui, onboarding::MacStep::Setup);
     crate::rune_ui::onboarding_kit::live::fixture(ui, page);

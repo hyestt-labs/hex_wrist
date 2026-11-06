@@ -189,6 +189,10 @@ pub(crate) struct WatchSnapshot {
     /// since: its pairing now reaches the other Mac.
     pub(crate) replaced: bool,
     pub(crate) devices: Vec<super::pairing::DeviceSummary>,
+    /// Which pairing request spent which claim's approval, so the window
+    /// settles a claim on the watch that answered it, not on any watch that
+    /// paired while it waited.
+    pub(crate) admissions: Vec<super::pairing::requests::Admission>,
 }
 
 /// The handle every other thread keeps. Cloneable; `stop` ends the thread.

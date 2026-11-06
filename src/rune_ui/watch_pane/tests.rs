@@ -7,6 +7,7 @@ use rune::{Env, Runtime, TextEdit};
 use super::*;
 use crate::rune_ui::platform::PlatformHost;
 use crate::rune_ui::{SCENES, Service, accessibility_tests as a11y, offscreen, on_key, view};
+use crate::watch::pairing::requests::Admission;
 
 const SIZE: (f32, f32) = (980.0, 1400.0);
 
@@ -59,6 +60,29 @@ fn asked(rt: &Runtime<Ui>) -> &[PlatformRequest] {
     }
 }
 
+/// The codes sent to be claimed.
+fn asked_codes(rt: &Runtime<Ui>) -> Vec<&str> {
+    asked(rt)
+        .iter()
+        .filter_map(|request| match request {
+            PlatformRequest::WatchPair { code, .. } => Some(code.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The number of the claim most recently sent.
+fn last_claim(rt: &Runtime<Ui>) -> u64 {
+    asked(rt)
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            PlatformRequest::WatchPair { generation, .. } => Some(*generation),
+            _ => None,
+        })
+        .expect("a claim was sent")
+}
+
 fn shown(rt: &Runtime<Ui>) -> Vec<String> {
     rt.elements()
         .into_iter()
@@ -77,8 +101,8 @@ fn the_pane_lists_the_connection_the_watches_and_the_choices() {
     for words in [
         "Apple Watch",
         "Connected",
-        "Glen's MacBook Pro",
-        "Glen's Apple Watch",
+        "Test Mac",
+        "Test watch",
         "Last seen 3m ago",
         "Pair it again to use it",
         "Status capsule",
@@ -95,7 +119,7 @@ fn each_scene_says_its_state() {
         ("mac-watch-offline", "Offline: check the network"),
         ("mac-watch-pairing", "Pairing…"),
         ("mac-watch-waiting", "Finish on your watch…"),
-        ("mac-watch-paired", "Paired with Glen's Apple Watch"),
+        ("mac-watch-paired", "Paired with Test watch"),
         (
             "mac-watch-unavailable",
             "The Apple Watch service isn't running",
@@ -124,8 +148,98 @@ fn six_digits_send_one_pair_request() {
     rt.state.watch.code = TextEdit::new("217400");
     refresh(&mut rt);
     refresh(&mut rt);
-    assert_eq!(asked(&rt), [PlatformRequest::WatchPair("217400".into())]);
+    assert_eq!(asked_codes(&rt), ["217400"]);
     assert!(says(&rt, "Pairing…"));
+}
+
+fn claimed(generation: u64, device_id: &str) -> WatchEvent {
+    WatchEvent::Claimed {
+        generation,
+        result: Ok(ClaimOk {
+            device_id: device_id.into(),
+            device_name: "Test watch".into(),
+        }),
+    }
+}
+
+/// Types the six digits and lets the window send the claim.
+fn send_claim(rt: &mut Runtime<Ui>) -> u64 {
+    rt.state.watch.code = TextEdit::new("217400");
+    refresh(rt);
+    refresh(rt);
+    last_claim(rt)
+}
+
+#[test]
+fn the_reply_to_the_claim_sent_moves_the_pane_to_waiting() {
+    let mut rt = runtime("mac-watch");
+    let generation = send_claim(&mut rt);
+    rt.state
+        .platform
+        .watch_events
+        .push(claimed(generation, "relay-mine"));
+    refresh(&mut rt);
+    assert!(says(&rt, "Finish on your watch…"), "{:?}", shown(&rt));
+}
+
+#[test]
+fn a_late_reply_to_an_older_claim_changes_nothing_on_screen() {
+    let mut rt = runtime("mac-watch");
+    let older = send_claim(&mut rt);
+    rt.state.platform.watch_events.push(WatchEvent::Claimed {
+        generation: older,
+        result: Err(ClaimError::Timeout),
+    });
+    refresh(&mut rt);
+    let newer = send_claim(&mut rt);
+    assert_ne!(older, newer);
+    rt.state
+        .platform
+        .watch_events
+        .push(claimed(older, "relay-old"));
+    refresh(&mut rt);
+    assert!(says(&rt, "Pairing…"), "still waiting for the newer claim");
+    assert!(!says(&rt, "Finish on your watch…"));
+}
+
+#[test]
+fn another_watch_pairing_while_this_claim_waits_does_not_settle_it() {
+    let mut rt = runtime("mac-watch");
+    let generation = send_claim(&mut rt);
+    rt.state
+        .platform
+        .watch_events
+        .push(claimed(generation, "relay-mine"));
+    refresh(&mut rt);
+    // A different watch finishes pairing in the same minutes.
+    let mut other = crate::rune_ui::watch_pane::scene_watch();
+    other.id = "device-0009".into();
+    other.name = "Test watch 3".into();
+    let mut snapshot = rt.state.platform.watch.clone().unwrap();
+    snapshot.devices.push(other);
+    snapshot.admissions.push(Admission {
+        serial: 1,
+        claimed_device_id: "relay-theirs".into(),
+        device_id: "device-0009".into(),
+    });
+    rt.state.platform.watch = Some(snapshot);
+    refresh(&mut rt);
+    assert!(says(&rt, "Finish on your watch…"), "{:?}", shown(&rt));
+    assert!(!says(&rt, "Paired with Test watch 3"));
+    // The watch that claimed finishes, and the pane names it.
+    let mut mine = crate::rune_ui::watch_pane::scene_watch();
+    mine.id = "device-0010".into();
+    mine.name = "Test watch 4".into();
+    let mut snapshot = rt.state.platform.watch.clone().unwrap();
+    snapshot.devices.push(mine);
+    snapshot.admissions.push(Admission {
+        serial: 2,
+        claimed_device_id: "relay-mine".into(),
+        device_id: "device-0010".into(),
+    });
+    rt.state.platform.watch = Some(snapshot);
+    refresh(&mut rt);
+    assert!(says(&rt, "Paired with Test watch 4"), "{:?}", shown(&rt));
 }
 
 #[test]
@@ -142,11 +256,14 @@ fn each_claim_error_shows_its_message() {
     let mut messages = Vec::new();
     for error in errors {
         let mut rt = runtime("mac-watch");
-        rt.state.watch.pair = Pair::Pairing { before: Vec::new() };
-        rt.state
-            .platform
-            .watch_events
-            .push(WatchEvent::Claimed(Err(error.clone())));
+        rt.state.watch.pair = Pair::Pairing {
+            generation: 7,
+            seen: 0,
+        };
+        rt.state.platform.watch_events.push(WatchEvent::Claimed {
+            generation: 7,
+            result: Err(error.clone()),
+        });
         refresh(&mut rt);
         let message = claim_error(&error);
         assert!(
@@ -183,8 +300,8 @@ fn remove_needs_two_presses() {
     assert_eq!(
         asked(&rt),
         [PlatformRequest::WatchRevoke {
-            id: "series-9".into(),
-            name: "Glen's Apple Watch".into()
+            id: "device-0001".into(),
+            name: "Test watch".into()
         }]
     );
     assert!(
@@ -197,30 +314,30 @@ fn remove_needs_two_presses() {
 fn a_remove_that_could_not_write_says_why_under_the_watch_it_kept() {
     let mut rt = runtime("mac-watch");
     rt.state.platform.watch_events.push(WatchEvent::Revoked {
-        id: "series-9".into(),
-        name: "Glen's Apple Watch".into(),
+        id: "device-0001".into(),
+        name: "Test watch".into(),
         result: Err("could not write paired-devices.json: disk full".into()),
     });
     refresh(&mut rt);
     assert!(says(
         &rt,
-        "Couldn't remove Glen's Apple Watch: could not write paired-devices.json: disk full"
+        "Couldn't remove Test watch: could not write paired-devices.json: disk full"
     ));
     let y = |rt: &Runtime<Ui>, key: &str| {
         rt.presented(key)
             .map(|(rect, _)| rect[1])
             .unwrap_or_else(|| panic!("no {key}"))
     };
-    assert!(y(&rt, "watch-device-series-9") < y(&rt, "watch-remove-error"));
+    assert!(y(&rt, "watch-device-device-0001") < y(&rt, "watch-remove-error"));
     assert!(
-        y(&rt, "watch-remove-error") < y(&rt, "watch-device-series-4"),
+        y(&rt, "watch-remove-error") < y(&rt, "watch-device-device-0002"),
         "the error sits under its own watch, not at the end of the card"
     );
     // Remove stays there to try again, and a success clears the error.
     assert!(rt.find("watch-remove").is_some());
     rt.state.platform.watch_events.push(WatchEvent::Revoked {
-        id: "series-9".into(),
-        name: "Glen's Apple Watch".into(),
+        id: "device-0001".into(),
+        name: "Test watch".into(),
         result: Ok(true),
     });
     refresh(&mut rt);
@@ -230,10 +347,79 @@ fn a_remove_that_could_not_write_says_why_under_the_watch_it_kept() {
     );
 }
 
+fn revoked(id: &str, name: &str, result: Result<bool, String>) -> WatchEvent {
+    WatchEvent::Revoked {
+        id: id.into(),
+        name: name.into(),
+        result,
+    }
+}
+
+/// Both Removes were sent before either answered; the answers come in
+/// `order` (0 = the one that fails, 1 = the one that succeeds).
+fn two_removes_in_flight(order: [usize; 2]) -> Runtime<Ui> {
+    let mut rt = runtime("mac-watch");
+    let replies = [
+        revoked("device-0001", "Test watch", Err("disk full".into())),
+        revoked("device-0002", "Test watch 2", Ok(true)),
+    ];
+    for index in order {
+        rt.state.platform.watch_events.push(replies[index].clone());
+        refresh(&mut rt);
+    }
+    // The service pushes the list without the watch it removed.
+    let kept = vec![crate::rune_ui::watch_pane::scene_watch()];
+    rt.state.platform.watch = Some(scene_snapshot(kept));
+    refresh(&mut rt);
+    rt
+}
+
+#[test]
+fn a_failed_remove_keeps_its_error_whichever_remove_answers_last() {
+    for order in [[0, 1], [1, 0]] {
+        let rt = two_removes_in_flight(order);
+        assert!(
+            says(&rt, "Couldn't remove Test watch: disk full"),
+            "{order:?}: the failed watch keeps its error: {:?}",
+            shown(&rt)
+        );
+        assert!(
+            rt.find("watch-device-device-0002").is_none(),
+            "{order:?}: the removed watch's row is gone"
+        );
+        assert!(rt.find("watch-device-device-0001").is_some(), "{order:?}");
+    }
+}
+
+#[test]
+fn each_failed_remove_says_its_own_reason_under_its_own_watch() {
+    for order in [[0, 1], [1, 0]] {
+        let mut rt = runtime("mac-watch");
+        let replies = [
+            revoked("device-0001", "Test watch", Err("disk full".into())),
+            revoked(
+                "device-0002",
+                "Test watch 2",
+                Err("read-only volume".into()),
+            ),
+        ];
+        for index in order {
+            rt.state.platform.watch_events.push(replies[index].clone());
+            refresh(&mut rt);
+        }
+        for words in [
+            "Couldn't remove Test watch: disk full",
+            "Couldn't remove Test watch 2: read-only volume",
+        ] {
+            assert!(says(&rt, words), "{order:?}: {words:?} in {:?}", shown(&rt));
+        }
+    }
+}
+
 #[test]
 fn the_revoke_error_scene_keeps_the_watch_and_says_why() {
     let rt = runtime("mac-watch-revoke-error");
-    assert!(rt.find("watch-device-series-9").is_some());
+    assert!(rt.find("watch-device-device-0001").is_some());
     assert!(rt.find("watch-remove-error").is_some());
 }
 
@@ -353,7 +539,7 @@ mod first_run {
     fn a_paired_watch_shows_continue_not_pair_later() {
         let mut rt = runtime("mac-onboarding-watch-paired");
         assert!(rt.find("pair-later").is_none());
-        assert!(says(&rt, "Paired with Glen's Apple Watch"));
+        assert!(says(&rt, "Paired with Test watch"));
         tap(&mut rt, "continue");
         assert_eq!(page(&rt), Some(Page::Demo));
     }
@@ -364,7 +550,7 @@ mod first_run {
         rt.state.watch.code = TextEdit::new("217400");
         refresh(&mut rt);
         refresh(&mut rt);
-        assert_eq!(asked(&rt), [PlatformRequest::WatchPair("217400".into())]);
+        assert_eq!(asked_codes(&rt), ["217400"]);
     }
 
     #[test]
@@ -507,6 +693,78 @@ mod first_run {
         }
         assert_ne!(page(&rt), Some(Page::Permissions));
         assert_ne!(page(&rt), Some(Page::Watch));
+    }
+
+    /// A watch-only setup (a paired watch, Accessibility, no Microphone)
+    /// whose model download failed.
+    fn watch_only_with_a_failed_download() -> Runtime<Ui> {
+        let mut rt = runtime("mac-onboarding");
+        rt.update(|ui, tx| {
+            let paired = vec![crate::rune_ui::watch_pane::scene_watch()];
+            ui.platform.watch = Some(crate::rune_ui::watch_pane::scene_snapshot(paired));
+            ui.platform.permissions.accessibility = PermissionState::Ready;
+            if let Some(view) = &mut ui.view {
+                view.transcription.preparing = None;
+                view.transcription.error = Some("The connection was reset.".into());
+            }
+            live::poll(ui, tx);
+        });
+        refresh(&mut rt);
+        rt
+    }
+
+    #[test]
+    fn a_watch_only_setup_can_continue_without_a_model() {
+        let mut rt = watch_only_with_a_failed_download();
+        assert_eq!(
+            rt.state.platform.permissions.microphone,
+            PermissionState::NeedsRequest,
+            "the Microphone was never granted"
+        );
+        assert!(
+            rt.find("continue-without-model").is_some(),
+            "the way out is offered: {:?}",
+            shown(&rt)
+        );
+        tap(&mut rt, "continue-without-model");
+        assert!(rt.state.first_run.is_none(), "setup closed");
+        assert!(rt.state.tour.is_none(), "and its tour");
+        // Settings then says no model is installed.
+        rt.state.pane = crate::rune_ui::sidebar::Pane::General;
+        refresh(&mut rt);
+        assert!(
+            says(&rt, "No speech model installed: The connection was reset."),
+            "{:?}",
+            shown(&rt)
+        );
+        assert!(rt.find("transcription-download").is_some());
+    }
+
+    #[test]
+    fn a_watch_only_setup_is_not_offered_the_way_out_while_the_model_downloads() {
+        let mut rt = watch_only_with_a_failed_download();
+        rt.update(|ui, tx| {
+            if let Some(view) = &mut ui.view {
+                view.transcription.error = None;
+            }
+            crate::rune_ui::onboarding::set_downloaded(ui, 31);
+            live::poll(ui, tx);
+        });
+        refresh(&mut rt);
+        assert!(
+            rt.find("continue-without-model").is_none(),
+            "a model still on its way is not given up on"
+        );
+        tap_if_any(&mut rt);
+        assert!(rt.state.first_run.is_some(), "setup stays open");
+    }
+
+    /// Presses Continue without a model the way a stale pointer might,
+    /// when it isn't there nothing happens.
+    fn tap_if_any(rt: &mut Runtime<Ui>) {
+        if rt.find("continue-without-model").is_some() {
+            tap(rt, "continue-without-model");
+        }
     }
 
     #[test]

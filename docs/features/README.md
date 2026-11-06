@@ -206,6 +206,9 @@ Launch Hex, setup incomplete              // setup.tour; every build and OS, ful
 │   │       Speech model row says no model is installed (with the download's
 │   │       error), + Download + Add model file…. Check: golden
 │   │       `onboarding-no-model`, `onboarding_continue_without_model`
+│   │       (a watch-only setup: `a_watch_only_setup_can_continue_without_a_model`;
+│   │       its watch recording is then refused at once:
+│   │       `a_watch_only_mac_without_a_model_refuses_a_recording_at_once_with_the_reason`)
 │   └── Change or delete the model later in Settings      // setup.delete-model
 ├── The demo: Without Hex (typed, with typos) -> With Hex (spoken) -> Continue
 ├── Quit part-way -> next launch resumes at the saved step  // setup.resume

@@ -615,8 +615,11 @@ pub(super) enum PlatformRequest {
     #[cfg(hex_capture)]
     Scrawl(ScrawlRequest),
     /// Claim this six-digit pairing code through the relay (macOS); the
-    /// answer comes back as `WatchEvent::Claimed`.
-    WatchPair(String),
+    /// answer comes back as `WatchEvent::Claimed` with the same `generation`.
+    WatchPair {
+        code: String,
+        generation: u64,
+    },
     /// Remove the paired watch `id`, named `name` in the error if it fails
     /// (macOS); the answer comes back as `WatchEvent::Revoked`.
     WatchRevoke {

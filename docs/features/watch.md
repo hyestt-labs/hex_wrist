@@ -71,13 +71,15 @@ Settings › Apple Watch (macOS, below General)         // pane key nav-watch
 │   ├── Pairing code (six digits; only digits stay)    // the sixth digit sends the claim once
 │   │   ├── Pairing… -> Finish on your watch… (≤ 120 s) -> Paired with <name>
 │   │   ├── invalid_code | relay_offline | timeout | code_not_found | too_many_attempts | relay refusal -> its own sentence
-│   │   └── the relay took the code but no new watch appeared in 120 s -> "The watch didn't finish pairing. Update Wristper on the watch and try again"
+│   │   ├── the relay took the code but that watch did not ask for its token in 120 s -> "The watch didn't finish pairing. Update Wristper on the watch and try again"
+│   │   └── a reply to an older claim, or a watch that pairs meanwhile, settles nothing: only the claimed watch does
 │   └── Get the watch app -> https://wristper.dev/watch   // a link, no QR code: no QR crate is in Cargo.lock
 ├── Paired watches (name, Last seen <age>)
 │   ├── NeedsRepair -> "Pair it again to use it"; SecretsUnavailable -> "Waiting for the keychain"
 │   ├── Remove… -> Cancel | Remove (two presses)       // Message::Revoke
 │   │   └── the list could not be written -> nothing changes: the watch stays listed and served, its Keychain item stays,
 │   │       and "Couldn't remove <name>: <the error>" shows under its row; Remove tries again
+│   │       (errors are kept per watch id: another watch's Remove answering first or last never clears or replaces it)
 │   └── none -> "No watches paired yet"
 ├── Status and paste                                    // watch.* settings, each applied at once
 │   ├── Status capsule (on)            watch.status_capsule
@@ -233,14 +235,25 @@ First run (macOS, the service has reported once)
   runs a claim or a Remove on a thread of its own (a claim waits up to 11 s on
   the relay); the answers come back as `WatchEvent`s in `PlatformState`.
   Linux and Windows hosts do nothing with the two requests.
-- **Pairing in the window (C2).** The pane tells a new pairing from an old
-  one by each watch's id and when it last paired (`DeviceSummary::last_paired_at`:
-  the file's `last_paired_at`, else `paired_at`). A watch paired again with its
-  old token keeps its entry and its first `paired_at` (the claimed id can
-  differ from the enrolled one), so only the last pairing time changes; the
-  snapshot then differs, is pushed, and the pane settles at once. The Mac cannot see the
-  watch's own 426 `watch_outdated`, so a watch that never asks shows the
-  timeout sentence.
+- **Pairing in the window (C2c).** `PairingRequests::admit` records each
+  request that spends the 120 s approval as an `Admission` (a rising `serial`,
+  the id the relay gave the claiming watch, and the entry it enrolled, which
+  is an older one when `previous_token` named it). The snapshot carries the
+  newest eight. The pane numbers every claim (`GENERATION`, one counter for
+  the process, so a reply that reaches a reopened window cannot match a new
+  claim); a reply settles only the `Pairing` that sent that number and is
+  dropped otherwise. `ClaimOk::device_id` is the claim's id; the pane
+  waits for an admission with that id and a serial above the newest it saw
+  when it sent the claim, then shows the enrolled watch's name. A watch that
+  pairs meanwhile has another claim id and settles nothing, and a watch
+  paired again with its old token settles at once. A request that fails its
+  key agreement or Keychain write records no admission, so the pane shows
+  the timeout sentence after 120 s. The Mac cannot see the watch's own 426
+  `watch_outdated`, which also shows that sentence.
+- **Replies own only their request (C2c).** A Remove's reply names its watch
+  and changes only that watch's error (`WatchView::remove_errors`, by id); a
+  success clears its own entry only, and an entry for a watch that is no
+  longer listed is dropped. A claim's reply carries its number (above).
 - **Health.** `/health` `paste_ready` is the Accessibility permission, with a
   `paste_detail` that names where to grant it.
 
@@ -291,11 +304,16 @@ First run (macOS, the service has reported once)
   `watch::service::tests::view` (a claim and the watch's request push the new
   device; a Remove that cannot write the list keeps the watch listed, served,
   and in the Keychain, and a retry removes it; a watch paired again with its
-  old token pushes its new pairing time; `replaced`),
+  old token pushes its new pairing time; the snapshot names which claim each
+  admitted request spent, and a refused request records none; `replaced`),
   `rune_ui::watch_pane` (the pairing state machine and last-seen ages; the
   scenes' texts; six digits send one `WatchPair`; every claim error has its
   words; Remove takes two presses and shows the revoke error under the watch
-  it kept; a watch paired again settles at once; every control has a name;
+  it kept; two Removes in flight, in either order, keep each watch's own
+  outcome; a late reply to an older claim is dropped and another watch pairing
+  meanwhile settles nothing; a watch paired again settles at once; a
+  watch-only setup can Continue without a model and is not offered it while
+  a download runs; every control has a name;
   the first run's page, Pair later, the watch-only permissions page and
   finish, the resumed setup with a snapshot inside or after the 1.5 s wait),
   `watch::pairing` (a Remove that cannot write changes nothing, also after a

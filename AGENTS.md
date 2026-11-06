@@ -667,7 +667,11 @@ substitute for source inspection or a second roadmap.
   to the window as `WatchSnapshot`s like the capsule, never polled), `Message::Revoke`
   (Settings' Remove: `PairedDevices::revoke` writes the list first and
   forgets the watch and its Keychain item only once it is written; a list it
-  cannot write changes nothing and the error shows under the watch's row),
+  cannot write changes nothing and the error shows under the watch's row;
+  the window keeps each failed Remove's error by watch id, so a reply
+  touches only its own watch), `WatchSnapshot::admissions` (which
+  `/pairing/request` spent which claim's approval, by serial, so the window
+  settles a claim on the watch that answered it),
   `settings` (the `watch.*` settings,
   applied live: `status_capsule`, `capsule_follows_pointer`,
   `keep_on_clipboard`, and the extra `terminal_apps`; paste takes `keep` from
@@ -919,8 +923,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   permission have no Skip. The one way past a model that can't be had (#894)
   is Continue without a model, shown on the download step only once every
   permission is ready and the download failed or stalled (30 s without
-  bytes); it records completion, and Settings › General then says no model
-  is installed, with Download and Add model file….
+  bytes); it records completion (a watch-only setup too: a paired watch
+  and no Microphone), and Settings › General then says no model is
+  installed, with Download and Add model file…. A watch recording then gets
+  the listener's "no speech model" refusal at once, not after the 50 s wait.
 - Onboarding shows its model step only when the scan found a compatible
   model; otherwise Setting up Hex is unchanged and the recommended model
   downloads by itself. The step is one card of radio rows with no buttons or

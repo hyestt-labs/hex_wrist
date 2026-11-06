@@ -220,3 +220,73 @@ fn pairing_a_watch_again_pushes_when_it_last_paired() {
     assert_eq!(id, "watch-1", "the old entry is paired again");
     assert_ne!(again, first, "the window sees a new pairing at once");
 }
+
+/// A `/pairing/request` as a watch sends it.
+fn pairing_request(h: &mut Harness, device: &str, previous_token: &str) -> u16 {
+    h.request(
+        "POST",
+        "/pairing/request",
+        &[],
+        &[],
+        json!({
+            "device_id": device,
+            "name": "Test Watch",
+            "previous_token": previous_token,
+            "e2ee_public_key": public_key_base64(&watch_secret()),
+        })
+        .to_string()
+        .as_bytes(),
+    )
+    .unwrap()
+    .0
+}
+
+fn admitted(h: &mut Harness) -> Vec<(String, String)> {
+    h.core
+        .snapshot()
+        .admissions
+        .into_iter()
+        .map(|a| (a.claimed_device_id, a.device_id))
+        .collect()
+}
+
+#[test]
+fn the_snapshot_names_which_claim_each_pairing_request_spent() {
+    let mut h = harness("view-admissions");
+    h.pair("watch-1");
+    let first = h.core.snapshot().admissions;
+    assert_eq!(admitted(&mut h), [("watch-1".into(), "watch-1".into())]);
+    // A reinstalled watch: the relay's new id, enrolled under the old entry.
+    let old = h.pair("watch-2").token;
+    h.approve("watch-2b");
+    assert_eq!(pairing_request(&mut h, "watch-2b", &old), 200);
+    let all = h.core.snapshot().admissions;
+    assert_eq!(
+        admitted(&mut h),
+        [
+            ("watch-1".into(), "watch-1".into()),
+            ("watch-2".into(), "watch-2".into()),
+            ("watch-2b".into(), "watch-2".into()),
+        ],
+        "the claim's id and the entry it enrolled are both named"
+    );
+    let serials: Vec<u64> = all.iter().map(|a| a.serial).collect();
+    assert!(
+        serials.windows(2).all(|pair| pair[0] < pair[1]),
+        "{serials:?}"
+    );
+    assert_eq!(all[0], first[0], "an earlier admission keeps its serial");
+}
+
+#[test]
+fn a_request_from_another_watch_spends_no_claim_and_records_nothing() {
+    let mut h = harness("view-admissions-refused");
+    h.approve("watch-1");
+    assert_eq!(pairing_request(&mut h, "watch-other", ""), 403);
+    assert!(
+        admitted(&mut h).is_empty(),
+        "a refused request is no admission"
+    );
+    assert_eq!(pairing_request(&mut h, "watch-1", ""), 200);
+    assert_eq!(admitted(&mut h), [("watch-1".into(), "watch-1".into())]);
+}

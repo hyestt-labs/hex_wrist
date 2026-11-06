@@ -230,6 +230,7 @@ impl Core {
             mac_name: self.identity.mac_name.clone(),
             replaced: self.replaced,
             devices: self.paired.summary(),
+            admissions: self.requests.admissions().to_vec(),
         }
     }
 

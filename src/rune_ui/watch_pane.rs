@@ -13,6 +13,7 @@ mod pairing;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use rune::{El, TextEdit, row, text};
@@ -40,7 +41,11 @@ pub(super) const APP_PAGE: &str = "https://wristper.dev/watch";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum WatchEvent {
-    Claimed(Result<ClaimOk, ClaimError>),
+    /// The answer to claim `generation`.
+    Claimed {
+        generation: u64,
+        result: Result<ClaimOk, ClaimError>,
+    },
     Revoked {
         id: String,
         name: String,
@@ -56,9 +61,9 @@ pub(super) struct WatchView {
     pub(super) pair: Pair,
     /// The watch whose Remove was pressed once.
     removing: Option<String>,
-    /// A Remove that could not write the list: the watch's id, and what to
-    /// say under its row.
-    remove_error: Option<(String, String)>,
+    /// Removes that could not write the list: what to say under each
+    /// watch's row, by its id. A reply touches only its own watch's entry.
+    remove_errors: BTreeMap<String, String>,
     /// What "last seen" counts from; scenes fix it so their images don't move.
     pub(super) now: Option<SystemTime>,
 }
@@ -73,11 +78,12 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     for event in std::mem::take(&mut ui.platform.watch_events) {
         changed |= ui.watch.apply(event, ui.platform.watch.as_ref());
     }
+    ui.watch.forget_removed(ui.platform.watch.as_ref());
     changed |= ui
         .watch
         .settle(ui.platform.watch.as_ref(), std::time::Instant::now());
-    if let Some(code) = ui.watch.typed(ui.platform.watch.as_ref()) {
-        ui.ask(PlatformRequest::WatchPair(code));
+    if let Some((code, generation)) = ui.watch.typed(ui.platform.watch.as_ref()) {
+        ui.ask(PlatformRequest::WatchPair { code, generation });
         changed = true;
     }
     changed
@@ -86,7 +92,7 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
 fn removal_pressed(ui: &mut Ui, id: &str, name: &str) {
     if ui.watch.removing.as_deref() == Some(id) {
         ui.watch.removing = None;
-        ui.watch.remove_error = None;
+        ui.watch.remove_errors.remove(id);
         ui.ask(PlatformRequest::WatchRevoke {
             id: id.to_owned(),
             name: name.to_owned(),
@@ -99,21 +105,36 @@ fn removal_pressed(ui: &mut Ui, id: &str, name: &str) {
 impl WatchView {
     fn apply(&mut self, event: WatchEvent, snapshot: Option<&WatchSnapshot>) -> bool {
         match event {
-            WatchEvent::Claimed(result) => {
+            WatchEvent::Claimed { generation, result } => {
+                let next = self.pair.claimed(generation, result, snapshot);
+                if next == self.pair {
+                    return false;
+                }
                 self.code = TextEdit::default();
-                self.pair = self.pair.claimed(result, snapshot);
+                self.pair = next;
             }
-            WatchEvent::Revoked { id, name, result } => {
-                self.remove_error = result.err().map(|error| {
+            WatchEvent::Revoked { id, name, result } => match result {
+                Err(error) => {
                     let words = tr_named(
                         "Couldn't remove {name}: {error}",
                         &[("name", &name), ("error", &error)],
                     );
-                    (id, words)
-                });
-            }
+                    self.remove_errors.insert(id, words);
+                }
+                Ok(_) => {
+                    self.remove_errors.remove(&id);
+                }
+            },
         }
         true
+    }
+
+    /// Forgets the error of a watch that is no longer listed.
+    fn forget_removed(&mut self, snapshot: Option<&WatchSnapshot>) {
+        if let Some(snapshot) = snapshot {
+            self.remove_errors
+                .retain(|id, _| snapshot.devices.iter().any(|device| device.id == *id));
+        }
     }
 }
 
@@ -285,12 +306,7 @@ fn device_rows(ui: &Ui, p: Paint, snapshot: &WatchSnapshot) -> Vec<super::contro
             .into(),
         );
         // A Remove that changed nothing says why under the watch it kept.
-        if let Some((_, words)) = ui
-            .watch
-            .remove_error
-            .as_ref()
-            .filter(|(failed, _)| *failed == device.id)
-        {
+        if let Some(words) = ui.watch.remove_errors.get(&device.id) {
             rows.push(note("watch-remove-error", words, p.danger()).into());
         }
     }
