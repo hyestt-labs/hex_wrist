@@ -44,7 +44,7 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Install native libraries
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           # apt sometimes hangs for 20+ minutes: kill each try after 240 s, try up to 3 times.
           scripts/retry-timeout.sh 3 240 sh -c '
