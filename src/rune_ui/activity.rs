@@ -14,9 +14,14 @@ use super::lists::{
 };
 use crate::desktop::activity::DesktopActivity;
 use crate::desktop::events::{EventReader, VoiceEvent, VoiceState};
-use crate::desktop::i18n::{event_age, tr};
+use crate::desktop::i18n::{event_age_at, tr};
 
 const LIMIT: usize = 100;
+
+/// The moment the fixture scene is frozen at (Unix ms). The newest fixture
+/// event is 4 s before it, so the scene always reads "4s ago" and shows the
+/// same timestamp.
+const FIXTURE_NOW_MS: u64 = 1_793_746_397_394;
 
 #[derive(Default)]
 pub(super) struct ActivityPane {
@@ -24,6 +29,8 @@ pub(super) struct ActivityPane {
     events: Vec<VoiceEvent>,
     activity: DesktopActivity,
     pub(super) selected: Option<usize>,
+    /// The clock the ages read: `None` is the real one, a fixture freezes it.
+    now_ms: Option<u64>,
 }
 
 impl ActivityPane {
@@ -70,8 +77,7 @@ impl ActivityPane {
 
     pub(super) fn fixture() -> Self {
         use crate::desktop::events::{DictationPhase, DictationProcessing, TranscriptPhase};
-        let now = crate::desktop::events::now_ms();
-        let at = |seconds: u64| now - seconds * 1_000;
+        let at = |seconds: u64| FIXTURE_NOW_MS - seconds * 1_000;
         let events = vec![
             VoiceEvent::Dictation {
                 timestamp_ms: at(4),
@@ -128,12 +134,14 @@ impl ActivityPane {
                 last_failure: None,
             },
             selected: Some(0),
+            now_ms: Some(FIXTURE_NOW_MS),
         }
     }
 }
 
 pub(super) fn pane(ui: &Ui, p: Paint) -> (Vec<El>, El) {
     let pane = &ui.activity;
+    let now_ms = pane.now_ms.unwrap_or_else(crate::history::now_ms);
     let mut actions = Vec::new();
     if let Some(state) = pane.activity.state_label() {
         let active = pane.activity.state != Some(VoiceState::Stopping);
@@ -207,7 +215,7 @@ pub(super) fn pane(ui: &Ui, p: Paint) -> (Vec<El>, El) {
                     .shrink(),
             )
             .child(
-                text(event_age(event.timestamp_ms()))
+                text(event_age_at(event.timestamp_ms(), now_ms))
                     .key("age")
                     .font(p.k.ty.small)
                     .color(p.faint()),

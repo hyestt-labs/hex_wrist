@@ -16,6 +16,12 @@ run `HEX_UPDATE_GOLDENS=1 cargo test --locked --bin hex rune_ui`
 on Linux (the golden tests only run there; from a Mac, dispatch
 `check-linux.yml` on the branch and take its `golden-actual` artifact),
 look at every changed image, and commit them with the change.
+A UI PR must also run the strict check and paste its table in the PR:
+`gh workflow run golden-strict.yml --ref <branch> -f ref=<branch>`
+(`scripts/golden-diff.py`). The golden tests tolerate 0.2% of pixels past a
+channel difference of 12 and skip without a GPU; the strict check fails a
+scene for any single pixel past 12 and fails when a render is missing. Look at
+and regenerate every scene it marks over tolerance.
 
 `dev` is canonical and contains the Rune front end on every OS; GPUI is
 removed. The `rune-ui` integration branch is merged and kept only for history:
