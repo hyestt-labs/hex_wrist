@@ -10,15 +10,19 @@ TOLERANCE needs its image looked at and its golden regenerated.
 
     scripts/golden-diff.py --golden <approved> --renders <rendered>
         [--diff-dir <dir>] [--summary <file>] [--newer-than <file>]
+        [--skip '<glob>=<reason>' ...]
 
 Compares every PNG by name in <approved> and <renders> and prints a Markdown
 table (also appended to --summary). A golden with no render, a render with
 no golden, a different size, or (with --newer-than) a render that predates
-the marker file all fail; exit 1 on any failing scene. Standard library only.
+the marker file all fail; exit 1 on any failing scene. `--skip` leaves
+scenes this host cannot render out of the comparison and says why in the
+table (the capture capsule goldens are macOS-only). Standard library only.
 Run `scripts/test-golden-diff.py` for its tests.
 """
 
 import argparse
+import fnmatch
 import itertools
 import multiprocessing
 import os
@@ -219,14 +223,18 @@ def compare(task):
     return result
 
 
-def collect(golden_dir, renders_dir, newer_than, diff_dir):
+def collect(golden_dir, renders_dir, newer_than, diff_dir, skips=()):
     golden = {p.stem: p for p in Path(golden_dir).glob("*.png")}
     renders = {p.stem: p for p in Path(renders_dir).glob("*.png")}
     marker = os.stat(newer_than).st_mtime_ns if newer_than else None
     tasks, results = [], []
     for name in sorted(golden.keys() | renders.keys()):
         row = {"name": name, "over": "", "changed": "", "largest": "", "fail": True}
-        if name not in renders:
+        skipped = next((why for glob, why in skips if fnmatch.fnmatchcase(name, glob)), None)
+        if skipped is not None:
+            row.update(fail=False, skipped=True, note=f"not checked: {skipped}")
+            results.append(row)
+        elif name not in renders:
             row["note"] = "no render (the test skipped or never ran)"
             results.append(row)
         elif name not in golden:
@@ -246,7 +254,7 @@ def table(results):
         "| --- | ---: | ---: | ---: | --- |",
     ]
     for r in results:
-        verdict = "FAIL" if r["fail"] else "ok"
+        verdict = "FAIL" if r["fail"] else ("skipped" if r.get("skipped") else "ok")
         if r.get("note"):
             verdict += f": {r['note']}"
         lines.append(
@@ -262,10 +270,18 @@ def main(argv=None):
     parser.add_argument("--diff-dir", help="write a difference image per failing scene")
     parser.add_argument("--summary", help="append the table to this file")
     parser.add_argument("--newer-than", help="renders must be newer than this file")
+    parser.add_argument(
+        "--skip", action="append", default=[], metavar="GLOB=REASON",
+        help="do not compare scenes matching GLOB; the table says REASON",
+    )
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     args = parser.parse_args(argv)
 
-    tasks, results = collect(args.golden, args.renders, args.newer_than, args.diff_dir)
+    skips = []
+    for item in args.skip:
+        glob, _, why = item.partition("=")
+        skips.append((glob, why or "skipped"))
+    tasks, results = collect(args.golden, args.renders, args.newer_than, args.diff_dir, skips)
     if args.jobs > 1 and len(tasks) > 1:
         with multiprocessing.Pool(args.jobs) as pool:
             results += pool.map(compare, tasks, chunksize=1)
@@ -273,12 +289,14 @@ def main(argv=None):
         results += [compare(task) for task in tasks]
     results.sort(key=lambda r: r["name"])
     failing = [r for r in results if r["fail"]]
-    if not results:
+    checked = [r for r in results if not r.get("skipped")]
+    if not checked:
         failing = [{"name": "(none)"}]
 
     heading = (
         f"### Golden strict check: {'FAIL' if failing else 'pass'}\n\n"
-        f"{len(results)} scenes, {len(failing)} failing. A scene fails when any pixel's "
+        f"{len(results)} scenes, {len(results) - len(checked)} not checked, "
+        f"{len(failing)} failing. A scene fails when any pixel's "
         f"channel differs by more than {TOLERANCE} (no count allowance).\n\n"
     )
     report = heading + (table(results) if results else "No PNGs found.") + "\n"

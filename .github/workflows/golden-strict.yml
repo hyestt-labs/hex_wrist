@@ -103,6 +103,7 @@ jobs:
             --golden "$RUNNER_TEMP/golden-approved" \
             --renders "$RUNNER_TEMP/golden-renders" \
             --newer-than "$RUNNER_TEMP/render-start" \
+            --skip 'capture-capsule-*=macOS-only goldens (cfg(target_os = "macos")); check on a Mac' \
             --diff-dir "$RUNNER_TEMP/golden-diffs" \
             --summary "$GITHUB_STEP_SUMMARY"
           echo "status=$?" >> "$GITHUB_OUTPUT"

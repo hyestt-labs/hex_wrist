@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tests for golden-diff.py on small synthetic PNGs. Run: python3 scripts/test-golden-diff.py"""
 
+import contextlib
 import importlib.util
+import io
 import os
 import random
 import struct
@@ -91,7 +93,8 @@ class GoldenDiff(unittest.TestCase):
             "--golden", str(self.golden), "--renders", str(self.renders),
             "--diff-dir", str(self.diffs), "--jobs", "1", *extra,
         ]
-        return golden_diff.main(args)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return golden_diff.main(args)
 
     def test_every_filter_type_decodes(self):
         rows = image(3)
@@ -162,6 +165,19 @@ class GoldenDiff(unittest.TestCase):
         self.assertEqual(self.run_tool("--newer-than", str(marker)), 1)
         os.utime(self.renders / "a.png", ns=(marker.stat().st_mtime_ns + 10**9,) * 2)
         self.assertEqual(self.run_tool("--newer-than", str(marker)), 0)
+
+    def test_skipped_scenes_are_not_compared_but_the_rest_still_fail(self):
+        rows = image()
+        self.put(self.golden, "mac-only", rows)
+        self.put(self.golden, "other", rows)
+        self.put(self.renders, "other", rows)
+        self.assertEqual(self.run_tool("--skip", "mac-*=macOS only"), 0)
+        self.put(self.renders, "other", nudge(rows, {(0, 0): 99}))
+        self.assertEqual(self.run_tool("--skip", "mac-*=macOS only"), 1)
+
+    def test_skipping_everything_fails(self):
+        self.put(self.golden, "mac-only", image())
+        self.assertEqual(self.run_tool("--skip", "mac-*=macOS only"), 1)
 
     def test_empty_folders_fail(self):
         self.assertEqual(self.run_tool(), 1)
