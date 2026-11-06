@@ -2,24 +2,31 @@
 # Merge gate for a pull request on the fork. Fails unless every check holds:
 #   1. all four Compile jobs show success on the PR's head SHA
 #   2. a local `scripts/check` log for that SHA ends with `exit=0`
-#   3. the worker report holds the mutation check's FAILED lines
+#   3. the worker report holds the mutation check's FAILED lines, unless
+#      `--no-mutation "<reason>"` skips it (for a PR that fixes no bug); the
+#      skip and its reason are printed, and a missing reason fails
 #   4. the PR body has an "unverified" section
-# Usage: scripts/merge-gate.sh <pr> --check-log <file> --report <file> [--repo owner/name]
+# Usage: scripts/merge-gate.sh <pr> --check-log <file> --report <file>
+#          [--no-mutation "<reason>"] [--repo owner/name]
+# scripts/test-merge-gate.sh exercises it against a fake `gh`.
 # The check log is written by: scripts/check > log 2>&1; echo "exit=$?" >> log
 # and must name the head SHA on its first line: echo "sha=<head>" > log first.
 set -euo pipefail
 
-pr="" check_log="" report="" repo="hyestt-labs/hex_wrist"
+pr="" check_log="" report="" repo="hyestt-labs/hex_wrist" no_mutation=0 no_mutation_reason=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check-log) check_log="$2"; shift 2 ;;
     --report) report="$2"; shift 2 ;;
     --repo) repo="$2"; shift 2 ;;
+    --no-mutation)
+      no_mutation=1
+      if [ $# -ge 2 ] && [[ "$2" != --* ]]; then no_mutation_reason="$2"; shift 2; else shift; fi ;;
     *) pr="$1"; shift ;;
   esac
 done
 [ -n "$pr" ] && [ -n "$check_log" ] && [ -n "$report" ] || {
-  echo "usage: $0 <pr> --check-log <file> --report <file> [--repo owner/name]" >&2; exit 2; }
+  echo "usage: $0 <pr> --check-log <file> --report <file> [--no-mutation \"<reason>\"] [--repo owner/name]" >&2; exit 2; }
 
 fail=0
 bad() { echo "FAIL  $1"; fail=1; }
@@ -51,7 +58,13 @@ else
     || bad "scripts/check log does not end with exit=0"
 fi
 
-if [ ! -f "$report" ]; then
+if [ "$no_mutation" = 1 ]; then
+  if [ -z "${no_mutation_reason//[[:space:]]/}" ]; then
+    bad "--no-mutation needs a reason: --no-mutation \"<why no bug fix to mutate>\""
+  else
+    echo "SKIP  (c) mutation check skipped: $no_mutation_reason"
+  fi
+elif [ ! -f "$report" ]; then
   bad "report $report is missing"
 elif grep -Eq '^[[:space:]]*FAIL[[:space:]]|test result: FAILED|\.\.\. FAILED' "$report"; then
   ok "report holds mutation FAILED output"
