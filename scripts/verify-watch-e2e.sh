@@ -473,11 +473,38 @@ act_switch_away() { open -a Finder && sleep 2; }
 # The id of TextEdit's first (frontmost) window that has a document. Windows without one (the panel TextEdit
 # shows a second after a new document appears) are skipped. Empty when there is none.
 te_first_document_window() {
+  # The window list is taken once, as ids, and each id is then asked about by id: walking `windows` by index would
+  # skip or repeat a window when the person reorders windows during the walk.
   osascript -e 'tell application "TextEdit"' -e 'set firstDocumentWindow to ""' \
-    -e 'repeat with w in windows' -e 'try' -e 'set d to document of w' \
-    -e 'if d is not missing value then' -e 'set firstDocumentWindow to (id of w) as text' -e 'exit repeat' -e 'end if' \
+    -e 'set allIds to id of every window' \
+    -e 'repeat with wid in allIds' -e 'try' -e 'set d to document of window id (contents of wid)' \
+    -e 'if d is not missing value then' -e 'set firstDocumentWindow to (contents of wid) as text' -e 'exit repeat' -e 'end if' \
     -e 'end try' -e 'end repeat' -e 'return firstDocumentWindow' -e 'end tell' 2>/dev/null
 }
+# The ids of TextEdit's windows that have a document, sorted. The comparison "the same windows as before" must not
+# count the small document-less panel TextEdit shows for about a second after a new document appears (its id
+# differs from one moment to the next), so it uses these ids and not `id of every window`.
+te_document_window_ids() {
+  osascript -e 'tell application "TextEdit"' -e 'set documentWindowIds to {}' \
+    -e 'set allIds to id of every window' \
+    -e 'repeat with wid in allIds' -e 'try' -e 'set d to document of window id (contents of wid)' \
+    -e 'if d is not missing value then set end of documentWindowIds to (contents of wid)' \
+    -e 'end try' -e 'end repeat' -e 'return documentWindowIds' -e 'end tell' 2>/dev/null |
+    tr ',' '\n' | tr -d ' ' | grep . | sort -n | tr '\n' ' '
+}
+# Are two lists of ids the same set? (Order does not matter; one id more or less does.)
+same_id_set() { [ "$(tr ' ,' '\n\n' <<<"$1" | grep . | sort -n)" = "$(tr ' ,' '\n\n' <<<"$2" | grep . | sort -n)" ]; }
+
+# Two texts are the same when they are identical, character for character. Nothing is trimmed or forgiven: a
+# control experiment (TextEdit's own Edit > Paste of this sentence) reads back exactly the sentence, and Hex adds no
+# trailing space (it only ever adds a LEADING space between consecutive dictations, src/paste.rs `join` and
+# `with_smart_spacing`), so a read-back that differs in any character, a trailing space included, is a real difference.
+# (The trailing space that once appeared in results.jsonl was this script's own: it stored the read-back with
+# `tr '\r\n' '  '`, which turned the newline `osascript` always prints after its result into a space.)
+same_text() { [ "$1" = "$2" ]; }
+# The read-back exactly as TextEdit gave it: `$( )` removes only the final newline osascript adds, nothing else.
+readback_of() { printf %s "$(cat "$1")"; }
+
 # The gate command watch-sim runs between /focus and /e2ee, and before /enter and /undo.
 front_hook() { printf '%q ' /bin/bash "$self" --front-check "$1" "$2"; }
 
@@ -543,8 +570,13 @@ note_leftover_file() { # handle
   local saved
   saved=$(osascript -e "tell application \"TextEdit\" to return path of document of window id ${1%%|*}" 2>/dev/null)
   case "$saved" in ''|'missing value') return 0 ;; esac
-  log "LEFT BEHIND: TextEdit autosaved this run's document to $saved (not deleted)"
-  printf '%s\t%s\n' "$saved" "TextEdit window ${1%%|*}" >> "$out/leftovers.tsv"
+  # Evidence for deciding by hand: is the file's text exactly the document's text?
+  local doc file same=no
+  doc=$(osascript -e "tell application \"TextEdit\" to return text of document of window id ${1%%|*}" 2>/dev/null)
+  file=$(textutil -convert txt -stdout "$saved" 2>/dev/null)
+  if [ -n "$doc" ] && same_text "$doc" "$file"; then same=yes; fi
+  log "LEFT BEHIND: TextEdit autosaved this run's document to $saved (not deleted; file text is exactly the document's text: $same)"
+  printf '%s\t%s\n' "$saved" "TextEdit window ${1%%|*}; file text is exactly the document's text: $same" >> "$out/leftovers.tsv"
 }
 act_close() { # kind handle
   local kind=$1 h=$2 key state pid rest tty found=0 failed=0
@@ -723,7 +755,7 @@ need() { blocked+=("$1"); }
 FAILS=
 BLOCKED_NOTE=
 ABORT_NOTE=
-SC_REPORT=null; SC_READBACK=; SC_MS=0; SC_HANDLE=; SC_TARGET=; SC_PERCENT=0; SC_SWITCH=0
+SC_REPORT=null; SC_READBACK=; SC_MS=0; SC_HANDLE=; SC_TARGET=; SC_PERCENT=0; SC_SWITCH=0; SC_EXACT=
 
 # record STAGE TARGET LANG RESULT PERCENT STATE MS TEXT DETAIL_JSON
 record() {
@@ -757,8 +789,9 @@ finish() {
     [ "$c1" = 1 ] && result=FAIL
   fi
   record "$1" "$2" "$3" "$result" "$4" "$(rj '.state // .event')" "$SC_MS" \
-    "$(tr '\r\n' '  ' <"$SC_FILE" | tail -c 200)" "$(jq -c --arg f "$note" '. + {fails:$f}' <<<"$SC_REPORT")"
-  FAILS=; BLOCKED_NOTE=; ABORT_NOTE=; SC_SWITCH=0
+    "$(readback_of "$SC_FILE" | tr '\r\n' '  ' | tail -c 200)" \
+    "$(jq -c --arg f "$note" --arg e "$SC_EXACT" --arg r "$(readback_of "$SC_FILE" | head -c 400)" '. + {fails:$f, readback_is_exactly_the_sentence:$e, readback:$r}' <<<"$SC_REPORT")"
+  FAILS=; BLOCKED_NOTE=; ABORT_NOTE=; SC_SWITCH=0; SC_EXACT=
 }
 
 # =============================================================================
@@ -1178,6 +1211,7 @@ want() { [ -z "$only" ] || [[ $1 =~ $only ]]; }
 judged() { # lang -> percent, with the pass threshold check (recall, plus precision for empty-start fields)
   local precision
   SC_PERCENT=$(judge "$1" "$SC_READBACK"); SC_PERCENT=${SC_PERCENT:-0}
+  SC_EXACT=false; same_text "$SC_READBACK" "$(text_for "$1")" && SC_EXACT=true   # information: the read-back is exactly the sentence
   chk "$(is [ "$SC_PERCENT" -ge "$(pass_for "$1")" ])" "read-back matches only ${SC_PERCENT}%"
   if starts_empty "$SC_TARGET"; then
     precision=$(precision_of "$1" "$SC_READBACK"); precision=${precision:-0}
@@ -1651,7 +1685,7 @@ stage2() {
       result=PASS; [ -z "$FAILS" ] || result=FAIL
       row_refused && result=INCOMPLETE
       record 2 "$target" "$lang" "$result" "$percent" "${mac_state:-no-result}" "$ms" \
-        "$(tr '\r\n' '  ' <<<"$readback" | tail -c 200)" "$(jq -c --arg f "${FAILS#; }" '. + {fails:$f}' <<<"$detail")"
+        "$(printf %s "$readback" | tr '\r\n' '  ' | tail -c 200)" "$(jq -c --arg f "${FAILS#; }" --arg r "$(printf %s "$readback" | head -c 400)" '. + {fails:$f, readback:$r}' <<<"$detail")"
       FAILS=
     done
   done
@@ -1805,9 +1839,9 @@ check_textedit() {
   step() { printf '  %-4s %s\n' "$1" "$2"; [ "$1" = PASS ] || ok=0; }
   echo "check-textedit: one TextEdit document of this run's own, nothing else"
   if app_running TextEdit; then
-    before_ids=$(osascript -e 'tell application "TextEdit" to return id of every window' 2>/dev/null)
+    before_ids=$(te_document_window_ids)
     before_names=$(osascript -e 'tell application "TextEdit" to return name of every document' 2>/dev/null)
-    echo "  (TextEdit is running with $(tr ',' '\n' <<<"$before_ids" | grep -c .) window(s); their ids and names are recorded and must be the same at the end)"
+    echo "  (TextEdit is running with $(tr ' ' '\n' <<<"$before_ids" | grep -c .) document window(s); their ids and names are recorded and must be the same at the end)"
   else
     echo "  (TextEdit is not running; the run starts it and leaves it running)"
   fi
@@ -1843,7 +1877,7 @@ check_textedit() {
     text="e2e-smoke-$RANDOM$RANDOM$RANDOM"   # exists only at run time, so a search cannot match this script's own text
     write_target textedit "$h" "$text" >/dev/null && step PASS "wrote text into window $id" || step FAIL "could not write into the window"
     back=$(read_target textedit "$h")
-    [ "$back" = "$text" ] && step PASS "read back the same text" || step FAIL "read back '${back:0:60}', wrote '$text'"
+    same_text "$back" "$text" && step PASS "read back the same text" || step FAIL "read back '${back:0:60}', wrote '$text'"
     close_target textedit "$h"
     # Asked directly: after the close the registry no longer holds the window, so win_probe would say "other".
     [ "$(osascript -e "tell application \"TextEdit\" to return exists window id $id" 2>/dev/null)" = false ] \
@@ -1856,9 +1890,10 @@ check_textedit() {
     [ -z "$leaked" ] && step PASS "no file anywhere under your home contains the test text" || step FAIL "a file contains the test text: $leaked"
   fi
   if app_running TextEdit; then
-    after_ids=$(osascript -e 'tell application "TextEdit" to return id of every window' 2>/dev/null)
+    after_ids=$(te_document_window_ids)
+    same_id_set "$after_ids" "$before_ids" || { sleep 1; after_ids=$(te_document_window_ids); }   # the person may be moving windows: look once more
     after_names=$(osascript -e 'tell application "TextEdit" to return name of every document' 2>/dev/null)
-    [ "$after_ids" = "$before_ids" ] && step PASS "TextEdit's window ids are exactly the ones from before" || step FAIL "window ids differ: before [$before_ids] after [$after_ids]"
+    same_id_set "$after_ids" "$before_ids" && step PASS "the windows that have a document are exactly the ones from before (the document-less panel TextEdit shows briefly is not counted)" || step FAIL "document window ids differ: before [$before_ids] after [$after_ids]"
     [ "$after_names" = "$before_names" ] && step PASS "TextEdit's document names are exactly the ones from before" || step FAIL "document names differ"
   fi
   row_refused && step FAIL "the gate refused something: $(tr '\n' ';' < "$tmp/row-refused")" || step PASS "the gate refused nothing"
@@ -1909,6 +1944,8 @@ case "$args" in
     [ "$(cat "$STUB_DIR/live")" = live ] || { echo ""; exit 0; }
     [ "$(cat "$STUB_DIR/name" 2>/dev/null)" = renamed ] && echo "Quarterly Report to Design Team" || echo "Untitled 9" ;;
   *"path of document of window id 101"*) [ "$(cat "$STUB_DIR/name" 2>/dev/null)" = renamed ] && echo "/stub/Quarterly Report to Design Team.rtf" || echo "missing value" ;;
+  *documentWindowIds*) grep ':doc' "$STUB_DIR/windows" 2>/dev/null | cut -d: -f1 | paste -sd, - | sed 's/,/, /g' ;;
+  *"id of every window"*) cut -d: -f1 "$STUB_DIR/windows" 2>/dev/null | paste -sd, - | sed 's/,/, /g' ;;
   *"is running"*) cat "$STUB_DIR/running" ;;
   *) : ;;
 esac
@@ -2074,6 +2111,44 @@ selftest_main() {
     st_check "[$mode] the recorded row is INCOMPLETE, not PASS" bash -c "jq -e 'select(.target==\"te-open-$mode\" and .result==\"INCOMPLETE\")' '$results' >/dev/null"
   done
   st_set te-open ok
+
+  echo "[2d] the comparison of TextEdit's windows ignores the document-less panel, nothing else"
+  st_reset
+  printf '7:doc\n2845:panel\n101:doc\n' > "$STUB_DIR/windows"; before_ids=$(te_document_window_ids)
+  printf '101:doc\n7:doc\n2890:panel\n' > "$STUB_DIR/windows"; after_ids=$(te_document_window_ids)
+  st_check "(setup) the panel's id changed (2845 to 2890) and the order changed" bash -c "[ '$(osascript -e 'x id of every window')' != '' ]"
+  st_check "a changed panel id (and a different order) is not a difference" same_id_set "$after_ids" "$before_ids"
+  st_check "…the ids come from the document filter, not from 'id of every window'" bash -c "grep -q 'document of w' '$STUB_DIR/asc.log' && [ \"$before_ids\" = '7 101 ' ]"
+  printf '7:doc\n2890:panel\n' > "$STUB_DIR/windows"; after_ids=$(te_document_window_ids)
+  st_check "a document window that disappeared IS a difference" st_not same_id_set "$after_ids" "$before_ids"
+  printf '7:doc\n101:doc\n55:doc\n' > "$STUB_DIR/windows"; after_ids=$(te_document_window_ids)
+  st_check "a document window that appeared IS a difference" st_not same_id_set "$after_ids" "$before_ids"
+  printf '7:doc\n102:doc\n' > "$STUB_DIR/windows"; after_ids=$(te_document_window_ids)
+  st_check "one document window replaced by another IS a difference" st_not same_id_set "$after_ids" "$before_ids"
+  st_check "an empty list is not the same as a non-empty one" st_not same_id_set "" "$before_ids"
+  : > "$STUB_DIR/windows"
+
+  echo "[2e] the read-back is kept and compared exactly (no trailing space is invented, none is forgiven)"
+  SENT="Please send the quarterly report to the design team before Friday."
+  st_check "the identical sentence is the same" same_text "$SENT" "$SENT"
+  st_check "a trailing space is a difference (nothing is forgiven)" st_not same_text "$SENT " "$SENT"
+  st_check "a trailing newline is a difference" st_not same_text "$SENT
+" "$SENT"
+  st_check "one different character in the middle is a difference" st_not same_text "Please send the quarterly reprot to the design team before Friday." "$SENT"
+  st_check "a leading space is a difference" st_not same_text " $SENT" "$SENT"
+  st_check "a doubled space in the middle is a difference" st_not same_text "Please send  the quarterly report to the design team before Friday." "$SENT"
+  st_check "case counts" st_not same_text "please send the quarterly report to the design team before friday." "$SENT"
+  st_check "empty is not the sentence" st_not same_text "" "$SENT"
+  # What the results record: osascript prints a newline after its result; that newline is not part of the text.
+  st_reset; SC_REPORT='{"state":"pasted"}'; SC_MS=0; ABORT_NOTE=; FAILS=
+  printf '%s\n' "$SENT" > "$SC_FILE"; SC_READBACK=$(cat "$SC_FILE")
+  finish 9 text-field-exact en 100
+  st_check "the recorded text is exactly the read-back (osascript's newline did not become a space)" bash -c "[ \"\$(jq -r 'select(.target==\"text-field-exact\") | .text' '$results')\" = '$SENT' ]"
+  st_check "…and the exact read-back is in the detail" bash -c "[ \"\$(jq -r 'select(.target==\"text-field-exact\") | .detail.readback' '$results')\" = '$SENT' ]"
+  st_reset; SC_REPORT='{"state":"pasted"}'; SC_MS=0; ABORT_NOTE=; FAILS=
+  printf '%s \n' "$SENT" > "$SC_FILE"; SC_READBACK=$(cat "$SC_FILE")
+  finish 9 text-field-with-space en 100
+  st_check "a read-back that really has a trailing space shows it (nothing is hidden)" bash -c "[ \"\$(jq -r 'select(.target==\"text-field-with-space\") | .text' '$results')\" = '$SENT ' ]"
 
   echo "[6b] the real watch-sim, dry run (no network): the real order of the real code, and its exit codes"
   if [ ! -x "$real_sim" ] || [ "$root/scripts/watch-sim/main.swift" -nt "$real_sim" ]; then

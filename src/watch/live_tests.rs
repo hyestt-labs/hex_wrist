@@ -336,11 +336,12 @@ impl Made {
             Self::TextEdit { .. } => script.run(
                 r#"tell application "TextEdit"
                     set firstDocumentWindow to ""
-                    repeat with w in windows
+                    set allIds to id of every window
+                    repeat with wid in allIds
                         try
-                            set d to document of w
+                            set d to document of window id (contents of wid)
                             if d is not missing value then
-                                set firstDocumentWindow to (id of w) as text
+                                set firstDocumentWindow to (contents of wid) as text
                                 exit repeat
                             end if
                         end try
