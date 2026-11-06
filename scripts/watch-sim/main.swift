@@ -36,10 +36,21 @@ struct WatchSim {
         FileHandle.standardOutput.write(data + Data("\n".utf8))
     }
 
+    /// `WATCH_SIM_DRY_RUN=1`: nothing goes over the network. Every step is recorded in `trace` instead,
+    /// in the order it would happen, so the script's self-test can check the real order of the real code:
+    /// each gate comes before the send it guards.
+    static let dryRun = ProcessInfo.processInfo.environment["WATCH_SIM_DRY_RUN"] == "1"
+    nonisolated(unsafe) static var traceLog: [String] = []
+    static let traceLock = NSLock()
+    static func trace(_ step: String) {
+        traceLock.lock(); traceLog.append(step); traceLock.unlock()
+    }
+
     /// Runs a gate command (`/bin/sh -c`) and reports whether it passed. The script uses it to check that
     /// the app in front is the test target at the moment audio or a key would go out; a failed gate means
     /// nothing is sent.
-    static func gate(_ command: String?) -> Bool {
+    static func gate(_ command: String?, label: String = "gate") -> Bool {
+        trace("gate:\(label)")
         guard let command else { return false }   // no gate given: fail closed, send nothing
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -49,11 +60,20 @@ struct WatchSim {
         return task.terminationStatus == 0
     }
 
+    /// One /enter or /undo: the gate runs first, on its own, and only a pass sends it. Every send of
+    /// an action goes through here, so none can skip its check.
+    static func gatedAction(_ target: PairedMac?, _ path: String, id: UUID, hook: String?) async -> [String: Any] {
+        guard gate(hook, label: path) else { return ["aborted": "before-action gate failed", "sent": false] }
+        trace("send:\(path)")
+        if dryRun || target == nil { return ["status": 200, "body": ["ok": true], "dry_run": true] }
+        return await rawAction(target!, path, id: id)
+    }
+
     /// `selftest-gate --hook <sh>`: the same gate with no network, for the script's offline self-test.
     /// Prints whether audio would be sent, and exits 0 only when the gate passed.
     static func selftestGate(_ args: [String]) {
         let passed = gate(option(args, "--hook"))
-        emit(["event": "selftest-gate", "e2ee_sent": passed, "gate_passed": passed])
+        emit(["event": "selftest-gate", "e2ee_sent": passed, "gate_passed": passed, "trace": traceLog])
         exit(passed ? 0 : 1)
     }
 
@@ -157,14 +177,20 @@ struct WatchSim {
         }
     }
 
+    /// `action --path /enter|/undo --id <uuid> --before-action <sh>`: one action for an earlier recording.
+    /// It needs the gate like every other send: without `--before-action`, or if it fails, nothing is sent.
     static func action(_ args: [String]) async throws {
-        guard let target = WatchMacTargetStore.selected(), target.isEncrypted,
-              let path = option(args, "--path"), let id = option(args, "--id").flatMap(UUID.init) else {
+        let target = WatchMacTargetStore.selected()
+        guard dryRun || target?.isEncrypted == true,
+              let path = option(args, "--path"), path == "/enter" || path == "/undo",
+              let id = option(args, "--id").flatMap(UUID.init) else {
             throw BridgeError.notConfigured
         }
-        var report = await rawAction(target, path, id: id)
+        var report = await gatedAction(target, path, id: id, hook: option(args, "--before-action"))
         report["event"] = "action"
+        report["trace"] = traceLog
         emit(report)
+        if report["aborted"] != nil { exit(1) }
     }
 
     /// WatchDelivery.swift `DeliveryPolicy.isTerminal`, minus the agent states.
@@ -173,26 +199,29 @@ struct WatchSim {
 
     static func deliver(_ args: [String]) async throws {
         guard let path = option(args, "--audio") else { throw BridgeError.notConfigured }
-        guard let target = WatchMacTargetStore.selected(), target.isEncrypted else { throw BridgeError.notConfigured }
-        let audio = try Data(contentsOf: URL(fileURLWithPath: path))
+        let target = WatchMacTargetStore.selected()
+        guard dryRun || target?.isEncrypted == true else { throw BridgeError.notConfigured }
+        let audio = dryRun ? Data() : try Data(contentsOf: URL(fileURLWithPath: path))
         let language = option(args, "--language") ?? "auto"
         let timeout = Double(option(args, "--timeout") ?? "120") ?? 120
         let id = UUID()
         var report: [String: Any] = ["event": "delivered", "id": id.uuidString, "audio_bytes": audio.count]
 
         let started = Date()
-        let refusal = await WatchMacStatus.captureFocus(target: target, id: id)
+        trace("send:/focus")
+        let refusal = dryRun ? nil : await WatchMacStatus.captureFocus(target: target!, id: id)
         report["focus_ms"] = ms(since: started)
         report["focus_refusal"] = refusal.map { "\($0)" } as Any
         // The person's app may change between starting the recording and its audio arriving. This gate runs
         // after /focus and before /e2ee. If it fails, nothing is sent: no audio, so no dictation.
         do {
-            let passed = gate(option(args, "--after-focus"))
+            let passed = gate(option(args, "--after-focus"), label: "after-focus")
             report["after_focus_passed"] = passed
             if !passed {
                 report["aborted"] = "after-focus gate failed"
                 report["e2ee_sent"] = false
                 report["ok"] = false
+                report["trace"] = traceLog
                 emit(report)
                 exit(1)
             }
@@ -200,49 +229,54 @@ struct WatchSim {
         report["e2ee_sent"] = true
 
         let sendStart = Date()
-        let result = try await WatchMacBridge.send(audio: audio, id: id, room: target.room, token: target.token,
-                                                   language: language, e2eeKey: target.e2eeKey)
-        report["send_ms"] = ms(since: sendStart)
-        report["send"] = ["ok": result.ok, "state": result.state as Any, "verification": result.verification as Any,
-                          "text": result.text as Any, "reason": result.reason as Any,
-                          "transcribe_ms": result.transcribeMs as Any, "paste_ms": result.pasteMs as Any]
-
-        var last: (code: Int, body: [String: Any]?, state: String?) = (0, nil, result.state)
-        let deadline = Date().addingTimeInterval(timeout)
-        var polls = 0
-        repeat {
-            try await Task.sleep(for: .milliseconds(1_500))
-            last = await status(target, id: id)
-            polls += 1
-        } while !(last.state.map(terminal.contains) ?? false) && Date() < deadline
+        trace("send:/e2ee")
+        var last: (code: Int, body: [String: Any]?, state: String?) = (0, nil, nil)
+        if dryRun {
+            last = (200, nil, "pasted")
+            report["send"] = ["ok": true, "state": "pasted", "dry_run": true]
+            report["send_ms"] = 0
+        } else {
+            let result = try await WatchMacBridge.send(audio: audio, id: id, room: target!.room, token: target!.token,
+                                                       language: language, e2eeKey: target!.e2eeKey)
+            report["send_ms"] = ms(since: sendStart)
+            report["send"] = ["ok": result.ok, "state": result.state as Any, "verification": result.verification as Any,
+                              "text": result.text as Any, "reason": result.reason as Any,
+                              "transcribe_ms": result.transcribeMs as Any, "paste_ms": result.pasteMs as Any]
+            last = (0, nil, result.state)
+            let deadline = Date().addingTimeInterval(timeout)
+            var polls = 0
+            repeat {
+                try await Task.sleep(for: .milliseconds(1_500))
+                last = await status(target!, id: id)
+                polls += 1
+            } while !(last.state.map(terminal.contains) ?? false) && Date() < deadline
+            report["status_polls"] = polls
+        }
         report["status_code"] = last.code
         report["status"] = last.body as Any
-        report["status_polls"] = polls
         report["state"] = last.state as Any
         report["terminal"] = last.state.map(terminal.contains) ?? false
 
-        // /enter and /undo make the Mac press Return and Command-Z: the gate must pass before each.
+        // /enter and /undo make the Mac press Return and Command-Z. Each send is its own gated action: the
+        // gate runs before it and only a pass sends it. Two Enters at the same moment are two actions, each
+        // checked on its own.
         let beforeAction = option(args, "--before-action")
         if args.contains("--enter") {
             let enterStart = Date()
-            report["enter"] = gate(beforeAction) ? await rawAction(target, "/enter", id: id) : ["aborted": "before-action gate failed"]
+            report["enter"] = await gatedAction(target, "/enter", id: id, hook: beforeAction)
             report["enter_ms"] = ms(since: enterStart)
         }
         if args.contains("--enter-twice") {
-            if gate(beforeAction) {
-                // Two /enter calls at the same moment, as a watch double tap or a retry would send them.
-                async let first = rawAction(target, "/enter", id: id)
-                async let second = rawAction(target, "/enter", id: id)
-                report["enters"] = await [first, second]
-            } else {
-                report["enters"] = [["aborted": "before-action gate failed"]]
-            }
+            async let first = gatedAction(target, "/enter", id: id, hook: beforeAction)
+            async let second = gatedAction(target, "/enter", id: id, hook: beforeAction)
+            report["enters"] = await [first, second]
         }
         if args.contains("--undo") {
             // Undo needs the read-back to have confirmed the paste (up to 1 s after it).
-            try await Task.sleep(for: .seconds(2))
-            report["undo"] = gate(beforeAction) ? await rawAction(target, "/undo", id: id) : ["aborted": "before-action gate failed"]
+            if !dryRun { try await Task.sleep(for: .seconds(2)) }
+            report["undo"] = await gatedAction(target, "/undo", id: id, hook: beforeAction)
         }
+        report["trace"] = traceLog
         report["total_ms"] = ms(since: started)
         report["ok"] = report["terminal"] as? Bool ?? false
         emit(report)
