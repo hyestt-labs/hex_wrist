@@ -2571,6 +2571,7 @@ selftest_main() {
   for flag in scan-noend scan-garbage; do
     st_reset; st_set live live; : > "$STUB_DIR/scan"; rm -f "$STUB_DIR/scan-fail"
     h=$(open_target textedit); tf2=$(cat "$STUB_DIR/te-path")
+    printf '9|/Users/me/other.txt\n' >> "$STUB_DIR/scan"   # a valid line, so only the missing END line can fail the scan
     touch "$STUB_DIR/$flag"
     close_target textedit "$h"
     rm -f "$STUB_DIR/$flag"
@@ -2598,7 +2599,7 @@ selftest_main() {
 
   st_sweep_te
   # (e) the list of window ids from before has no END line: it is incomplete, so nothing is opened
-  st_reset; : > "$STUB_DIR/asc.log"; touch "$STUB_DIR/ids-noend"
+  st_reset; : > "$STUB_DIR/asc.log"; printf '7\n' > "$STUB_DIR/before-ids"; touch "$STUB_DIR/ids-noend"
   h=$(open_target textedit)
   rm -f "$STUB_DIR/ids-noend"
   st_check "(e2) an incomplete list of the windows from before: the file is not opened" bash -c "[ -z '$h' ] && ! grep -q 'POSIX file' '$STUB_DIR/asc.log'"
