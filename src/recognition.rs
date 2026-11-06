@@ -25,6 +25,8 @@ use crate::parakeet::{
 };
 use crate::suppression::{DictationHotkey, DiscardCause, HotkeyAction, InputEvent, InputMonitor};
 
+mod gated_press;
+
 enum FinishResult {
     Discarded,
     Silent,
@@ -156,6 +158,13 @@ struct Hotkeys {
     raw_capture: bool,
 }
 
+/// What one input did to the shortcut machines.
+struct Processed {
+    /// Shortcuts whose press the input ended after Hex owned it.
+    owned: Vec<Shortcut>,
+    actions: Vec<(Shortcut, HotkeyAction)>,
+}
+
 impl Hotkeys {
     fn machines(&mut self) -> impl Iterator<Item = &mut DictationHotkey> {
         std::iter::once(&mut self.dictation)
@@ -232,10 +241,18 @@ impl Hotkeys {
             .for_each(DictationHotkey::recover_stale_keys);
     }
 
-    fn break_chords(&mut self, now: CaptureInstant) {
-        for machine in self.machines() {
-            machine.break_chord(now);
-        }
+    /// Posts each machine's due chord breaker; the shortcuts whose press Hex
+    /// owns now, or that a double tap or a Toggle release just locked.
+    fn break_chords(&mut self, now: CaptureInstant) -> Vec<Shortcut> {
+        Shortcut::ALL
+            .into_iter()
+            .filter(|shortcut| {
+                self.machine_mut(*shortcut).is_some_and(|machine| {
+                    machine.break_chord(now);
+                    machine.owned_now(now)
+                })
+            })
+            .collect()
     }
 
     /// Applies the saved shortcut options. Unbinding the raw or second
@@ -258,15 +275,22 @@ impl Hotkeys {
     /// Feeds one input to every machine, and returns what each did with
     /// which machine it was. A machine that starts while another records
     /// stands down until its keys come up, and only the dictation machine
-    /// pastes.
-    fn process(&mut self, event: InputEvent, at: CaptureInstant) -> Vec<(Shortcut, HotkeyAction)> {
+    /// pastes. A machine whose press this input ended, at or after the moment
+    /// Hex owned it, is in `owned`: the event's own timestamp decides, so a
+    /// release queued behind later events cannot hide or fake an owned press.
+    fn process(&mut self, event: InputEvent, at: CaptureInstant) -> Processed {
+        let mut owned = Vec::new();
         let mut actions = Vec::new();
         for shortcut in Shortcut::ALL {
             let others_recording = self.recording_besides(shortcut);
             let Some(machine) = self.machine_mut(shortcut) else {
                 continue;
             };
-            match machine.process(event, at) {
+            let action = machine.process(event, at);
+            if machine.take_owned_at_end() {
+                owned.push(shortcut);
+            }
+            match action {
                 Some(HotkeyAction::Start) if others_recording => {
                     machine.suspend();
                 }
@@ -276,7 +300,7 @@ impl Hotkeys {
                 None => {}
             }
         }
-        actions
+        Processed { owned, actions }
     }
 
     /// Stops whichever machine records, as a `stop` or `cancel` command does.
@@ -389,7 +413,7 @@ pub fn listen(
     if hotkeys.dictation.is_recording() {
         let accepted = input.start(capture_boundary(
             &input,
-            microphone_policy.release_while_idle,
+            input.starts_cold(microphone_policy.release_while_idle),
         ))?;
         if accepted {
             events.dictation(DictationPhase::Started, "")?;
@@ -477,7 +501,8 @@ pub fn listen(
                         raw,
                         reply,
                     } => {
-                        let release_while_idle = microphone_policy.release_while_idle;
+                        let release_while_idle =
+                            input.starts_cold(microphone_policy.release_while_idle);
                         let other_recording = programmatic.is_some();
                         let suspended =
                             crate::app_settings::hotkey_capture_active() || input.is_recovering();
@@ -510,8 +535,10 @@ pub fn listen(
                         }
                         let id = next_programmatic_id;
                         next_programmatic_id = next_programmatic_id.wrapping_add(1).max(1);
-                        let boundary =
-                            capture_boundary(&input, microphone_policy.release_while_idle);
+                        let boundary = capture_boundary(
+                            &input,
+                            input.starts_cold(microphone_policy.release_while_idle),
+                        );
                         match input.start_programmatic(boundary) {
                             Ok(()) => {
                                 hotkeys.disarm_pending_gestures();
@@ -592,8 +619,10 @@ pub fn listen(
                             .is_some_and(|active| active.matches_owner(id, &owner_token))
                         {
                             let active = programmatic.take().expect("active dictation was checked");
-                            let boundary =
-                                capture_boundary(&input, microphone_policy.release_while_idle);
+                            let boundary = capture_boundary(
+                                &input,
+                                input.starts_cold(microphone_policy.release_while_idle),
+                            );
                             // The microphone may have failed before this
                             // finish reached the audio owner, with its loss
                             // still queued.
@@ -824,7 +853,7 @@ pub fn listen(
                 &input.device_name(),
                 &mut events,
                 indicator.as_ref(),
-                microphone_policy.release_while_idle,
+                input.starts_cold(microphone_policy.release_while_idle),
             )?;
         }
         let (next_microphone_revision, microphone) = crate::app_settings::microphone_selection();
@@ -849,7 +878,7 @@ pub fn listen(
                 &input.device_name(),
                 &mut events,
                 indicator.as_ref(),
-                microphone_policy.release_while_idle,
+                input.starts_cold(microphone_policy.release_while_idle),
             )?;
         }
         // The capture shortcut ignores keys while shortcuts are suspended or
@@ -911,7 +940,9 @@ pub fn listen(
                 hotkeys.track_key_state(input_event, capture_at);
                 continue;
             }
-            for (shortcut, action) in hotkeys.process(input_event, capture_at) {
+            let Processed { owned, actions } = hotkeys.process(input_event, capture_at);
+            gated_press::owned_before_end(&mut hotkeys, &owned, &input);
+            for (shortcut, action) in actions {
                 if action == HotkeyAction::Start {
                     hotkeys.raw_capture = shortcut == Shortcut::Raw;
                 }
@@ -925,10 +956,10 @@ pub fn listen(
                     &input.device_name(),
                     &mut events,
                     indicator.as_ref(),
-                    microphone_policy.release_while_idle,
+                    input.starts_cold(microphone_policy.release_while_idle),
                 )?;
                 if !accepted {
-                    hotkeys.suspend(shortcut);
+                    gated_press::start_refused(&mut hotkeys, shortcut, &input);
                 }
             }
         }
@@ -941,16 +972,18 @@ pub fn listen(
         if hotkeys.any_recording()
             && input.become_intentional(capture_boundary(
                 &input,
-                microphone_policy.release_while_idle,
+                input.starts_cold(microphone_policy.release_while_idle),
             ))?
-            && microphone_policy.release_while_idle
+            && input.starts_cold(microphone_policy.release_while_idle)
         {
             feedback::play(Tone::DictationStart);
         }
         // Only once every queued edge is handled, so a release already seen
         // ends the press first.
         if !hotkey_capture_suspended && input_monitor.pending_events().oldest().is_none() {
-            hotkeys.break_chords(CaptureInstant::now());
+            for shortcut in hotkeys.break_chords(CaptureInstant::now()) {
+                gated_press::owned(&mut hotkeys, shortcut, &input);
+            }
         }
         let mut received_worker_event = false;
         while let Some(event) = dictation_worker.try_recv() {
@@ -1261,6 +1294,9 @@ fn handle_hotkey_action(
     indicator: Option<&DictationIndicatorSender>,
     release_while_idle: bool,
 ) -> Result<bool> {
+    if gated_press::ends_nothing(action, dictation) {
+        return Ok(true);
+    }
     match action {
         HotkeyAction::Start => {
             if !dictation.start(action_at)? {
@@ -1507,7 +1543,16 @@ fn control_dictation(
                 ControlReply::done("Recording; `hex dictation stop` or the shortcut finishes")
             } else {
                 hotkeys.dictation.suspend();
-                ControlReply::error("busy", "the microphone is busy; try again")
+                if input.microphone_gated() {
+                    // `hex dictation start` is an intentional try.
+                    input.press_owned();
+                    ControlReply::error(
+                        "busy",
+                        "the microphone is not allowed; allow it in System Settings",
+                    )
+                } else {
+                    ControlReply::error("busy", "the microphone is busy; try again")
+                }
             }
         }
         false if !recording && print.is_some() => ControlReply::error(
@@ -1878,7 +1923,8 @@ mod tests {
             raw: None,
             raw_capture: false,
         };
-        let mut press = |flags: u64, ms: u64| hotkeys.process(InputEvent::Flags(flags), at(ms));
+        let mut press =
+            |flags: u64, ms: u64| hotkeys.process(InputEvent::Flags(flags), at(ms)).actions;
         const START: HotkeyAction = HotkeyAction::Start;
         const FINISH: HotkeyAction = HotkeyAction::Finish;
         const DICTATION: Shortcut = Shortcut::Dictation;

@@ -11,6 +11,7 @@
 //! - `output`: gate, paste, read-back, and clipboard restore for a recording's text.
 //! - `desktop`: the focused field and the keys, behind `Screen` and one `watch-ax` thread.
 //! - `service`: the one `watch` thread that owns the state and answers requests.
+//! - `listener_ready`: whether the listener can take a recording yet (Accessibility, model).
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
 //! - `pairing`: paired watches, their tokens and keys, and the claim approval.
@@ -28,6 +29,7 @@ pub(crate) mod desktop;
 pub(crate) mod e2ee;
 pub(crate) mod field;
 pub(crate) mod frame;
+pub(crate) mod listener_ready;
 #[cfg(all(test, target_os = "macos"))]
 mod live_tests;
 pub(crate) mod output;
@@ -99,7 +101,7 @@ pub(crate) fn start_in_app(
     };
     match WatchService::start(
         config,
-        Box::new(ListenerDictation::new(controls)),
+        Box::new(ListenerDictation::new(controls, listener_ready::current)),
         Box::new(pairing::keychain::KeychainSecretStore::new()),
         desktop,
     ) {

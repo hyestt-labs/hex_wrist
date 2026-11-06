@@ -139,6 +139,12 @@ pub struct DictationHotkey {
     physical_key_downs: VecDeque<(CaptureInstant, u16, HidTiming)>,
     // When the held modifier-only press Hex owns is due its chord breaker.
     chord_break_at: Option<CaptureInstant>,
+    /// When Hex owns the press in flight, for any binding (see
+    /// [`Self::take_owned`]); `chord_break_at` is its modifier-only twin.
+    owned_at: Option<CaptureInstant>,
+    /// The event just processed ended the press at or after its owned moment,
+    /// judged by that event's own timestamp ([`Self::take_owned_at_end`]).
+    owned_at_end: bool,
     modifier_history: ModifierHistory,
     // When each tracked key last went down.
     key_down_at: HashMap<u16, CaptureInstant>,
@@ -187,6 +193,8 @@ impl DictationHotkey {
             function_modifier: (CaptureInstant::ZERO, None),
             physical_key_downs: VecDeque::new(),
             chord_break_at: None,
+            owned_at: None,
+            owned_at_end: false,
             modifier_history: ModifierHistory::reset(CaptureInstant::ZERO),
             key_down_at: HashMap::new(),
             side_down_at: HashMap::new(),
@@ -200,7 +208,6 @@ impl DictationHotkey {
 
     /// Recording hands-free: locked by a double tap, a Toggle release, or
     /// `hex dictation start`.
-    #[cfg(test)]
     pub fn is_locked(&self) -> bool {
         matches!(self.state, State::Locked)
     }
@@ -259,6 +266,7 @@ impl DictationHotkey {
         self.side_down_at.clear();
         self.stale_keys_neutral_since = None;
         self.chord_break_at = None;
+        self.owned_at = None;
         was_recording.then_some(HotkeyAction::Cancel)
     }
 
@@ -274,6 +282,7 @@ impl DictationHotkey {
         self.key_down_at.clear();
         self.stale_keys_neutral_since = None;
         self.chord_break_at = None;
+        self.owned_at = None;
         true
     }
 
@@ -291,6 +300,7 @@ impl DictationHotkey {
         self.state = State::Dirty;
         self.stale_keys_neutral_since = None;
         self.chord_break_at = None;
+        self.owned_at = None;
     }
 
     // Call only after draining input. Polling repairs bookkeeping, never capture boundaries.
@@ -376,6 +386,7 @@ impl DictationHotkey {
             self.state = State::IDLE;
         }
         self.chord_break_at = None;
+        self.owned_at = None;
         self.stale_keys_neutral_since = None;
         self.recovery_ignore_through = Some(sampled_through);
         self.recovery_updated_keys.clear();
@@ -497,6 +508,7 @@ impl DictationHotkey {
 
     pub fn process(&mut self, event: InputEvent, now: CaptureInstant) -> Option<HotkeyAction> {
         let was_locked = matches!(self.state, State::Locked);
+        self.owned_at_end = false;
         let action = self.process_event(event, now);
         self.track_chord_break(event, now, action, was_locked);
         action
@@ -514,10 +526,6 @@ impl DictationHotkey {
         action: Option<HotkeyAction>,
         was_locked: bool,
     ) {
-        if self.binding.key_code.is_some() || self.binding.modifiers.function {
-            self.chord_break_at = None;
-            return;
-        }
         let released = match event {
             InputEvent::Flags(flags) | InputEvent::Key { flags, .. } => {
                 !self.binding.required_modifiers_down(flags)
@@ -525,6 +533,24 @@ impl DictationHotkey {
             InputEvent::TapDisabled => true,
             InputEvent::PhysicalKeyDown { .. } | InputEvent::MouseDown => false,
         };
+        // The moment Hex owns the press, whatever the binding: the hold
+        // threshold, Toggle's grace.
+        match action {
+            Some(HotkeyAction::Start) if matches!(self.state, State::Recording { .. }) => {
+                self.owned_at = Some(if self.toggle {
+                    now + crate::feedback::CHORD_GRACE
+                } else {
+                    now + MINIMUM_HOLD_DURATION
+                });
+            }
+            Some(_) => self.end_press(now),
+            None if released => self.end_press(now),
+            None => {}
+        }
+        if self.binding.key_code.is_some() || self.binding.modifiers.function {
+            self.chord_break_at = None;
+            return;
+        }
         match action {
             Some(HotkeyAction::Start) if matches!(self.state, State::Recording { .. }) => {
                 // Toggle's press is usually a short tap, so it can't wait out
@@ -545,6 +571,21 @@ impl DictationHotkey {
         }
     }
 
+    /// The press ends at `now`. If its owned moment had come by the event's
+    /// own timestamp, Hex owned it: a release queued behind later events in
+    /// one batch still counts, while one stamped earlier never does.
+    fn end_press(&mut self, now: CaptureInstant) {
+        self.owned_at_end = self.owned_at.is_some_and(|due_at| now >= due_at);
+        self.owned_at = None;
+    }
+
+    /// Whether the event just processed ended a press Hex already owned (true
+    /// at most once per event). The caller reports the owned press before it
+    /// handles the action that ended it.
+    pub fn take_owned_at_end(&mut self) -> bool {
+        std::mem::take(&mut self.owned_at_end)
+    }
+
     /// Whether the held press is due its chord breaker at `now`; true at most
     /// once per press.
     pub fn take_chord_break(&mut self, now: CaptureInstant) -> bool {
@@ -555,22 +596,45 @@ impl DictationHotkey {
         due
     }
 
+    /// Whether Hex owns the press now, for any binding: the owned moment came
+    /// ([`Self::take_owned`]) or a double tap or a Toggle release locked it.
+    pub fn owned_now(&mut self, now: CaptureInstant) -> bool {
+        self.take_owned(now) || self.is_locked()
+    }
+
+    /// Whether the owned moment is due at `now`; true at most once per press.
+    pub fn take_owned(&mut self, now: CaptureInstant) -> bool {
+        let due = self.owned_at.is_some_and(|due_at| now >= due_at);
+        if due {
+            self.owned_at = None;
+        }
+        due
+    }
+
+    /// Whether the press in flight is still waiting for its owned moment
+    /// ([`Self::break_chord`]): the hold threshold, Toggle's grace.
+    pub fn owned_pending(&self) -> bool {
+        self.owned_at.is_some()
+    }
+
     /// Posts the chord breaker the held press is due, if exactly its modifiers
     /// are still physically down; any other modifier already breaks the tap.
     /// The posted key carries Hex's marker, so neither shortcut machine sees
-    /// it, and the key tap drops it before the focused app.
-    pub fn break_chord(&mut self, now: CaptureInstant) {
+    /// it, and the key tap drops it before the focused app. Returns whether
+    /// Hex owns the press now: it was due with exactly its modifiers down.
+    pub fn break_chord(&mut self, now: CaptureInstant) -> bool {
         if !self.take_chord_break(now) {
-            return;
+            return false;
         }
         // SAFETY: A read-only query of the documented HID system state.
         let flags = unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) };
         if !self.binding.exact_modifiers(flags) {
-            return;
+            return false;
         }
         if let Err(error) = crate::keyboard::post_chord_breaker(flags) {
             tracing::warn!(shortcut = "dictation", %error, "chord breaker failed");
         }
+        true
     }
 
     fn process_event(&mut self, event: InputEvent, now: CaptureInstant) -> Option<HotkeyAction> {
