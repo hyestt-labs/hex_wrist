@@ -217,11 +217,20 @@ impl Made {
     /// A new, empty TextEdit document, found again by its window id and name.
     fn open_textedit(script: &dyn Script) -> Result<Self, String> {
         let made = script.run(
+            // `make new document` returns a document object that cannot be made into a window reference
+            // (error -1700), so the new window is the one id that was not in the list before.
             r#"tell application "TextEdit"
                 activate
+                set idsBefore to id of every window
                 set d to make new document
-                set w to first window whose document is d
-                return ((id of w) as text) & "|" & (name of d)
+                set idsAfter to id of every window
+                set fresh to {}
+                repeat with i in idsAfter
+                    if idsBefore does not contain (contents of i) then set end of fresh to (contents of i)
+                end repeat
+                if (count of fresh) is not 1 then error "expected exactly one new TextEdit window, saw " & (count of fresh)
+                set wid to item 1 of fresh
+                return (wid as text) & "|" & (name of document of window id wid)
             end tell"#,
         )?;
         let (window, name) = made
@@ -574,6 +583,48 @@ mod owned_cleanup {
             window: 55,
             tty: "/dev/ttys004".into(),
         }
+    }
+
+    /// A script runner that answers every script the same way.
+    struct Canned(Result<String, String>);
+
+    impl Script for Canned {
+        fn run(&self, _script: &str) -> Result<String, String> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn a_failed_open_is_an_error_not_a_made_window() {
+        let error = "TextEdit got an error: Can't make document into type reference. (-1700)";
+        assert!(Made::open_textedit(&Canned(Err(error.into()))).is_err());
+        assert!(Made::open_terminal(&Canned(Err(error.into()))).is_err());
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_window_id_is_not_a_made_window() {
+        for answer in ["", "missing value", "abc|Untitled 1", "|Untitled 1"] {
+            assert!(
+                Made::open_textedit(&Canned(Ok(answer.into()))).is_err(),
+                "{answer:?}"
+            );
+            assert!(
+                Made::open_terminal(&Canned(Ok(answer.into()))).is_err(),
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_id_and_name_are_taken_from_the_answer() {
+        let made = Made::open_textedit(&Canned(Ok("2713|Untitled 23".into()))).unwrap();
+        assert_eq!(
+            made,
+            Made::TextEdit {
+                window: 2713,
+                name: "Untitled 23".into()
+            }
+        );
     }
 
     #[test]

@@ -7,6 +7,8 @@ description: Drive the Wristper Mac app (this Hex fork) end to end on a real Mac
 
 `scripts/verify-watch-e2e.sh --all` is the one command. It builds `Wristper Test.app`, launches it, pairs a watch through `https://relay.wristper.dev`, sends spoken recordings, reads the text back from the window it opened, and prints one PASS/FAIL table. It runs without a human once the one-time permissions are granted. The feature recipes are in [features/README.md](features/README.md).
 
+**Before the first real run, on a Mac with someone at it:** `scripts/verify-watch-e2e.sh --check-textedit` (about 3 seconds). It opens one TextEdit document of its own, checks it by window id and name, focuses it, runs the same front check stage 1 uses, writes and reads back a random string, closes that one document without saving, and compares TextEdit's window ids and document names with the lists from before. It touches nothing else, and it needs only Automation for TextEdit. The first version of the document step used `first window whose document is d`, which TextEdit rejects with error -1700 (a document object cannot be made into a window reference); the new window is now found as the one id that was not in the window list before.
+
 **First real run (screen unlocked, nothing else open in TextEdit):** do not start with `--all`. Run `scripts/verify-watch-e2e.sh --stage 1 --targets textedit --langs en`. It touches one TextEdit window and nothing else. Widen the run only after it passes.
 
 ## The ownership rule

@@ -72,6 +72,9 @@ while [ $# -gt 0 ]; do
     --front-check) mode=front-check; fc_kind=${2:-}; fc_handle=${3:-}; shift 3 ;;
     # Internal: the registered switch-away action (needs this run's registry, found through WATCH_E2E_TMP).
     --switch-away) mode=switch-away; shift ;;
+    # A 30-second smoke test of the TextEdit handling on a real Mac: open one document, check it by id, write, read back,
+    # close that one, and compare the window list with the one from before. Touches nothing else.
+    --check-textedit) mode=check-textedit; shift ;;
     -h|--help) sed -n 2,36p "$0"; echo; usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -500,6 +503,15 @@ tty_proc_is_ours() { # pid tty registered-tty started cmd
     refuse tty-proc "$1" "its start time or command line differs from the registered ones (a reused pid?); not touched"; return 1
   fi
 }
+# act_write KIND HANDLE TEXT: put text into the window this run made (the smoke test; the watch itself pastes).
+act_write() {
+  win_live "$1" "$2" || { refuse window "$(win_key "$1" "$2")" "the live window is not the one this run made ($(win_probe "$1" "$2")); nothing written"; return 1; }
+  case "$1" in
+    textedit) osascript -e "tell application \"TextEdit\" to set text of document of window id ${2%%|*} to \"$3\"" ;;
+    *) return 1 ;;
+  esac
+}
+write_target() { local kind; kind=$(kind_of "$1"); owned window "$(win_key "$kind" "$2")" act_write "$kind" "$2" "$3"; }
 act_close() { # kind handle
   local kind=$1 h=$2 key state pid rest tty found=0 failed=0
   key=$(win_key "$kind" "$h")
@@ -551,10 +563,23 @@ close_target() {
   owned window "$(win_key "$kind" "$2")" act_close "$kind" "$2"
 }
 
-# TextEdit: a new document, found again by its window id.
+# TextEdit: a new document, found again by its window id. `make new document` returns a document object, which
+# cannot be turned into a window reference (the -1700 error a first run hit with `first window whose document is d`),
+# so the new window is the one id that was not in the window list before: a stable id, independent of which
+# window is in front. (`before` and `after` are AppleScript words, hence idsBefore and idsAfter.)
 te_open() {
-  osascript -e 'tell application "TextEdit"' -e 'activate' -e 'set d to make new document' \
-    -e 'set w to first window whose document is d' -e 'return ((id of w) as text) & "|" & (name of d)' -e 'end tell'
+  osascript -e 'tell application "TextEdit"' -e 'activate' \
+    -e 'set idsBefore to id of every window' \
+    -e 'set d to make new document' \
+    -e 'set idsAfter to id of every window' \
+    -e 'set fresh to {}' \
+    -e 'repeat with i in idsAfter' \
+    -e 'if idsBefore does not contain (contents of i) then set end of fresh to (contents of i)' \
+    -e 'end repeat' \
+    -e 'if (count of fresh) is not 1 then error "expected exactly one new TextEdit window, saw " & (count of fresh)' \
+    -e 'set wid to item 1 of fresh' \
+    -e 'return (wid as text) & "|" & (name of document of window id wid)' \
+    -e 'end tell'
 }
 # Terminal: a new window running CMD. The command first writes its own pid, then (usually) exec's the
 # program, so the pid is the program's. Prints "<window id>|<tty>".
@@ -622,7 +647,9 @@ open_target() {
   case "$1" in
     textedit)
       h=$(te_open) || return 1
-      [ -n "$h" ] || return 1
+      # Only a real "<window id>|<document name>" is registered. Anything else (an error text, an empty answer) is
+      # not a made window: nothing is registered and the row is INCOMPLETE.
+      [[ $h =~ ^[0-9]+\|.+$ ]] || { log "TextEdit did not return a window id and document name: '${h:0:120}'"; return 1; }
       reg_add window "textedit:${h%%|*}" "${h#*|}" ;;
     terminal|shell|recorder|claude|codex)
       pf=$(mktemp "$tmp/pid.XXXXXX") || return 1
@@ -1728,6 +1755,59 @@ main() {
 }
 
 # =============================================================================
+# check-textedit: the TextEdit handling, on a real Mac, in about 5 seconds
+# =============================================================================
+check_textedit() {
+  local before_ids= before_names= after_ids after_names h id text back saved ok=1 started leaked
+  started=$(now_ms)
+  init "check-textedit-"
+  step() { printf '  %-4s %s\n' "$1" "$2"; [ "$1" = PASS ] || ok=0; }
+  echo "check-textedit: one TextEdit document of this run's own, nothing else"
+  if app_running TextEdit; then
+    before_ids=$(osascript -e 'tell application "TextEdit" to return id of every window' 2>/dev/null)
+    before_names=$(osascript -e 'tell application "TextEdit" to return name of every document' 2>/dev/null)
+    echo "  (TextEdit is running with $(tr ',' '\n' <<<"$before_ids" | grep -c .) window(s); their ids and names are recorded and must be the same at the end)"
+  else
+    echo "  (TextEdit is not running; the run starts it and leaves it running)"
+  fi
+  row_begin
+  h=$(open_target textedit) || h=
+  if [ -n "$h" ]; then step PASS "opened a new document: window $h"; else step FAIL "could not open a document ($(tail -1 "$out/run.log" 2>/dev/null))"; fi
+  if [ -n "$h" ]; then
+    id=${h%%|*}
+    [ "$(win_probe textedit "$h")" = ours ] && step PASS "the live window $id carries the registered name '${h#*|}'" || step FAIL "the live window is not the registered one"
+    [ "$(reg_get window "textedit:$id")" = "${h#*|}" ] && step PASS "the registry holds window $id and its name" || step FAIL "the registry does not hold the window"
+    # The two checks stage 1 makes just before audio goes out: focus the window by id, then the front check.
+    focus_target textedit "$h" && step PASS "focused window $id by its id" || step FAIL "could not focus window $id"
+    sleep 0.5
+    front_check textedit "$h" && step PASS "the front check says window $id is the one in front (id and name)" || step FAIL "the front check does not see window $id in front"
+    text="e2e-smoke-$RANDOM$RANDOM$RANDOM"   # exists only at run time, so a search cannot match this script's own text
+    write_target textedit "$h" "$text" >/dev/null && step PASS "wrote text into window $id" || step FAIL "could not write into the window"
+    back=$(read_target textedit "$h")
+    [ "$back" = "$text" ] && step PASS "read back the same text" || step FAIL "read back '${back:0:60}', wrote '$text'"
+    saved=$(osascript -e "tell application \"TextEdit\" to return path of document of window id $id" 2>/dev/null)
+    case "$saved" in ''|'missing value') step PASS "the document has no file (path: '${saved:-empty}')" ;; *) step FAIL "the document has a file: $saved" ;; esac
+    close_target textedit "$h"
+    # Asked directly: after the close the registry no longer holds the window, so win_probe would say "other".
+    [ "$(osascript -e "tell application \"TextEdit\" to return exists window id $id" 2>/dev/null)" = false ] \
+      && step PASS "window $id is gone after the close" || step FAIL "window $id is still there"
+    leaked=$(mdfind -onlyin "$HOME" "$text" 2>/dev/null | head -3)
+    [ -z "$leaked" ] && step PASS "no file anywhere under your home contains the test text" || step FAIL "a file contains the test text: $leaked"
+  fi
+  if app_running TextEdit; then
+    after_ids=$(osascript -e 'tell application "TextEdit" to return id of every window' 2>/dev/null)
+    after_names=$(osascript -e 'tell application "TextEdit" to return name of every document' 2>/dev/null)
+    [ "$after_ids" = "$before_ids" ] && step PASS "TextEdit's window ids are exactly the ones from before" || step FAIL "window ids differ: before [$before_ids] after [$after_ids]"
+    [ "$after_names" = "$before_names" ] && step PASS "TextEdit's document names are exactly the ones from before" || step FAIL "document names differ"
+  fi
+  row_refused && step FAIL "the gate refused something: $(tr '\n' ';' < "$tmp/row-refused")" || step PASS "the gate refused nothing"
+  echo "  elapsed $(( ($(now_ms) - started) / 1000 )) s"
+  teardown
+  if [ "$ok" = 1 ]; then echo "check-textedit: PASS"; return 0; fi
+  echo "check-textedit: FAIL"; return 1
+}
+
+# =============================================================================
 # selftest: no GUI, no app, no network
 # =============================================================================
 # `--selftest` runs the real functions above against stand-in `osascript`, `lsappinfo`, and watch-sim
@@ -1750,7 +1830,13 @@ case "$args" in
   *"front window"*)
     read -r w rest < "$STUB_DIR/front"; [ -z "$rest" ] || echo "$rest" > "$STUB_DIR/front"
     [ "$w" = ok ] && echo "101|Untitled 9" || echo "999|Elsewhere"; exit 0 ;;
-  *"make new document"*) echo "101|Untitled 9" ;;
+  *"make new document"*)
+    case "$(cat "$STUB_DIR/te-open" 2>/dev/null)" in
+      error) echo "TextEdit got an error: Can’t make document into type reference. (-1700)" >&2; exit 1 ;;
+      garbage) echo "missing value" ;;
+      empty) : ;;
+      *) echo "101|Untitled 9" ;;
+    esac ;;
   *"tty of selected tab of window id 303"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo "/dev/ttys303" || echo "" ;;
   *"name of document of window id 101"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo "Untitled 9" || echo "" ;;
   *"is running"*) cat "$STUB_DIR/running" ;;
@@ -1799,7 +1885,7 @@ selftest_main() {
   init "selftest-"
   STUB_DIR="$tmp/stub"; mkdir -p "$STUB_DIR"
   export STUB_DIR
-  st_set running true
+  st_set running true; st_set te-open ok
   st_shims
   PATH="$tmp/bin:$PATH"; export PATH
   sim="$tmp/fake-sim"
@@ -1884,6 +1970,17 @@ selftest_main() {
   else
     echo "  (skipped: $real_sim is not built; run the script once without --skip-build)"
   fi
+
+  echo "[2b] TextEdit cannot make the document (the -1700 a first run hit): INCOMPLETE, never PASS, no audio"
+  for mode in error garbage empty; do
+    st_reset; st_set live live; st_set front ok; st_set te-open "$mode"
+    sim_run textedit en
+    st_check "[$mode] sim_run aborted" test -n "$ABORT_NOTE"
+    st_check "[$mode] no audio was sent and watch-sim was not started" bash -c "[ \"$(st_sent)\" = 0 ] && ! grep -q '^deliver' '$STUB_DIR/sim-calls'"
+    FAILS=; finish 9 "te-open-$mode" en 0
+    st_check "[$mode] the recorded row is INCOMPLETE, not PASS" bash -c "jq -e 'select(.target==\"te-open-$mode\" and .result==\"INCOMPLETE\")' '$results' >/dev/null"
+  done
+  st_set te-open ok
 
   echo "[6b] the real watch-sim, dry run (no network): the real order of the real code, and its exit codes"
   if [ ! -x "$real_sim" ] || [ "$root/scripts/watch-sim/main.swift" -nt "$real_sim" ]; then
@@ -2050,6 +2147,7 @@ selftest_main() {
 
 # =============================================================================
 case "$mode" in
+  check-textedit) check_textedit; exit $? ;;
   front-check) front_check "$fc_kind" "$fc_handle"; exit $? ;;
   switch-away) tmp=${WATCH_E2E_TMP:-}; out=${WATCH_E2E_OUT:-}; [ -f "$tmp/registry.tsv" ] || exit 1
                owned switch finder act_switch_away; exit $? ;;
