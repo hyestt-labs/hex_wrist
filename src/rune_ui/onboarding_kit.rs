@@ -46,6 +46,7 @@ mod sparks;
 mod stories;
 mod typing;
 mod versus;
+mod watch;
 mod words;
 
 pub(crate) use game::add as game;

@@ -16,6 +16,12 @@ run `HEX_UPDATE_GOLDENS=1 cargo test --locked --bin hex rune_ui`
 on Linux (the golden tests only run there; from a Mac, dispatch
 `check-linux.yml` on the branch and take its `golden-actual` artifact),
 look at every changed image, and commit them with the change.
+A UI PR must also run the strict check and paste its table in the PR:
+`gh workflow run golden-strict.yml --ref <branch> -f ref=<branch>`
+(`scripts/golden-diff.py`). The golden tests tolerate 0.2% of pixels past a
+channel difference of 12 and skip without a GPU; the strict check fails a
+scene for any single pixel past 12 and fails when a render is missing. Look at
+and regenerate every scene it marks over tolerance.
 
 `dev` is canonical and contains the Rune front end on every OS; GPUI is
 removed. The `rune-ui` integration branch is merged and kept only for history:
@@ -663,6 +669,22 @@ substitute for source inspection or a second roadmap.
   the gate, ⌘V through `paste::Paster::paste_deferred`, the read-back, and
   the restore it times), and `status` with `rune_ui::watch_status` (the click-through status
   capsule, pushed from the `watch` thread, never polled).
+  Unit C adds `view` (the relay state, Mac name, and paired watches, pushed
+  to the window as `WatchSnapshot`s like the capsule, never polled), `Message::Revoke`
+  (Settings' Remove: `PairedDevices::revoke` writes the list first and
+  forgets the watch and its Keychain item only once it is written; a list it
+  cannot write changes nothing and the error shows under the watch's row;
+  the window keeps each failed Remove's error by watch id, so a reply
+  touches only its own watch), `WatchSnapshot::admissions` (which
+  `/pairing/request` spent which claim's approval, by the claim's number, so
+  the window settles only the claim it sent; a Remove carries a number too,
+  so an older answer never undoes a newer one),
+  `settings` (the `watch.*` settings,
+  applied live: `status_capsule`, `capsule_follows_pointer`,
+  `keep_on_clipboard`, and the extra `terminal_apps`; paste takes `keep` from
+  its caller: Labs' switch for a Mac dictation, either for a watch
+  recording), and `rune_ui::watch_pane` (the Apple Watch pane, its pairing
+  state machine, and the first run's Apple Watch page).
 
 Keep modules deep. Callers should not coordinate
 CoreAudio formats, AppleScript details, or event serialization.
@@ -896,15 +918,22 @@ CoreAudio formats, AppleScript details, or event serialization.
   (resumed at its saved step), or an upgrader from 2.3.1 or earlier whose
   setup isn't ready (#475). Run setup again (Labs) and `hex onboarding reset`
   replay it from the start on every build. Start using Hex records completion
-  only once setup is ready. A quiet Skip shows only on the optional pages,
+  only once setup is ready. Setup is ready when Accessibility and the model are,
+  and the Microphone is granted or a watch is paired (not needing repair). With
+  a paired watch and no Microphone, the permissions page asks only for
+  Accessibility and the practice is passed over. On macOS the Apple Watch page
+  follows the model step: Pair later or Continue moves on, it has no Skip, and
+  it never records completion. A quiet Skip shows only on the optional pages,
   the demo and the practice: it passes over that part to the next step setup
   still needs (permissions, then the model), else Hex is ready, and never
   records completion. Permissions, the model step and download, and the paste
   permission have no Skip. The one way past a model that can't be had (#894)
   is Continue without a model, shown on the download step only once every
   permission is ready and the download failed or stalled (30 s without
-  bytes); it records completion, and Settings › General then says no model
-  is installed, with Download and Add model file….
+  bytes); it records completion (a watch-only setup too: a paired watch
+  and no Microphone), and Settings › General then says no model is
+  installed, with Download and Add model file…. A watch recording then gets
+  the listener's "no speech model" refusal at once, not after the 50 s wait.
 - Onboarding shows its model step only when the scan found a compatible
   model; otherwise Setting up Hex is unchanged and the recommended model
   downloads by itself. The step is one card of radio rows with no buttons or

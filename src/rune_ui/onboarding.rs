@@ -123,6 +123,7 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
     }
     let (installed, model) = progress(ui);
     let status = ui.platform.setup_status(installed);
+    let paired = super::watch_pane::paired(ui);
     let accessibility_stale = ui
         .platform
         .stale(crate::desktop::onboarding::PermissionKind::Accessibility);
@@ -143,7 +144,7 @@ pub(super) fn poll(ui: &mut Ui) -> bool {
             effect = tour.flow.on(Input::Continue);
         }
     }
-    if status.ready() && !tour.completed {
+    if status.ready_with_watch(paired) && !tour.completed {
         tour.completed = true;
         if live && let Err(error) = crate::desktop::onboarding::record_completion() {
             tracing::warn!(%error, "could not record onboarding completion");

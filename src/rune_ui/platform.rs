@@ -345,6 +345,11 @@ pub(super) struct PlatformState {
     /// it.
     #[cfg(hex_capture)]
     pub(super) scrawl: Option<ScrawlView>,
+    /// The Apple Watch service's newest snapshot (`watch::view`), pushed by
+    /// the host; `None` while the service has sent none.
+    pub(super) watch: Option<crate::watch::service::WatchSnapshot>,
+    /// What the host reports of pairing and Remove, until the pane takes it.
+    pub(super) watch_events: Vec<super::watch_pane::WatchEvent>,
 }
 
 /// The indicator state HUD Lab demonstrates.
@@ -405,6 +410,8 @@ impl PlatformState {
             activity_log: None,
             #[cfg(hex_capture)]
             scrawl: None,
+            watch: None,
+            watch_events: Vec::new(),
         }
     }
 
@@ -607,6 +614,20 @@ pub(super) enum PlatformRequest {
     SaveDotScope(crate::rune_hud::dot_scope::Tuning),
     #[cfg(hex_capture)]
     Scrawl(ScrawlRequest),
+    /// Claim this six-digit pairing code through the relay (macOS); the
+    /// answer comes back as `WatchEvent::Claimed` with the same `generation`.
+    WatchPair {
+        code: String,
+        generation: u64,
+    },
+    /// Remove the paired watch `id`, named `name` in the error if it fails
+    /// (macOS); the answer comes back as `WatchEvent::Revoked` with the same
+    /// `seq`.
+    WatchRevoke {
+        id: String,
+        name: String,
+        seq: u64,
+    },
 }
 
 /// Performs a Voice Filter request on the Hex Microphone in this process.

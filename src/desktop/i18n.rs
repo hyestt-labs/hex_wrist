@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicU8, Ordering};
 
+mod apple_watch;
 mod french;
 mod locale;
 mod portuguese;
@@ -298,7 +299,12 @@ pub(crate) fn tr_named(template: &str, values: &[(&str, &str)]) -> String {
 
 /// A compact, translated age label for an event timestamp.
 pub(crate) fn event_age(timestamp_ms: u64) -> String {
-    let seconds = crate::history::now_ms().saturating_sub(timestamp_ms) / 1_000;
+    event_age_at(timestamp_ms, crate::history::now_ms())
+}
+
+/// The same label as of `now_ms`, for a view that holds its own clock.
+pub(crate) fn event_age_at(timestamp_ms: u64, now_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(timestamp_ms) / 1_000;
     let (template, value) = match seconds {
         0..=59 => ("{}s ago", seconds),
         60..=3_599 => ("{}m ago", seconds / 60),
@@ -315,6 +321,7 @@ fn tables() -> &'static [HashMap<&'static str, &'static str>; 6] {
             TRANSLATIONS
                 .iter()
                 .map(|(english, translated)| (*english, translated[column]))
+                .chain(apple_watch::column(column))
                 .collect()
         })
     })
@@ -1640,6 +1647,7 @@ mod tests {
         include_str!("../rune_ui/onboarding_kit/pill.rs"),
         include_str!("../rune_ui/onboarding_kit/stories.rs"),
         include_str!("../rune_ui/onboarding_kit/versus.rs"),
+        include_str!("../rune_ui/onboarding_kit/watch.rs"),
         include_str!("../rune_ui/output.rs"),
         include_str!("../rune_ui/screenshot_thumbnail.rs"),
         include_str!("../screenshots.rs"),
@@ -1648,6 +1656,8 @@ mod tests {
         include_str!("../rune_ui/picker/facts.rs"),
         include_str!("../rune_ui/picker/list.rs"),
         include_str!("../rune_ui/platform_settings.rs"),
+        include_str!("../rune_ui/watch_pane.rs"),
+        include_str!("../rune_ui/watch_pane/pairing.rs"),
         #[cfg(hex_capture)]
         include_str!("../rune_ui/scrawl.rs"),
         #[cfg(hex_capture)]
@@ -1717,7 +1727,15 @@ mod tests {
 
     #[test]
     fn every_translated_string_has_every_language() {
-        let table: std::collections::HashMap<_, _> = TRANSLATIONS.iter().copied().collect();
+        let table: std::collections::HashMap<&str, &[&str]> = TRANSLATIONS
+            .iter()
+            .map(|(english, translated)| (*english, translated.as_slice()))
+            .chain(
+                super::apple_watch::TRANSLATIONS
+                    .iter()
+                    .map(|(english, translated)| (*english, translated.as_slice())),
+            )
+            .collect();
         let mut checked = 0;
         for source in SOURCES {
             for literal in translated_literals(source) {

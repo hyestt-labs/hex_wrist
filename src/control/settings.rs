@@ -221,6 +221,26 @@ const KEYS: &[Key] = &[
          turns it off",
     ),
     key(
+        "watch.status_capsule",
+        Kind::Bool,
+        "Show the status capsule while an Apple Watch dictation records, transcribes, and pastes (macOS)",
+    ),
+    key(
+        "watch.capsule_follows_pointer",
+        Kind::Bool,
+        "Show the Apple Watch status capsule on the screen the pointer is on, not the main one (macOS)",
+    ),
+    key(
+        "watch.keep_on_clipboard",
+        Kind::Bool,
+        "Leave an Apple Watch dictation on the clipboard after it pastes (macOS)",
+    ),
+    key(
+        "watch.terminal_apps",
+        Kind::Json,
+        "Bundle ids of extra terminal apps, as a JSON array of at most 32 text entries: a watch paste there is final, since its text can't be read back (macOS)",
+    ),
+    key(
         "screenshots.hotkey",
         Kind::Shortcut(HotkeySlot::Screenshot),
         "Labs: the screenshot shortcut, command+shift+4 by default: drag an area, or \
@@ -710,6 +730,7 @@ const NEEDS: &[(&str, &str)] = &[
     ("keyboard_model_switching.", "keyboard_model_switching"),
     ("enable_on_launch", "listener_control"),
     ("share_dictation_shortcut", "share_shortcut"),
+    ("watch.", "watch"),
 ];
 
 /// The capability `key` needs, if any.
@@ -1581,6 +1602,70 @@ mod tests {
         let change = apply(&AppSettings::default(), "ui_language", "zh", &rules()).unwrap();
         let shown = get(&change.settings, "ui_language").unwrap();
         assert_eq!(shown[0].value, Value::String("zh".into()));
+    }
+
+    #[test]
+    fn watch_keys_set_their_own_field_and_nothing_else() {
+        let defaults = AppSettings::default();
+        let set = |key: &str, raw: &str| apply(&defaults, key, raw, &rules()).unwrap().settings;
+        let changed = set("watch.status_capsule", "false").watch;
+        assert_eq!(
+            changed,
+            crate::app_settings::WatchSettings {
+                status_capsule: false,
+                ..Default::default()
+            }
+        );
+        let changed = set("watch.capsule_follows_pointer", "true").watch;
+        assert_eq!(
+            changed,
+            crate::app_settings::WatchSettings {
+                capsule_follows_pointer: true,
+                ..Default::default()
+            }
+        );
+        let changed = set("watch.keep_on_clipboard", "true").watch;
+        assert_eq!(
+            changed,
+            crate::app_settings::WatchSettings {
+                keep_on_clipboard: true,
+                ..Default::default()
+            }
+        );
+        let changed = set("watch.terminal_apps", r#"["com.example.term"]"#).watch;
+        assert_eq!(changed.terminal_apps, ["com.example.term"]);
+        assert_eq!(
+            get(
+                &AppSettings {
+                    watch: changed,
+                    ..defaults
+                },
+                "watch.terminal_apps"
+            )
+            .unwrap()[0]
+                .value,
+            serde_json::json!(["com.example.term"])
+        );
+    }
+
+    #[test]
+    fn terminal_apps_refuses_bad_lists_with_a_reason() {
+        let defaults = AppSettings::default();
+        let too_many = serde_json::to_string(&vec!["a.b"; 33]).unwrap();
+        let too_long = serde_json::to_string(&[&"x".repeat(256)]).unwrap();
+        for bad in [
+            r#"[""]"#,
+            r#"["ok.app", " "]"#,
+            r#"[1]"#,
+            r#""com.x""#,
+            too_many.as_str(),
+            too_long.as_str(),
+        ] {
+            let error = apply(&defaults, "watch.terminal_apps", bad, &rules())
+                .err()
+                .unwrap_or_else(|| panic!("{bad} was accepted"));
+            assert_eq!(error.code, "invalid-value", "{bad}");
+        }
     }
 
     #[test]

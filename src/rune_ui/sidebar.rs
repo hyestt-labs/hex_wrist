@@ -38,6 +38,11 @@ pub(super) static VOICE_FILTER_ICON: Icon = Icon {
     view: 24.0,
     body: include_str!("../../assets/icons/voice-filter.svg"),
 };
+static WATCH_ICON: Icon = Icon {
+    name: "hex-watch",
+    view: 24.0,
+    body: include_str!("../../assets/icons/watch.svg"),
+};
 static MEETINGS_ICON: Icon = Icon {
     name: "hex-meetings",
     view: 24.0,
@@ -60,6 +65,8 @@ pub(super) enum Pane {
     /// What Hex does to every dictation and in some apps, read-only: the
     /// person's agent edits it.
     Output,
+    /// Apple Watch: pairing, paired watches, and the capsule (macOS).
+    Watch,
     /// The old per-app editor, kept for its scenes until it is removed.
     Modes,
     /// Recorded calls and their settings, or the opt-in (macOS beta).
@@ -83,6 +90,7 @@ impl Pane {
     #[cfg(all(test, target_os = "linux"))]
     pub(super) const ALL: &[Pane] = &[
         Pane::General,
+        Pane::Watch,
         Pane::Output,
         Pane::Modes,
         Pane::Meetings,
@@ -98,6 +106,7 @@ impl Pane {
         let caps = ui.platform.caps;
         match self {
             Pane::Modes | Pane::HudLab | Pane::Activity => false,
+            Pane::Watch => caps.watch,
             Pane::Meetings => caps.meetings && meetings::available(ui),
             // On from Labs, or kept by a driver apps already use.
             Pane::VoiceFilter => caps.fun && fun::running(ui),
@@ -111,6 +120,7 @@ impl Pane {
         match self {
             Pane::General => tr("General"),
             Pane::Output => tr("Output"),
+            Pane::Watch => tr("Apple Watch"),
             Pane::Modes => tr("Modes"),
             Pane::History => tr("History"),
             Pane::Meetings => tr("Meetings"),
@@ -126,6 +136,7 @@ impl Pane {
         match self {
             Pane::General => "nav-general",
             Pane::Output => "nav-output",
+            Pane::Watch => "nav-watch",
             Pane::Modes => "nav-modes",
             Pane::History => "nav-history",
             Pane::Meetings => "nav-meetings",
@@ -141,6 +152,7 @@ impl Pane {
         match self {
             Pane::General => &SETTINGS_ICON,
             Pane::Output => &OUTPUT_ICON,
+            Pane::Watch => &WATCH_ICON,
             Pane::Modes => &MODES_ICON,
             Pane::History => &HISTORY_ICON,
             Pane::Meetings => &MEETINGS_ICON,

@@ -45,6 +45,7 @@ fn apply(overlay: &OverlayHandle<State>, capsule: Option<Capsule>) {
     let handle = overlay.clone();
     match capsule {
         Some(capsule) => overlay.update(move |state, tx| {
+            place(&handle);
             state.capsule = Some(capsule);
             state.chinese =
                 crate::watch::status::prefers_chinese(&crate::watch::screen::preferred_languages());
@@ -58,6 +59,38 @@ fn apply(overlay: &OverlayHandle<State>, capsule: Option<Capsule>) {
         }),
     }
 }
+
+/// Puts the capsule on the screen the pointer is on, or back at the bottom
+/// of the main one, as the setting says. Read as each capsule shows.
+#[cfg(target_os = "macos")]
+fn place(overlay: &OverlayHandle<State>) {
+    use rune::{DisplayTarget, OverlayPlacement};
+    let pointer = crate::watch::settings::capsule_follows_pointer()
+        .then(|| objc2::MainThreadMarker::new().and_then(crate::rune_hud::pointer_screen))
+        .flatten();
+    let Some((screen, primary_top)) = pointer else {
+        overlay.set_placement(None);
+        overlay.place(ScreenEdge::Bottom, MARGIN);
+        return;
+    };
+    let size = (f64::from(SIZE.0), f64::from(SIZE.1));
+    let (x, y) = crate::rune_hud::hud_placement::bottom_center(
+        &screen,
+        size,
+        f64::from(MARGIN),
+        primary_top,
+    );
+    overlay.set_display(DisplayTarget::Primary);
+    overlay.set_placement(Some(OverlayPlacement::Rect {
+        x,
+        y,
+        width: SIZE.0,
+        height: SIZE.1,
+    }));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn place(_: &OverlayHandle<State>) {}
 
 fn view(state: &State, cx: &mut Cx<State>) -> El {
     let root = row()

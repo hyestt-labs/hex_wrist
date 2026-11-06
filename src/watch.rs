@@ -11,6 +11,7 @@
 //! - `output`: gate, paste, read-back, and clipboard restore for a recording's text.
 //! - `desktop`: the focused field and the keys, behind `Screen` and one `watch-ax` thread.
 //! - `service`: the one `watch` thread that owns the state and answers requests.
+//! - `settings`: the saved watch choices as the service reads them live.
 //! - `listener_ready`: whether the listener can take a recording yet (Accessibility, model).
 //! - `frame`: the relay's request/response frames and the body assembler.
 //! - `e2ee`: P-256 ECDH + HKDF pairing keys and the AES-256-GCM envelopes.
@@ -19,6 +20,7 @@
 //! - `recording`: a recording's state machine and the `/status` projection.
 //! - `refusal`: every error body the watch reads.
 //! - `suspect`: Wristper's silence-hallucination and script rules.
+//! - `view`: the relay, Mac name, and paired watches, pushed to the Settings window.
 
 #![allow(dead_code)]
 
@@ -40,8 +42,10 @@ pub(crate) mod relay;
 #[cfg(target_os = "macos")]
 pub(crate) mod screen;
 pub(crate) mod service;
+pub(crate) mod settings;
 pub(crate) mod status;
 pub(crate) mod suspect;
+pub(crate) mod view;
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -152,7 +156,7 @@ pub(crate) fn pair(code: &str) -> crate::control::ControlReply {
             service::ClaimError::Unavailable.message(),
         );
     };
-    match service.claim(code.trim()) {
+    match service.claim(code.trim(), pairing::requests::NO_CLAIM) {
         Ok(claimed) => ControlReply::done(format!(
             "Claimed the code for {} ({}); the watch finishes pairing by itself within 2 minutes",
             claimed.device_name, claimed.device_id

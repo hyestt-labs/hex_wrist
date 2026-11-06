@@ -106,6 +106,25 @@ const PATHS: &[(&str, &str)] = &[
     ),
     ("mac-local-build", "Window/General/Updates/Local build"),
     ("mac-test-build", "Window/General/Updates/Test build"),
+    ("mac-watch", "Window/Apple Watch/Settings"),
+    ("mac-watch-empty", "Window/Apple Watch/No watches"),
+    ("mac-watch-offline", "Window/Apple Watch/Offline"),
+    ("mac-watch-pairing", "Window/Apple Watch/Pairing"),
+    (
+        "mac-watch-waiting",
+        "Window/Apple Watch/Waiting for the watch",
+    ),
+    ("mac-watch-paired", "Window/Apple Watch/Paired"),
+    ("mac-watch-error", "Window/Apple Watch/Code not found"),
+    ("mac-watch-remove", "Window/Apple Watch/Remove · confirm"),
+    (
+        "mac-watch-revoke-error",
+        "Window/Apple Watch/Remove · couldn't write",
+    ),
+    (
+        "mac-watch-unavailable",
+        "Window/Apple Watch/Service not running",
+    ),
     ("picker", "Window/Transcription model/Picker"),
     (
         "picker-downloading",
@@ -218,6 +237,15 @@ const PATHS: &[(&str, &str)] = &[
     ("mac-production", "Window/General/Production build"),
     ("mac-activity", "Window/Activity/Activity"),
     ("mac-onboarding", "Window/Onboarding/Setting up Hex"),
+    ("mac-onboarding-watch", "Window/Onboarding/Apple Watch"),
+    (
+        "mac-onboarding-watch-paired",
+        "Window/Onboarding/Apple Watch · paired",
+    ),
+    (
+        "mac-onboarding-permissions-watch",
+        "Window/Onboarding/Permissions · watch only",
+    ),
     (
         "mac-onboarding-permissions",
         "Window/Onboarding/Permissions",

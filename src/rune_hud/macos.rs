@@ -20,7 +20,7 @@ const STATUS_LEVEL: isize = 25;
 /// The screen under the pointer (else the main one) as `hud_placement`
 /// reads it, and the primary screen's top, which Rune's global space hangs
 /// from.
-fn pointer_screen(mtm: MainThreadMarker) -> Option<(hud_placement::Screen, f64)> {
+pub(crate) fn pointer_screen(mtm: MainThreadMarker) -> Option<(hud_placement::Screen, f64)> {
     let pointer = NSEvent::mouseLocation();
     let screens = NSScreen::screens(mtm);
     let primary = screens.iter().next()?;

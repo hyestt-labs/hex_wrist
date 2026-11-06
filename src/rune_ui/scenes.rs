@@ -412,6 +412,36 @@ pub(super) const SCENES: &[Scene] = &[
             held,
         };
     }),
+    ("mac-watch", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Connected)
+    }),
+    ("mac-watch-empty", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Empty)
+    }),
+    ("mac-watch-offline", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Offline)
+    }),
+    ("mac-watch-pairing", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Pairing)
+    }),
+    ("mac-watch-waiting", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Waiting)
+    }),
+    ("mac-watch-paired", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Paired)
+    }),
+    ("mac-watch-error", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Error)
+    }),
+    ("mac-watch-remove", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Remove)
+    }),
+    ("mac-watch-revoke-error", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::RevokeError)
+    }),
+    ("mac-watch-unavailable", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Unavailable)
+    }),
     ("mac-settings-permissions", |ui| {
         platform_settings::mac_permissions_fixture(ui, false)
     }),
@@ -685,6 +715,17 @@ pub(super) const SCENES: &[Scene] = &[
     // practice game, and Hex is ready.
     ("mac-onboarding", |ui| {
         mac_first_run(ui, onboarding::MacStep::Setup, Page::Download)
+    }),
+    // Apple Watch pairing after the model step, and a watch-only
+    // permissions page that asks for Accessibility alone.
+    ("mac-onboarding-watch", |ui| {
+        watch_pane::first_run(ui, false, Page::Watch)
+    }),
+    ("mac-onboarding-watch-paired", |ui| {
+        watch_pane::first_run(ui, true, Page::Watch)
+    }),
+    ("mac-onboarding-permissions-watch", |ui| {
+        watch_pane::first_run(ui, true, Page::Permissions)
     }),
     ("mac-onboarding-permissions", |ui| {
         mac_first_run(ui, onboarding::MacStep::Setup, Page::Permissions)

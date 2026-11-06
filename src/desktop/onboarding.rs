@@ -83,16 +83,19 @@ impl SetupStatus {
 
     /// Setup is done: the listener can start and the microphone is granted
     /// or a watch is paired and will do the dictating.
-    #[cfg_attr(not(test), allow(dead_code))] // fed by the Apple Watch page and the tour (unit C2)
     pub fn ready_with_watch(self, paired: bool) -> bool {
         self.listener_ready() && (self.microphone == PermissionState::Ready || paired)
     }
 }
 
-pub fn permission_warnings(status: SetupStatus) -> Vec<PermissionWarning> {
+/// What Settings lists as missing. A paired watch (`paired`) dictates
+/// without the Mac's microphone, which is asked at the first Mac dictation,
+/// so it isn't listed.
+pub fn permission_warnings(status: SetupStatus, paired: bool) -> Vec<PermissionWarning> {
     let mut warnings = Vec::with_capacity(2);
     match status.microphone {
         PermissionState::Ready => {}
+        _ if paired => {}
         PermissionState::NeedsRequest => warnings.push(PermissionWarning {
             kind: PermissionKind::Microphone,
             action: PermissionAction::RequestMicrophone,
@@ -1278,16 +1281,19 @@ mod tests {
 
     #[test]
     fn healthy_permissions_have_no_warning_projection() {
-        assert!(permission_warnings(ready_status()).is_empty());
+        assert!(permission_warnings(ready_status(), false).is_empty());
     }
 
     #[test]
     fn warning_projection_preserves_permission_order_and_actions() {
-        let warnings = permission_warnings(SetupStatus {
-            microphone: PermissionState::NeedsRequest,
-            accessibility: PermissionState::NeedsSettings,
-            ..ready_status()
-        });
+        let warnings = permission_warnings(
+            SetupStatus {
+                microphone: PermissionState::NeedsRequest,
+                accessibility: PermissionState::NeedsSettings,
+                ..ready_status()
+            },
+            false,
+        );
         assert_eq!(
             warnings,
             [
@@ -1304,11 +1310,35 @@ mod tests {
     }
 
     #[test]
-    fn denied_microphone_maps_to_settings_in_warning_projection() {
-        let warning = permission_warnings(SetupStatus {
-            microphone: PermissionState::NeedsSettings,
+    fn a_paired_watch_leaves_the_microphone_out_of_the_warnings() {
+        let status = SetupStatus {
+            microphone: PermissionState::NeedsRequest,
+            accessibility: PermissionState::NeedsSettings,
             ..ready_status()
-        });
+        };
+        let kinds = |paired| {
+            permission_warnings(status, paired)
+                .iter()
+                .map(|warning| warning.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            kinds(false),
+            [PermissionKind::Microphone, PermissionKind::Accessibility]
+        );
+        // Accessibility is still asked for: a watch's text can't paste without it.
+        assert_eq!(kinds(true), [PermissionKind::Accessibility]);
+    }
+
+    #[test]
+    fn denied_microphone_maps_to_settings_in_warning_projection() {
+        let warning = permission_warnings(
+            SetupStatus {
+                microphone: PermissionState::NeedsSettings,
+                ..ready_status()
+            },
+            false,
+        );
         assert_eq!(
             warning[0].action,
             PermissionAction::ShowGuide(PermissionKind::Microphone)
@@ -2144,7 +2174,7 @@ mod tests {
         };
         assert!(!waiting.ready(), "the listener waits for the restart");
         assert_eq!(
-            permission_warnings(waiting),
+            permission_warnings(waiting, false),
             [PermissionWarning {
                 kind: PermissionKind::Accessibility,
                 action: PermissionAction::Restart,

@@ -347,7 +347,7 @@ fn a_watch_pairs_records_and_reads_its_status_through_the_relay() {
     // (a) `hex watch pair 217400`.
     let claimer = {
         let service = service.clone();
-        std::thread::spawn(move || service.claim("217400"))
+        std::thread::spawn(move || service.claim("217400", 7))
     };
     let claim: Value = serde_json::from_str(&relay.next_text()).unwrap();
     assert_eq!(

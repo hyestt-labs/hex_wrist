@@ -544,6 +544,7 @@ struct MacHost {
     resetting: [bool; 3],
     reset_tx: mpsc::Sender<PermissionKind>,
     reset_rx: Receiver<PermissionKind>,
+    watch: super::watch_pane::host::WatchFeed,
     #[cfg(hex_capture)]
     scrawl: ScrawlHost,
 }
@@ -555,6 +556,7 @@ impl MacHost {
             .ok();
         let (reset_tx, reset_rx) = mpsc::channel();
         let mut host = Self {
+            watch: super::watch_pane::host::WatchFeed::new(wake.clone()),
             wake,
             login,
             login_checking: false,
@@ -758,6 +760,9 @@ impl NativeHost for MacHost {
             }
             #[cfg(hex_capture)]
             PlatformRequest::Scrawl(request) => self.scrawl.send(request),
+            PlatformRequest::WatchPair { .. } | PlatformRequest::WatchRevoke { .. } => {
+                self.watch.send(&request);
+            }
         }
         // Show the result of an action at once, not on the next refresh.
         self.refresh_at = Instant::now();
@@ -765,7 +770,7 @@ impl NativeHost for MacHost {
     }
 
     fn poll(&mut self, state: &mut PlatformState) -> bool {
-        let mut changed = false;
+        let mut changed = self.watch.poll(state);
         while let Ok(kind) = self.reset_rx.try_recv() {
             self.finish_permission_reset(kind);
             state.clear_stale(kind);

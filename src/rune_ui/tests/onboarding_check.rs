@@ -15,6 +15,11 @@ pub(super) const SCENES: &[&str] = &[
     // A fresh install: setting up Hex, the recommended model downloading.
     "onboarding",
     "mac-onboarding",
+    // Apple Watch pairing after the model step; with a watch paired; and the
+    // watch-only permissions page, which asks for Accessibility alone.
+    "mac-onboarding-watch",
+    "mac-onboarding-watch-paired",
+    "mac-onboarding-permissions-watch",
     // The download stopped; Continue without a model, then Settings.
     "onboarding-download-failed",
     "onboarding-no-model",
