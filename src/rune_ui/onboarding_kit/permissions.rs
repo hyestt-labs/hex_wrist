@@ -155,27 +155,33 @@ fn live_page(p: Paint, live: &Live, motion: Motion) -> El {
         ItemStatus::Denied => tr("Switch on Hex in System Settings"),
         _ => tr("Hears you only while you hold the shortcut"),
     };
+    // A paired watch dictates without the Mac's microphone: it is asked at
+    // the first Mac dictation, so this page asks for Accessibility only.
+    let deferred = live.microphone_deferred();
+    let mic_ready = mic_ready || deferred;
     let mut card = col()
         .key("setup-card")
         .w(COL_W)
         .radius(k.radius.lg)
         .fill(k.c.bg_base)
         .border(p.hair, k.c.border_weak)
-        .child(perm_row(
-            p,
-            "mic-row",
-            &glyphs::MIC,
-            tr("Microphone"),
-            mic_desc,
-            live_pill(
+        .children((!deferred).then(|| {
+            perm_row(
                 p,
-                "mic-pill",
-                live,
-                live.microphone,
-                true,
-                SetupItem::Microphone,
-            ),
-        ));
+                "mic-row",
+                &glyphs::MIC,
+                tr("Microphone"),
+                mic_desc,
+                live_pill(
+                    p,
+                    "mic-pill",
+                    live,
+                    live.microphone,
+                    true,
+                    SetupItem::Microphone,
+                ),
+            )
+        }));
     if live.accessibility_row {
         let ax_desc = match live.accessibility {
             ItemStatus::Stale => tr("An older Hex entry can keep this off"),
@@ -183,21 +189,23 @@ fn live_page(p: Paint, live: &Live, motion: Motion) -> El {
             ItemStatus::Restart => tr("Turns on when Hex restarts"),
             _ => tr("Notices the shortcut and pastes your words in any app"),
         };
-        card = card.child(separator(p, "sep0")).child(perm_row(
-            p,
-            "ax-row",
-            &glyphs::CURSOR_TEXT,
-            super::super::platform_settings::accessibility_name(live.accessibility_renamed),
-            ax_desc,
-            live_pill(
+        card = card
+            .children((!deferred).then(|| separator(p, "sep0")))
+            .child(perm_row(
                 p,
-                "ax-pill",
-                live,
-                live.accessibility,
-                mic_ready,
-                SetupItem::Accessibility,
-            ),
-        ));
+                "ax-row",
+                &glyphs::CURSOR_TEXT,
+                super::super::platform_settings::accessibility_name(live.accessibility_renamed),
+                ax_desc,
+                live_pill(
+                    p,
+                    "ax-pill",
+                    live,
+                    live.accessibility,
+                    mic_ready,
+                    SetupItem::Accessibility,
+                ),
+            ));
     }
     let action = if live.restart {
         Button::new(tr("Restart Hex"))
@@ -214,6 +222,11 @@ fn live_page(p: Paint, live: &Live, motion: Motion) -> El {
         (
             tr("Let Hex hear you"),
             tr("Windows has the microphone turned off for desktop apps."),
+        )
+    } else if deferred {
+        (
+            tr("Let Hex type for you"),
+            tr("Pastes what you dictate on your watch into the app you're using"),
         )
     } else {
         (

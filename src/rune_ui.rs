@@ -64,6 +64,7 @@ mod spark;
 #[cfg(target_os = "macos")]
 pub(crate) mod story_link;
 mod vocabulary;
+mod watch_pane;
 #[cfg(target_os = "macos")]
 pub(crate) mod watch_status;
 
@@ -713,6 +714,7 @@ pub(crate) struct Ui {
     meetings: meetings::MeetingsPane,
     fun: fun::FunPane,
     activity: activity::ActivityPane,
+    watch: watch_pane::WatchView,
     /// HUD Lab's preset was copied since it last changed.
     hud_copied: bool,
     /// HUD Lab saved Dot scope's tuning, until the next change.
@@ -823,6 +825,7 @@ impl Ui {
             meetings: meetings::MeetingsPane::default(),
             fun: fun::FunPane::default(),
             activity: activity::ActivityPane::default(),
+            watch: Default::default(),
             hud_copied: false,
             hud_saved: false,
             saved: 0,
@@ -1353,6 +1356,7 @@ fn poll(ui: &mut Ui, clock: f64, tx: &mut Tx) -> bool {
         ui.preparing = preparing.map(|model| (model, now));
         changed = true;
     }
+    changed |= watch_pane::poll(ui);
     changed |= onboarding::poll(ui);
     changed |= onboarding_kit::live::poll(ui, tx);
     changed |= general::poll_level(ui, clock, tx);
@@ -1377,6 +1381,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         _ if ui.labs_open => (vec![labs::tabs(ui, p)], labs::page(ui, p)),
         Pane::General => (Vec::new(), general::pane(ui, p, &mut layer)),
         Pane::Output => (Vec::new(), output::pane(ui, p, cx.is_reduced_motion())),
+        Pane::Watch => (Vec::new(), watch_pane::pane(ui, p)),
         Pane::Modes => modes::pane(ui, p, &mut layer),
         Pane::History => history::pane(ui, p, &mut layer),
         Pane::Meetings => meetings::pane(ui, p, &mut layer),

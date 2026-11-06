@@ -20,6 +20,7 @@ use crate::watch::desktop::fake::FakeScreen;
 use crate::watch::e2ee::{self, Aad, AudioHead, SharedKey};
 use crate::watch::frame::{Inbound, RequestHead};
 use crate::watch::pairing::MemorySecretStore;
+use crate::watch::pairing::requests::NO_CLAIM;
 use crate::watch::recording::{DUPLICATE_AUDIO_WAIT_SECONDS, Verification};
 use crate::watch::relay::{NotConnected, RelayEvent, RelayState};
 use crate::watch::suspect::SuspectReason;
@@ -28,11 +29,12 @@ use crate::watch::{DEVICE_HEADER, NONCE_HEADER, PROTOCOL_HEADER, TOKEN_HEADER};
 mod capsule;
 mod field;
 mod keys;
+mod view;
 
 const M4A: &[u8] = include_bytes!("../../../tests/fixtures/watch-audio/tone-440-16k.m4a");
 const ID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
 const OTHER_ID: &str = "11111111-2222-3333-4444-555555555555";
-const MAC_NAME: &str = "Glen's Mac";
+const MAC_NAME: &str = "Test Mac";
 const APP_VERSION: &str = "3.0.0-test";
 
 struct Sink {
@@ -300,12 +302,17 @@ impl Harness {
     }
 
     fn approve(&mut self, device: &str) {
-        self.core.requests.approve(device, self.now.at);
+        self.core.requests.approve(device, NO_CLAIM, self.now.at);
     }
 
     /// The whole pairing exchange, as the watch runs it.
     fn pair(&mut self, device: &str) -> Watch {
         self.approve(device);
+        self.pair_approved(device)
+    }
+
+    /// The pairing exchange for a watch whose claim was already approved.
+    fn pair_approved(&mut self, device: &str) -> Watch {
         let secret = watch_secret();
         let (status, body) = self
             .request(
@@ -1386,6 +1393,7 @@ fn claims_answer_ok_failed_timeout_and_offline() {
         h.core.handle(
             Message::Claim {
                 code: code.to_owned(),
+                claim_id: 1,
                 reply,
                 deadline: h.now.at + CLAIM_TIMEOUT,
             },
@@ -1493,6 +1501,7 @@ fn a_claim_is_never_sent_after_its_caller_gave_up() {
         h.core.handle(
             Message::Claim {
                 code: code.to_owned(),
+                claim_id: 1,
                 reply,
                 deadline,
             },
@@ -1542,6 +1551,7 @@ fn a_claim_answer_handled_after_the_deadline_approves_no_watch() {
     h.core.handle(
         Message::Claim {
             code: "123456".to_owned(),
+            claim_id: 1,
             reply,
             deadline: h.now.at + CLAIM_TIMEOUT,
         },
@@ -1819,6 +1829,41 @@ fn a_recording_before_the_listener_can_run_is_refused_at_once() {
         Err("Hex needs Accessibility to paste on this Mac".to_owned())
     );
     assert!(queue.try_recv().is_err(), "nothing was queued");
+}
+
+/// A Mac set up for the watch alone and continued without a speech model
+/// (#894): Accessibility is ready, the Microphone never asked, no model. The
+/// real listener check refuses a watch recording at once with its reason,
+/// and the watch reads it as the documented 500, not after the 50 s wait.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_watch_only_mac_without_a_model_refuses_a_recording_at_once_with_the_reason() {
+    use crate::desktop::onboarding::{PermissionState, SetupStatus};
+    let mut h = harness("no-model");
+    let watch = h.pair("watch-1");
+    let (controls, queue) = mpsc::sync_channel(8);
+    h.core.dictation = Box::new(ListenerDictation::new(controls, || {
+        let watch_only_without_a_model = SetupStatus {
+            microphone: PermissionState::NeedsRequest,
+            accessibility: PermissionState::Ready,
+            transcription_model: false,
+        };
+        match crate::watch::listener_ready::blocker(watch_only_without_a_model) {
+            Some(why) => Err(why.to_owned()),
+            None => Ok(()),
+        }
+    }));
+    let head = audio_head(&watch, ID, "current", h.now.epoch());
+    let answer = h.send_audio(&watch, &head, M4A).unwrap();
+    assert_eq!((answer.status, answer.sealed), (500, true));
+    assert_eq!(answer.body["state"], "failed");
+    assert_eq!(
+        answer.body["error"],
+        "Hex has no speech model installed on this Mac"
+    );
+    assert!(queue.try_recv().is_err(), "nothing was queued");
+    let status = h.query(&watch, "/status", &[("id", ID)]).unwrap();
+    assert_eq!(status.body["state"], "failed", "no 50 s wait for a verdict");
 }
 
 #[test]

@@ -194,8 +194,10 @@ pub(crate) fn watch(sink: impl Fn(Option<Capsule>) + Send + Sync + 'static) {
         .push(Arc::new(sink));
 }
 
-/// Tells every registered sink; the service's default sink.
+/// Tells every registered sink; the service's default sink. With the
+/// capsule turned off in settings (read each time) it only ever hides.
 pub(crate) fn publish(capsule: Option<Capsule>) {
+    let capsule = capsule.filter(|_| super::settings::status_capsule());
     let sinks: Vec<Sink> = SINKS
         .lock()
         .unwrap_or_else(|error| error.into_inner())

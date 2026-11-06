@@ -110,6 +110,7 @@ impl LiveRecord {
 
 struct PendingClaim {
     code: String,
+    claim_id: u64,
     reply: SyncSender<Result<ClaimOk, ClaimError>>,
     deadline: Instant,
 }
@@ -143,6 +144,12 @@ pub(crate) struct Core {
     /// Where status capsules go; the registered overlays in the app.
     pub(super) status: crate::watch::status::Sink,
     pub(super) capsule: super::capsule::Timers,
+    /// Where the window's view of the service goes (`watch::view`).
+    pub(super) view: crate::watch::view::Sink,
+    /// The last snapshot sent there; an unchanged one is not sent again.
+    last_view: Option<WatchSnapshot>,
+    /// Another Mac took the relay room and this one has not served it since.
+    replaced: bool,
     /// Deliveries come back through here.
     pub(super) inbox: mpsc::Sender<Message>,
     /// The next key operation's number.
@@ -179,6 +186,9 @@ impl Core {
             desktop,
             status: std::sync::Arc::new(crate::watch::status::publish),
             capsule: Default::default(),
+            view: std::sync::Arc::new(crate::watch::view::publish),
+            last_view: None,
+            replaced: false,
             inbox,
             next_op: 1,
         }
@@ -198,18 +208,43 @@ impl Core {
             } => self.on_keyed(&id, key, op, outcome, now),
             Message::Claim {
                 code,
+                claim_id,
                 reply,
                 deadline,
-            } => self.on_claim(code, reply, deadline, now),
+            } => self.on_claim(code, claim_id, reply, deadline, now),
             Message::Snapshot { reply } => {
-                let _ = reply.try_send(WatchSnapshot {
-                    relay: self.relay_state,
-                    devices: self.paired.summary(),
-                });
+                let _ = reply.try_send(self.snapshot());
+            }
+            Message::Revoke { id, reply } => {
+                let revoked = self.paired.revoke(&id);
+                tracing::info!(id, ok = revoked.is_ok(), "a paired watch was revoked");
+                let _ = reply.try_send(revoked);
+                self.publish_view();
             }
             Message::Stop => return Flow::Exit,
         }
         Flow::Continue
+    }
+
+    pub(super) fn snapshot(&mut self) -> WatchSnapshot {
+        WatchSnapshot {
+            relay: self.relay_state,
+            mac_name: self.identity.mac_name.clone(),
+            replaced: self.replaced,
+            devices: self.paired.summary(),
+            admissions: self.requests.admissions().to_vec(),
+        }
+    }
+
+    /// Tells the window's watchers, unless nothing changed since the last
+    /// time.
+    pub(crate) fn publish_view(&mut self) {
+        let snapshot = self.snapshot();
+        if self.last_view.as_ref() == Some(&snapshot) {
+            return;
+        }
+        self.last_view = Some(snapshot.clone());
+        (self.view)(snapshot);
     }
 
     /// A key still queued or waiting for the keyboard lock must not go out
@@ -343,14 +378,18 @@ impl Core {
         match event {
             RelayEvent::State(state) => {
                 self.relay_state = state;
+                self.replaced &= state != RelayState::Connected;
                 if state == RelayState::Offline {
                     for claim in self.claims.drain(..) {
                         let _ = claim.reply.try_send(Err(ClaimError::RelayOffline));
                     }
                 }
+                self.publish_view();
             }
             RelayEvent::Replaced => {
                 tracing::warn!("another Mac took this relay room; the watch now reaches it");
+                self.replaced = true;
+                self.publish_view();
             }
             RelayEvent::Inbound(Inbound::Request(head, body)) => self.on_request(head, body, now),
             RelayEvent::Inbound(Inbound::Rejected { id, status, error }) => {
@@ -373,7 +412,7 @@ impl Core {
                     let _ = claim.reply.try_send(Err(ClaimError::Timeout));
                     return;
                 }
-                self.requests.approve(&device_id, now.at);
+                self.requests.approve(&device_id, claim.claim_id, now.at);
                 let _ = claim.reply.try_send(Ok(ClaimOk {
                     device_id,
                     device_name,
@@ -408,6 +447,7 @@ impl Core {
     fn on_claim(
         &mut self,
         code: String,
+        claim_id: u64,
         reply: SyncSender<Result<ClaimOk, ClaimError>>,
         deadline: Instant,
         now: Now,
@@ -435,6 +475,7 @@ impl Core {
         }
         self.claims.push(PendingClaim {
             code,
+            claim_id,
             reply,
             deadline,
         });

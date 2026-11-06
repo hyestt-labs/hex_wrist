@@ -36,7 +36,7 @@ use crate::rune_hud::hud_placement::{ISLAND_INSET, ISLAND_PAD, Island, Layout};
 use crate::rune_ui::live_text::Spot;
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::DictationIndicatorUi;
+pub(crate) use macos::{DictationIndicatorUi, pointer_screen};
 
 pub(crate) type HudEvent = DictationIndicatorEvent;
 

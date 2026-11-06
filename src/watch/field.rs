@@ -137,7 +137,9 @@ const TERMINAL_APPS: &[&str] = &[
 ];
 
 pub(crate) fn is_terminal(bundle_id: Option<&str>) -> bool {
-    bundle_id.is_some_and(|id| !id.is_empty() && TERMINAL_APPS.contains(&id))
+    bundle_id.is_some_and(|id| {
+        !id.is_empty() && (TERMINAL_APPS.contains(&id) || super::settings::is_extra_terminal(id))
+    })
 }
 
 /// What the paste must match, decided when the audio is accepted.
@@ -647,6 +649,33 @@ mod tests {
             panic!("a matching field pastes");
         };
         assert_eq!(verification, Verification::None);
+    }
+
+    #[test]
+    fn a_custom_terminal_bundle_id_pastes_as_final() {
+        let verdict = |bundle: &str| {
+            let mut field = text_area();
+            field.bundle_id = Some(bundle.into());
+            let Gate::Paste { verification, .. } = gate(
+                &Expectation::Field(field.clone()),
+                Some(&focused(field, true)),
+                false,
+            ) else {
+                panic!("a matching field pastes");
+            };
+            verification
+        };
+        assert_eq!(verdict("com.example.term"), Verification::None);
+        crate::watch::settings::apply(&crate::app_settings::WatchSettings {
+            terminal_apps: vec!["com.example.term".into()],
+            ..Default::default()
+        });
+        assert_eq!(verdict("com.example.term"), Verification::Terminal);
+        // Only the listed id changes; the built-in list stays and others read back.
+        assert_eq!(verdict("com.example.editor"), Verification::None);
+        assert_eq!(verdict("com.apple.Terminal"), Verification::Terminal);
+        crate::watch::settings::apply(&crate::app_settings::WatchSettings::default());
+        assert_eq!(verdict("com.example.term"), Verification::None);
     }
 
     #[test]

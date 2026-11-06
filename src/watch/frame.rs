@@ -730,10 +730,10 @@ mod tests {
 
     #[test]
     fn claim_frame_names_the_mac() {
-        let frame: Value = serde_json::from_str(&claim_frame("2174", "Glen 的 MacBook")).unwrap();
+        let frame: Value = serde_json::from_str(&claim_frame("2174", "測試用的 Mac")).unwrap();
         assert_eq!(frame["type"], "claim");
         assert_eq!(frame["code"], "2174");
-        assert_eq!(frame["name"], "Glen 的 MacBook");
+        assert_eq!(frame["name"], "測試用的 Mac");
         assert_eq!(frame.as_object().unwrap().len(), 3);
     }
 }

@@ -83,6 +83,10 @@ pub(super) fn view(p: Paint, s: &Onboard) -> Vec<El> {
     let page = match s.step {
         Step::Pick | Step::Started => download_page(p, s, false),
         Step::Waiting => download_page(p, s, true),
+        Step::Watch => match &s.live {
+            Some(live) => super::watch::page(p, s, live),
+            None => none(),
+        },
         Step::Parked | Step::YourTurn | Step::Hearing | Step::Heard | Step::Done => demo_page(p, s),
         Step::Permissions => permissions::page(p, s),
         Step::Try | Step::TryHearing | Step::TryHeard => {
@@ -163,7 +167,8 @@ fn back(p: Paint, s: &Onboard) -> Option<El> {
         .is_some_and(|live| live.model_step == ModelStep::Chosen);
     let after = matches!(
         s.step,
-        Step::Parked
+        Step::Watch
+            | Step::Parked
             | Step::YourTurn
             | Step::Hearing
             | Step::Heard
@@ -285,13 +290,15 @@ fn ready_page(p: Paint, s: &Onboard) -> El {
                     .gap(10.0)
                     .center_y()
                     .transition(arrives())
-                    .child(
+                    // The practice needs the Mac's microphone, which a
+                    // watch-only setup hasn't asked for.
+                    .children((!s.watch_only()).then(|| {
                         Button::new(tr("Try again"))
                             .variant(ButtonVariant::Neutral)
                             .on_press(live::on_ui(Onboard::jump_to_try))
                             .build_push(p.k)
-                            .key("try-again"),
-                    )
+                            .key("try-again")
+                    }))
                     .child(
                         Button::new(tr("Start using Hex"))
                             .variant(ButtonVariant::Contrast)
