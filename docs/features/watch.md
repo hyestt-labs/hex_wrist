@@ -9,8 +9,9 @@ with Swift line references). macOS only in this unit; Linux and Windows carry
 `watch` as a pending difference in `rune_ui::platform::DIFFERENCES`.
 
 Status: units B1 (relay, pairing, delivery, `/status`) and B2 (field
-snapshot, paste gate, read-back, Enter, Undo, suspect text, Traditional
-Chinese, status capsule). Unit C adds the Settings pane; unit D licensing and
+snapshot, paste gate, read-back, Enter, Undo, suspect text, status
+capsule). Chinese characters are the one setting every dictation follows
+(unit G; [dictation.md](dictation.md#chinese-characters)). Unit C adds the Settings pane; unit D licensing and
 the free quota.
 
 ## How To Get To It
@@ -30,7 +31,7 @@ Apple Watch                               // watch.pair, watch.dictate
 │   │   └── nothing read (no Accessibility, no focus, app silent for 1.5 s) -> captured:false;
 │   │                                                 its recording is withheld as target-changed (Wristper pasted at the cursor)
 │   ├── Watch stops -> /e2ee (AudioHead + m4a)           -> decode -> DictationWorker
-│   │   ├── Traditional Chinese (zh or auto)             -> s2tw, watch recordings only
+│   │   ├── Chinese characters (Settings: chinese_output) -> the one pipeline step, same as every dictation
 │   │   ├── suspect text (silence caption, wrong script) -> suspect, not pasted
 │   │   ├── Labs › Copy dictation only on                -> copied
 │   │   ├── gate against the field /focus locked
@@ -148,9 +149,14 @@ Apple Watch                               // watch.pair, watch.dictate
   window, identifier or names plus an overlapping frame). A request that waited past its 5 s
   deadline is not pressed late. Return is held 30 ms: Electron terminals
   ignore an instant press.
-- **Traditional Chinese.** `watch::zh`: `ferrous-opencc` 0.2 `s2tw`
-  (Taiwan characters, no phrase step), only for `zh` or auto recordings, only
-  for the watch. Other dictation is unchanged.
+- **Chinese characters.** Not watch-specific since unit G: the recording goes
+  through `dictation::chinese_output` like every processed dictation
+  (`s2tw`, `tw2s`, `s2hk`, `hk2s`; no phrase step). The recording's own
+  language (`zh`, `yue`, `en`, …) picks the table when it names one; `auto`
+  or empty falls back to the model's language. A setting of Simplified pastes
+  Simplified; unset follows the system's language order (an Apple Watch
+  user with a Traditional Chinese system still gets Traditional). What was
+  heard is stored converted, so `raw` is `None` unless a step changed the text.
 - **Suspect text.** `watch::suspect` runs on what was heard (before the Output
   pane's steps) with the system's preferred languages.
 - **Status capsule.** `watch::status` maps the record to a capsule and its
@@ -177,8 +183,8 @@ Apple Watch                               // watch.pair, watch.dictate
   duplicate resend, plaintext `/status`, plaintext `/audio` refused).
 - B2: `scripts/check watch` also covers `watch::field` (matching and the
   gate), `watch::desktop` (keys, lock, deadlines, with a scripted `Screen`),
-  `watch::output` (every gate result, read-back, restore delays, Traditional
-  Chinese, suspect text), `watch::status`, `paste::deferred` (private
+  `watch::output` (every gate result, read-back, restore delays, suspect
+  text), `watch::status`, `paste::deferred` (private
   clipboard items), and the service tests under
   `watch::service::tests::{field,keys,capsule}`.
 - Live, by hand (they drive TextEdit, Terminal, and Finder, so they are

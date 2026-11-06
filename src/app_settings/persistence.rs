@@ -250,7 +250,6 @@ fn needs_backup(data: &[u8]) -> bool {
         || crate::transcription::models::validate_saved(&settings.transcription).is_err()
 }
 
-#[cfg(hex_capture)]
 pub(super) fn healthy_file(path: &Path) -> bool {
     fs::read(path).is_ok_and(|data| !needs_backup(&data))
 }

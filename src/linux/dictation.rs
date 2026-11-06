@@ -247,7 +247,6 @@ impl DictationOutput {
         }
         if let Some(history) = &self.history {
             let mut draft = crate::dictation::modes::history_draft(
-                raw_text,
                 &processed,
                 context.application,
                 audio_ms,

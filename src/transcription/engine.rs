@@ -468,6 +468,27 @@ pub struct PendingTranscript {
 }
 
 impl PendingTranscript {
+    /// A finish whose engine already answered `text`.
+    #[cfg(test)]
+    pub(crate) fn ready(text: &str) -> Self {
+        let (reply, receiver) = mpsc::channel();
+        reply
+            .send(Reply::Done(Ok(Transcribed {
+                text: text.into(),
+                source: Source::Offline,
+                finish_ms: 0,
+            })))
+            .unwrap();
+        Self {
+            reply: receiver,
+            cancel: CancelToken::new(),
+            stream_cancel: None,
+            stalled: Arc::default(),
+            job: Duration::from_secs(5),
+            stream_finish: Duration::from_secs(5),
+        }
+    }
+
     pub fn wait(self) -> Result<Transcribed, String> {
         let mut stream_deadline = self
             .stream_cancel

@@ -224,12 +224,76 @@ does not prove the physical dictation shortcut; see the [feature index](README.m
 
 ## Sub-features
 
+### Chinese Characters
+
+Wristper fork (unit G; not Labs). Whether Chinese dictation comes out in
+Traditional or Simplified characters, or as the model wrote it. It follows the
+system language order unless chosen; the window's row is unit G2.
+
+```ts
+Settings: chinese_output  (hex settings set chinese_output traditional|simplified|as_heard|none)
+├── none (default) -> the first Chinese or Cantonese entry of the preferred languages decides   // cn.system
+│   ├── zh-Hant*, zh-TW, zh-HK, zh-MO, yue, yue-Hant   -> Traditional
+│   ├── zh-Hans*, zh-CN, zh-SG, zh, yue-Hans           -> Simplified   (an explicit script beats the region)
+│   ├── no Chinese entry (en, ja, …)                   -> as heard
+│   ├── macOS: the whole NSLocale.preferredLanguages list
+│   └── Linux and Windows: only the first locale (LANG, user locale) -> pending, platform::DIFFERENCES
+├── Wristper's output.json chinese_script, read once into an unchosen setting // cn.import
+│   ├── traditional | simplified | as-transcribed      -> traditional | simplified | as_heard
+│   ├── read-only: the file is never written; migration wristper-chinese-script marks it done
+│   └── test builds (Wristper Test) and a chosen value never import
+Every processed dictation (macOS, Linux, Windows; paste, --print, watch)
+├── 1. convert the transcript                           -> Processed.heard, History raw   // cn.convert
+│   ├── table: Mandarin s2tw / tw2s, Cantonese (yue) s2hk / hk2s; no phrase step
+│   ├── language: the watch recording's own, else the model's; en, ja, ko, … -> unchanged
+│   ├── auto or empty (watch, ordinary dictation): fall back to the model's language
+│   │   └── model language en -> unchanged, even if the model wrote Chinese  // known result
+│   ├── model language auto: only text with Han characters and no kana or Hangul
+│   └── any kana in the text -> unchanged, even with an explicit zh or yue
+│       └── "今天天气很好，去コンビニ" stays whole: better unconverted than
+│           damaged Japanese kanji (product trade-off; mixed Chinese-Japanese
+│           sentences are never converted)
+├── 2. replacements and Labs steps                      -> match the characters the person sees
+│   ├── macOS: Labs steps, then global + mode replacements (processor)
+│   └── Linux, Windows: global replacements, then Labs steps, then mode replacements (modes)
+├── 3. OpenCode rewrite -> converted again (a model often changes script)           // cn.rewrite
+└── 4. custom transformations -> never converted (the person's script wins)
+Not converted: Dictate without processing, the local API (`/transcriptions`,
+`/dictations`, `/streams`), meetings, Annotate's words, Labs › Live text.
+History › Transcribe again converts, in the language picked there:
+`auto` there never reads the dictation model's language; only the text decides.
+```
+
+Behavior change: History's raw text is the converted text (heard), not the
+model's own, so a Simplified model result does not read as "changed" next to
+a Traditional final text. Replacements written in the other script (a person
+who fixed Whisper large-v3's Simplified output with Simplified phrases) no
+longer match when the setting converts to Traditional; write them in the
+chosen characters. Older History entries are not rewritten, and `--raw`
+dictations keep their unconverted text as raw. History search matches raw and
+final, so for a new processed entry the raw text is the converted one: a search
+in the other script may not find it.
+
+Checks: `dictation::chinese_output` (tables, `tw2s` keeps 軟體, Cantonese
+`里面` → `裏面`, Japanese untouched, explicit zh/yue with kana untouched,
+re-transcription `auto` ignoring the model's language, system resolution),
+`app_settings::chinese_output` (Wristper import once, never overwriting,
+live change), `app_settings::persistence` (omitted, invalid value falls back),
+`control::settings` (CLI none and three values), `dictation::processor` and
+`dictation::modes` (order, converted once, rewrite converted again, Linux and
+Windows order kept), `parakeet` (`chinese_output_routing`: raw and service not
+converted, History raw, watch). Measured (debug build, M-series Mac): the first conversion loads its table in
+≈10 ms for Traditional output and ≈0.7 ms for Simplified; later ones take
+≈15 µs. A settings change preloads the tables on a thread. Not verified:
+Linux and Windows builds and full language lists; a real watch recording;
+History › Transcribe again (needs a real transcription).
+
 ### Dictate Without Processing
 
 A second, optional dictation shortcut (issue 451, suggested by @ksajan). It
 records exactly like the dictation shortcut and pastes the transcript as
 heard, skipping the Output pane's steps: replacements, corrections,
-transformations, and OpenCode rewriting.
+transformations, OpenCode rewriting, and the Chinese characters step.
 
 ```ts
 Output > Without processing > Dictate without processing   // raw.shortcut

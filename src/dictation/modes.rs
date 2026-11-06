@@ -44,18 +44,22 @@ impl ModeRuntime {
         self.reads_page
     }
 
-    /// Global replacements, then the matching mode's corrections,
-    /// post-processing, and transformations.
+    /// The Chinese characters step, global replacements, then the matching
+    /// mode's corrections, post-processing, and transformations. The
+    /// conversion runs here, once and ahead of the replacements, because
+    /// this order puts the replacements before the Labs steps.
     pub fn process(
         &self,
         raw_text: &str,
         context: &crate::dictation::context::ContextSnapshot,
         transformations: &crate::personal_commands::TransformationClient,
     ) -> Processed {
-        let text = self.replacements.replace(raw_text);
+        let heard = crate::dictation::chinese_output::apply(raw_text, "");
+        let text = self.replacements.replace(&heard);
         let profile = self.profile(context);
         let cancelled = AtomicBool::new(false);
-        let mut processed = Profiles::new(profile).process_cancellable(&text, context, &cancelled);
+        let mut processed =
+            Profiles::new(profile).process_converted(&heard, &text, context, &cancelled);
         processed.apply_transformations(transformations, context, &cancelled);
         processed
     }
@@ -102,9 +106,9 @@ pub(crate) fn uses_page(settings: &DictationProcessingSettings) -> bool {
             })
 }
 
-/// The history entry for one pasted dictation.
+/// The history entry for one pasted dictation. Its raw text is what the
+/// person heard: the dictation after the Chinese characters step.
 pub fn history_draft(
-    raw_text: String,
     processed: &Processed,
     application: Option<String>,
     audio_ms: u64,
@@ -114,7 +118,7 @@ pub fn history_draft(
 ) -> crate::history::HistoryDraft {
     crate::history::HistoryDraft {
         kind: crate::history::HistoryKind::Dictation,
-        raw_text,
+        raw_text: processed.heard.clone(),
         final_text: processed.text.clone(),
         application,
         processing: processed.observation.as_ref().map(|processing| {
@@ -313,6 +317,65 @@ mod tests {
 
         assert_eq!(processed.text, "Use OpenCode in Hex.");
         assert!(processed.observation.is_none());
+    }
+
+    #[test]
+    fn conversion_runs_once_ahead_of_the_replacements_and_before_the_labs_steps() {
+        use crate::dictation::chinese_output::{self, ChineseOutput};
+        use crate::dictation::text_replacements::TextReplacement;
+        chinese_output::set_live(ChineseOutput::Traditional);
+        crate::app_settings::set_language_for_test("zh");
+        let runtime = runtime(|settings| {
+            settings.dictation_processing.default_mode.replacements = vec![TextReplacement {
+                matched_phrase: "頭髮".into(),
+                output: "hair".into(),
+            }];
+        });
+        let transformations = crate::personal_commands::TransformationClient::default();
+        let before = chinese_output::calls();
+
+        let processed = runtime.process(
+            "头发 好",
+            &crate::dictation::context::ContextSnapshot::default(),
+            &transformations,
+        );
+
+        // The replacement was written in Traditional and matched Simplified speech.
+        assert_eq!(processed.text, "hair 好");
+        assert_eq!(processed.heard, "頭髮 好");
+        assert_eq!(chinese_output::calls() - before, 1, "converted once");
+    }
+
+    #[test]
+    fn global_replacements_still_run_before_the_labs_steps_on_these_listeners() {
+        use crate::dictation::text_replacements::TextReplacement;
+        // Spoken symbols would turn "at sign" into "@" first if the Labs
+        // steps ran before the global replacement; the corrections win.
+        crate::labs::apply(&crate::app_settings::LabsSettings {
+            spoken_symbols: true,
+            ..Default::default()
+        });
+        let runtime = runtime(|settings| {
+            settings.dictation_processing.default_mode.replacements = vec![TextReplacement {
+                matched_phrase: "at sign".into(),
+                output: "AT-SIGN".into(),
+            }];
+        });
+        let transformations = crate::personal_commands::TransformationClient::default();
+        let processed = runtime.process(
+            "write at sign now",
+            &crate::dictation::context::ContextSnapshot::default(),
+            &transformations,
+        );
+        assert_eq!(processed.text, "write AT-SIGN now");
+        // The control: with no correction the Labs step does run, so the
+        // order above is what kept it from turning the words into "@".
+        let unchanged = self::runtime(|_| {}).process(
+            "write at sign now",
+            &crate::dictation::context::ContextSnapshot::default(),
+            &transformations,
+        );
+        assert!(unchanged.text.contains('@'), "{}", unchanged.text);
     }
 
     #[test]

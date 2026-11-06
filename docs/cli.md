@@ -425,6 +425,9 @@ observe input-source changes or show these controls.
   second-dictation-shortcut`) and shares no key with another shortcut.
 - `json` settings (modes, meeting providers, excluded calendars) take the JSON
   value the file stores.
+- `chinese_output` takes `traditional`, `simplified`, `as_heard`, or `none`
+  (follow the system's language order). It changes the characters of Chinese
+  and Cantonese dictation; see [dictation.md](features/dictation.md#chinese-characters).
 - `ui_language` takes `en`, `pl`, `zh` (Simplified Chinese), `zh-Hant`
   (Traditional Chinese), `ja`, `de`, `es`, `uk`, `pt`, `fr`, `ru`, or `none`
   (follow the system language), the same languages Settings offers. Following
@@ -475,7 +478,8 @@ Writable keys: `release_microphone_while_idle`,
 `experimental.hex_microphone`, `experimental.hex_microphone_mode`,
 `experimental.hex_microphone_comfort_noise`,
 `experimental.hex_microphone_strength`, `enable_on_launch`,
-`paste_with_shift`, `ui_language`, `indicator_position`, `updates.channel`.
+`paste_with_shift`, `ui_language`, `chinese_output`, `indicator_position`,
+`updates.channel`.
 
 `transcription.recognition_hints` is deprecated: recognition hints merged into
 the [vocabulary](features/vocabulary.md). `get` returns the vocabulary's terms,

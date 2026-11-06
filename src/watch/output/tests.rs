@@ -297,31 +297,22 @@ fn an_empty_result_is_suspect() {
 }
 
 #[test]
-fn chinese_is_pasted_in_traditional_and_english_is_left_alone() {
+fn delivery_pastes_the_text_it_was_given_in_whatever_characters_it_has() {
+    // The Chinese characters step ran earlier, in the one pipeline.
     let mut rig = rig("zh", Expectation::Current, Some(editable(text_area(7))));
     let delivered = say(&mut rig, "我想要这个 OpenAI 的 GPT-5 头发");
-    assert_eq!(rig.inserter.inserted, ["我想要這個 OpenAI 的 GPT-5 頭髮"]);
-    assert_eq!(delivered.text, "我想要這個 OpenAI 的 GPT-5 頭髮");
+    assert_eq!(rig.inserter.inserted, ["我想要这个 OpenAI 的 GPT-5 头发"]);
+    assert_eq!(delivered.text, "我想要这个 OpenAI 的 GPT-5 头发");
 }
 
 #[test]
-fn an_english_recording_is_never_converted() {
-    let mut rig = in_field();
-    say(&mut rig, "头发 stays as spoken");
-    assert_eq!(rig.inserter.inserted, ["头发 stays as spoken"]);
-}
-
-#[test]
-fn raw_text_is_converted_too_and_dropped_when_equal() {
+fn raw_text_is_dropped_when_equal_and_kept_when_it_differs() {
     let mut rig = rig("zh", Expectation::Current, Some(editable(text_area(7))));
-    let delivered = run(&mut rig, "头发", "头发", false).unwrap();
+    let delivered = run(&mut rig, "頭髮", "頭髮", false).unwrap();
     assert_eq!(delivered.raw, None);
     // Each delivery holds the keyboard until its follow-up ends.
     drop(delivered);
-    let delivered = run(&mut rig, "頭髮好", "头发好", false).unwrap();
-    assert_eq!(delivered.raw, None, "both read 頭髮好");
-    drop(delivered);
-    let delivered = run(&mut rig, "頭髮", "头发 uh", false).unwrap();
+    let delivered = run(&mut rig, "頭髮", "頭髮 uh", false).unwrap();
     assert_eq!(delivered.raw.as_deref(), Some("頭髮 uh"));
 }
 

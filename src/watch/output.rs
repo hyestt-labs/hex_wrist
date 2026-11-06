@@ -1,6 +1,6 @@
 //! What the output worker does with a watch recording's text, in
 //! Wristper's order (`ReceiverService.transcribeAndPaste` and
-//! `FieldPaster.paste`): Traditional Chinese, the suspect-text rules, the
+//! `FieldPaster.paste`): the suspect-text rules, the
 //! gate against the field `/focus` locked, then ⌘V, a read-back that looks
 //! for the text, and the clipboard restore the read-back times. Nothing
 //! here touches AppKit: `Inserter` is the Paster and `Screen` is
@@ -12,7 +12,7 @@ use super::delivery::{DeliveryOutcome, WatchDelivery};
 use super::desktop::Held;
 use super::field::{ElementRef, Gate, Withheld, gate, read_back_confirms};
 use super::recording::Verification;
-use super::{suspect, zh};
+use super::suspect;
 
 /// How long the read-back looks for the pasted text.
 pub(crate) const READ_BACK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -52,7 +52,8 @@ pub(crate) trait Inserter {
 pub(crate) struct Request<'a> {
     /// The final text, after the Output pane's steps.
     pub(crate) text: &'a str,
-    /// The corrected transcript before them.
+    /// What was heard: the transcript in the chosen Chinese characters,
+    /// before the Output pane's steps.
     pub(crate) raw: &'a str,
     /// Labs › Copy dictation only: no gate, no paste.
     pub(crate) copy_only: bool,
@@ -62,9 +63,9 @@ pub(crate) struct Request<'a> {
 
 pub(crate) struct Delivered {
     pub(crate) outcome: DeliveryOutcome,
-    /// The text after the Traditional Chinese conversion.
+    /// The text as delivered.
     pub(crate) text: String,
-    /// What was heard, converted the same way; `None` when it equals `text`.
+    /// What was heard; `None` when it equals `text`.
     pub(crate) raw: Option<String>,
     pub(crate) follow_up: Option<FollowUp>,
 }
@@ -186,10 +187,6 @@ pub(crate) fn wait_for_text(
     }
 }
 
-fn heard_as_traditional(text: &str, language: &str) -> String {
-    zh::for_recording(text, language)
-}
-
 /// `Err` is a failure the watch reads as `failed`: the paste was not
 /// attempted (no Accessibility) or did not complete.
 pub(crate) fn deliver(
@@ -199,8 +196,10 @@ pub(crate) fn deliver(
     commit: &dyn Fn() -> bool,
 ) -> Result<Delivered, String> {
     let job = delivery.job();
-    let text = heard_as_traditional(request.text, &job.language);
-    let heard = heard_as_traditional(request.raw, &job.language);
+    // The Chinese characters step already ran in the one pipeline, so both
+    // texts are what the person chose.
+    let text = request.text.to_owned();
+    let heard = request.raw.to_owned();
     let raw = (heard != text).then(|| heard.clone());
     let done = |outcome, follow_up| {
         Ok(Delivered {

@@ -50,6 +50,11 @@ Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 **Wristper fork deviation (2026-11-04).** This fork is Wristper, whose paid
 core is dictating from an Apple Watch. The watch service (`watch`) is not a
 Labs feature: it starts with the macOS app, on by default, with no toggle.
+Chinese characters in dictation (`chinese_output`: Traditional, Simplified, or
+as heard) is not Labs either (decided 2026-11-05, unit G): it follows the
+system language order by default, applies to every processed dictation on
+every OS, and "Dictate without processing" skips it like every other Output
+step.
 Watch-only setup asks for no Microphone (user decision 2026-11-04).
 Catalog speech models added by this fork (Whisper large-v3, medium, and
 small, Breeze ASR 25, Qwen3-ASR 1.7B) are not in Labs either: like NB-Whisper,
@@ -259,6 +264,24 @@ substitute for source inspection or a second roadmap.
 - `desktop/background_process`: the one constructor for child processes Hex starts for
   its own work (OpenCode CLI, curl, PowerShell); on Windows they
   never open a console window.
+- `dictation/chinese_output`: which Chinese characters a dictation comes out in
+  (`ChineseOutput`: Traditional, Simplified, or as heard; `chinese_output` in
+  settings, none follows the system's language order). OpenCC through
+  `ferrous-opencc`, tables compiled in: Mandarin `s2tw` and `tw2s`, Cantonese
+  `s2hk` and `hk2s` (never the `*p` phrase configurations, which rewrite the
+  speaker's words). The table follows the language the model ran in, or the
+  recording's own (a watch's); text with kana is never converted. It runs
+  once per dictation: first in `Profiles::process_cancellable` on macOS, and
+  at the start of `ModeRuntime::process` on Linux and Windows (whose order is
+  replacements, then the Labs steps), before any text replacement, so
+  replacements match the characters the person sees. The result is
+  `Processed::heard`, which History keeps as the raw text. An OpenCode
+  rewrite's result is converted again. Not converted: "Dictate without
+  processing", the local API, meetings, Annotate's words, live text. A
+  first launch reads Wristper's `output.json` `chinese_script` once
+  (migration `wristper-chinese-script`, read-only, never in a test build).
+  macOS reads the whole `NSLocale.preferredLanguages` list to follow the
+  system; Linux and Windows read only the first locale (pending).
 - `dictation/text_replacements`: phrase-boundary-aware compilation of configured text
   replacements applied longest-match-first to transcripts.
 - `dictation/config`: dictation profiles.
@@ -636,10 +659,9 @@ substitute for source inspection or a second roadmap.
   presses `/enter` and `/undo` keys, and the keyboard lock a paste and its
   read-back hold), `screen` (the macOS `Screen` over `accessibility` and
   `keyboard`), `field` (the snapshot, its 48 px matching, the paste gate),
-  `output` (what the output worker does with the text: `zh`, `suspect`,
+  `output` (what the output worker does with the text: `suspect`,
   the gate, ⌘V through `paste::Paster::paste_deferred`, the read-back, and
-  the restore it times), `zh` (`ferrous-opencc` `s2tw`, watch recordings
-  only), and `status` with `rune_ui::watch_status` (the click-through status
+  the restore it times), and `status` with `rune_ui::watch_status` (the click-through status
   capsule, pushed from the `watch` thread, never polled).
 
 Keep modules deep. Callers should not coordinate
@@ -1003,7 +1025,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   own 512 MiB cap (oldest audio dropped first, text kept). Turning it off
   stops saving; existing audio stays until it expires or History is cleared.
 - Retained dictation history records only successful pasted output: raw and
-  final text plus bounded metadata, never full browser URLs or window titles,
+  final text plus bounded metadata (raw is what was heard, already in the
+  chosen Chinese characters; with the setting on as heard it is the model's own
+  text; older entries are not rewritten, a `--raw` dictation keeps its unconverted
+  result, and search matches the new entries' converted raw text), never full browser URLs or window titles,
   and no audio unless Labs › Keep recordings is on. Entries name their speech
   model; with Keep recordings, Replace keeps up to five earlier versions
   inside the entry, counted by the same caps. History defaults to seven days, and every retention window remains
@@ -1254,8 +1279,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   clipboard or History (Paste Last still has the text). A suspect text (silence caption, wrong
   script) or an empty transcript reads `suspect` and is not pasted; a decode,
   inference, or paste failure (including no Accessibility) reads 500
-  `{"state":"failed"}`. Chinese is converted to Traditional (`s2tw`) for the
-  watch only. `/enter` (30 s) and `/undo` (60 s, read-back confirmed, never a
+  `{"state":"failed"}`. Chinese characters follow the one setting every
+  dictation follows (`dictation/chinese_output`, applied once at the first
+  step of the pipeline; the recording's own language, when it names one, picks
+  the Mandarin or Cantonese table). `/enter` (30 s) and `/undo` (60 s, read-back confirmed, never a
   terminal) press their key only in the same app, role, and window, hold the
   keyboard lock with every paste and read-back, and never press after their
   reply was given up. The clipboard comes back at once on a confirmed

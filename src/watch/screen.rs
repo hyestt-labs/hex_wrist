@@ -78,25 +78,7 @@ impl Screen for MacScreen {
     }
 }
 
-/// `NSLocale.preferredLanguages`, for the suspect-text script rules.
+/// The system's preferred languages, for the suspect-text script rules.
 pub(crate) fn preferred_languages() -> Vec<String> {
-    use objc2::msg_send;
-    use objc2::rc::Retained;
-    use objc2::runtime::AnyClass;
-    use objc2_foundation::{NSArray, NSString};
-
-    let Some(class) = AnyClass::get(c"NSLocale") else {
-        return Vec::new();
-    };
-    // SAFETY: `preferredLanguages` is a class method returning an NSArray of NSString.
-    let languages: Option<Retained<NSArray<NSString>>> =
-        unsafe { msg_send![class, preferredLanguages] };
-    languages
-        .map(|languages| {
-            languages
-                .iter()
-                .map(|language| language.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::desktop::i18n::preferred_locales()
 }
