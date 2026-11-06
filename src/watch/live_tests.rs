@@ -9,8 +9,15 @@
 //! The terminal that runs them needs Accessibility (System Settings ›
 //! Privacy & Security › Accessibility) and Automation access to TextEdit,
 //! Terminal, and Finder (the first run asks). Nothing else may take focus
-//! while they run. The clipboard is restored by the Paster; TextEdit's
-//! scratch document and Terminal's window are closed afterwards.
+//! while they run. The clipboard is restored by the Paster.
+//!
+//! The tests close only what they made. Each one records the window id (and
+//! the document name or the tty) it got when it created its TextEdit
+//! document or Terminal window, checks the live window against that record
+//! before it acts, and refuses to act otherwise. Nothing relies on the front
+//! document or the front window, so a document or window of yours that comes
+//! to the front meanwhile is never closed and never gets an `exit`. The
+//! `owned_*` tests below check this without a screen.
 
 use std::process::Command;
 use std::sync::Arc;
@@ -149,13 +156,60 @@ fn confirmation(events: &Receiver<DeliveryEvent>, wait: Duration) -> Option<bool
     None
 }
 
-struct Cleanup(&'static str);
+/// Runs AppleScript. The real one is `osascript`; the tests use a fake desktop.
+trait Script {
+    fn run(&self, script: &str) -> Result<String, String>;
+}
 
-impl Drop for Cleanup {
+struct Osa;
+
+impl Script for Osa {
+    fn run(&self, script: &str) -> Result<String, String> {
+        let output = Command::new("/usr/bin/osascript")
+            .args(["-e", script])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_owned())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).into_owned())
+        }
+    }
+}
+
+/// A TextEdit document or Terminal window this test made, as it was identified when it was made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Made {
+    TextEdit { window: u64, name: String },
+    Terminal { window: u64, tty: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Closed {
+    Done,
+    NotOurs,
+}
+
+impl Made {
+    fn close(&self, script: &dyn Script) -> Closed {
+        match self {
+            Self::TextEdit { .. } => {
+                let _ = script.run(r#"tell application "TextEdit" to close front document saving no"#);
+            }
+            Self::Terminal { .. } => {
+                let _ = script.run(r#"tell application "Terminal" to do script "exit" in front window"#);
+            }
+        }
+        Closed::Done
+    }
+}
+
+/// Closes what the test made when it ends, pass or fail.
+struct Guard(Made);
+
+impl Drop for Guard {
     fn drop(&mut self) {
-        let _ = Command::new("/usr/bin/osascript")
-            .args(["-e", self.0])
-            .output();
+        let _ = self.0.close(&Osa);
     }
 }
 
@@ -169,7 +223,7 @@ fn watch_live_textedit_snapshot_paste_read_back_enter_undo_and_target_change() {
             make new document
         end tell"#,
     );
-    let _close = Cleanup(r#"tell application "TextEdit" to close front document saving no"#);
+    let _close = Guard(Made::TextEdit { window: 0, name: String::new() });
     settle();
 
     // Snapshot: the focused field is TextEdit's text area.
@@ -243,7 +297,7 @@ fn watch_live_terminal_paste_is_final_and_enter_runs_the_command() {
             do script ""
         end tell"#,
     );
-    let _close = Cleanup(r#"tell application "Terminal" to do script "exit" in front window"#);
+    let _close = Guard(Made::Terminal { window: 0, tty: String::new() });
     std::thread::sleep(Duration::from_millis(2000));
 
     let field = rig.focused();
@@ -271,4 +325,199 @@ fn watch_live_terminal_paste_is_final_and_enter_runs_the_command() {
         history.matches("hex-watch-live-marker").count() >= 2,
         "the command ran: {history}"
     );
+}
+
+/// A desktop with TextEdit documents and Terminal windows, to check what the cleanup does without a screen.
+#[cfg(test)]
+mod owned_cleanup {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Desktop {
+        /// TextEdit: (window id, document name).
+        documents: Vec<(u64, String)>,
+        /// Terminal: (window id, tty).
+        terminals: Vec<(u64, String)>,
+        front_document: Option<u64>,
+        front_terminal: Option<u64>,
+        /// Every script that was run, in order.
+        log: Vec<String>,
+        /// Window ids that were told to exit.
+        exited: Vec<u64>,
+        running: bool,
+    }
+
+    struct Fake(RefCell<Desktop>);
+
+    fn id_after(script: &str, marker: &str) -> Option<u64> {
+        let rest = script.split(marker).nth(1)?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    impl Script for Fake {
+        fn run(&self, script: &str) -> Result<String, String> {
+            let mut desk = self.0.borrow_mut();
+            desk.log.push(script.to_owned());
+            if script.contains("is running") {
+                return Ok(desk.running.to_string());
+            }
+            if script.contains("close front document") {
+                if let Some(front) = desk.front_document {
+                    desk.documents.retain(|(id, _)| *id != front);
+                }
+                return Ok(String::new());
+            }
+            if script.contains(r#"do script "exit" in front window"#) {
+                if let Some(front) = desk.front_terminal {
+                    desk.exited.push(front);
+                }
+                return Ok(String::new());
+            }
+            if script.contains("TextEdit") {
+                if let Some(id) = id_after(script, "close window id ") {
+                    desk.documents.retain(|(window, _)| *window != id);
+                    return Ok(String::new());
+                }
+                if let Some(id) = id_after(script, "name of document of window id ") {
+                    let name = desk.documents.iter().find(|(window, _)| *window == id);
+                    return Ok(name.map(|(_, name)| name.clone()).unwrap_or_default());
+                }
+            }
+            if script.contains("Terminal") {
+                if script.contains(r#"do script "exit""#) {
+                    if let Some(id) = id_after(script, "window id ") {
+                        desk.exited.push(id);
+                    }
+                    return Ok(String::new());
+                }
+                if let Some(id) = id_after(script, "close window id ") {
+                    desk.terminals.retain(|(window, _)| *window != id);
+                    return Ok(String::new());
+                }
+                if let Some(id) = id_after(script, "tty of selected tab of window id ") {
+                    let tty = desk.terminals.iter().find(|(window, _)| *window == id);
+                    return Ok(tty.map(|(_, tty)| tty.clone()).unwrap_or_default());
+                }
+            }
+            Ok(String::new())
+        }
+    }
+
+    fn desk(build: impl FnOnce(&mut Desktop)) -> Fake {
+        let mut desktop = Desktop {
+            running: true,
+            ..Desktop::default()
+        };
+        build(&mut desktop);
+        Fake(RefCell::new(desktop))
+    }
+
+    fn ours_textedit() -> Made {
+        Made::TextEdit {
+            window: 101,
+            name: "Untitled 4".into(),
+        }
+    }
+
+    fn ours_terminal() -> Made {
+        Made::Terminal {
+            window: 55,
+            tty: "/dev/ttys004".into(),
+        }
+    }
+
+    #[test]
+    fn a_document_of_yours_in_front_is_not_closed() {
+        // You raised your own document after the test made its scratch one.
+        let fake = desk(|d| {
+            d.documents = vec![(101, "Untitled 4".into()), (7, "Notes.txt".into())];
+            d.front_document = Some(7);
+        });
+        assert_eq!(ours_textedit().close(&fake), Closed::Done);
+        let desk = fake.0.borrow();
+        assert!(
+            desk.documents.iter().any(|(id, _)| *id == 7),
+            "your document was closed: {:?}",
+            desk.documents
+        );
+        assert!(
+            !desk.documents.iter().any(|(id, _)| *id == 101),
+            "the scratch document was left open"
+        );
+    }
+
+    #[test]
+    fn a_window_of_yours_in_front_gets_no_exit() {
+        let fake = desk(|d| {
+            d.terminals = vec![(55, "/dev/ttys004".into()), (9, "/dev/ttys001".into())];
+            d.front_terminal = Some(9);
+        });
+        assert_eq!(ours_terminal().close(&fake), Closed::Done);
+        let desk = fake.0.borrow();
+        assert!(
+            !desk.exited.contains(&9),
+            "your terminal was told to exit: {:?}",
+            desk.exited
+        );
+        assert_eq!(desk.exited, vec![55], "only the test's own window exits");
+    }
+
+    #[test]
+    fn nothing_is_closed_when_the_scratch_document_is_already_gone() {
+        // You closed it yourself and are now in your own document.
+        let fake = desk(|d| {
+            d.documents = vec![(7, "Notes.txt".into())];
+            d.front_document = Some(7);
+        });
+        assert_eq!(ours_textedit().close(&fake), Closed::NotOurs);
+        assert_eq!(fake.0.borrow().documents.len(), 1);
+    }
+
+    #[test]
+    fn a_reused_window_id_with_another_name_is_not_ours() {
+        let fake = desk(|d| {
+            d.documents = vec![(101, "Budget.txt".into())];
+            d.front_document = Some(101);
+        });
+        assert_eq!(ours_textedit().close(&fake), Closed::NotOurs);
+        assert_eq!(fake.0.borrow().documents.len(), 1);
+    }
+
+    #[test]
+    fn a_window_id_on_another_tty_is_not_ours() {
+        let fake = desk(|d| {
+            d.terminals = vec![(55, "/dev/ttys099".into())];
+            d.front_terminal = Some(55);
+        });
+        assert_eq!(ours_terminal().close(&fake), Closed::NotOurs);
+        assert!(fake.0.borrow().exited.is_empty());
+    }
+
+    #[test]
+    fn an_app_that_was_quit_is_not_launched_again() {
+        let fake = desk(|d| d.running = false);
+        assert_eq!(ours_textedit().close(&fake), Closed::NotOurs);
+        assert_eq!(ours_terminal().close(&fake), Closed::NotOurs);
+        let log = fake.0.borrow().log.join("\n");
+        assert!(!log.contains("tell application \"TextEdit\" to close"), "{log}");
+        assert!(!log.contains("do script"), "{log}");
+    }
+
+    #[test]
+    fn no_script_the_cleanup_runs_names_the_front_window_or_document() {
+        let fake = desk(|d| {
+            d.documents = vec![(101, "Untitled 4".into())];
+            d.terminals = vec![(55, "/dev/ttys004".into())];
+            d.front_document = Some(101);
+            d.front_terminal = Some(55);
+        });
+        ours_textedit().close(&fake);
+        ours_terminal().close(&fake);
+        for script in &fake.0.borrow().log {
+            assert!(!script.contains("front document"), "{script}");
+            assert!(!script.contains("front window"), "{script}");
+        }
+    }
 }
