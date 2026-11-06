@@ -318,7 +318,8 @@ Choose a supported language              // setup.language-conditioning; macOS +
 ├── Granite Speech 5.0 -> No language input; transcribes whichever of en, fr,
 │   de, es, pt, it, ja it hears (#1252)
 ├── Whisper -> Use selected language to guide decoding; accuracy is not guaranteed
-├── Whisper (ivrit.ai's and NB-Whisper too), Qwen3-ASR 0.6B, QwenCleo-ASR 1.7B -> Vocabulary ->
+├── Whisper (ivrit.ai's, NB-Whisper, large-v3, medium, small, and Breeze too), Qwen3-ASR
+│   0.6B and 1.7B, QwenCleo-ASR 1.7B -> Vocabulary ->
 │   context prompt (vocabulary.md); output that only repeats it is dropped
 ├── Hebrew -> ivrit.ai Whisper large-v3-turbo, always with the `he` hint (it
 │   lost Whisper's language detection); stock Whisper turbo also offers it
@@ -2147,7 +2148,8 @@ Linux `hex` -> the Linux window on Rune, in the Hex process // dev.rune-ui
 macOS `hex app` -> one menu-bar process, Rune window // dev.rune-ui-macos
 ├── rune::App on the main thread: accessory, windowless unless setup/onboarding/Dock icon open it
 ├── Same AppKit loop: status item, updater, Hex/File/Window menu, Dock reopen event, the HUD pump (16 ms timer; the HUD itself is a Rune overlay)
-├── Runtime thread: model preparation (menu bar: installed only), starts the listener once setup is ready
+├── Runtime thread: model preparation (menu bar: installed only), starts the listener once Accessibility and the model are ready
+│   (not the Microphone: `DictationAudio` keeps it closed until granted; the first dictation start asks)
 ├── Listener, meeting controller, local API: their own threads
 ├── macos_host: AppKit event monitor records chords (Option, Fn); NativeHost does permissions,
 │   login item, Hex Microphone, meeting start/stop/rename/trash/reveal, relaunch

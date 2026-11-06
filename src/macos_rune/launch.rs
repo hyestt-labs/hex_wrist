@@ -19,7 +19,8 @@ const LAUNCHED_AS_LOGIN_ITEM: u32 = u32::from_be_bytes(*b"lgit");
 /// What the window does when Hex starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaunchWindow {
-    /// Setup needs the user, or the menu bar can't bring the window back.
+    /// The listener can't start yet or setup is unfinished (the person has
+    /// something to do), or the menu bar can't bring the window back.
     Open,
     /// The Dock icon is shown: open, unless macOS started Hex at login.
     OpenUnlessLoginItem,
@@ -30,17 +31,34 @@ pub(crate) enum LaunchWindow {
 impl LaunchWindow {
     pub(crate) fn decide(
         show_dock_icon: bool,
-        setup_ready: bool,
+        listener_ready: bool,
         onboarding_completed: bool,
         status_item_available: bool,
     ) -> Self {
-        if !setup_ready || !onboarding_completed || !status_item_available {
+        if !listener_ready || !onboarding_completed || !status_item_available {
             Self::Open
         } else if show_dock_icon {
             Self::OpenUnlessLoginItem
         } else {
             Self::Quiet
         }
+    }
+
+    /// The decision from the setup status: the listener's needs, not the
+    /// microphone's. A refused microphone surfaces when dictation asks for
+    /// it, not at every launch.
+    pub(crate) fn for_setup(
+        show_dock_icon: bool,
+        status: crate::desktop::onboarding::SetupStatus,
+        onboarding_completed: bool,
+        status_item_available: bool,
+    ) -> Self {
+        Self::decide(
+            show_dock_icon,
+            status.listener_ready(),
+            onboarding_completed,
+            status_item_available,
+        )
     }
 
     pub(crate) fn opens(self, launched_as_login_item: bool) -> bool {

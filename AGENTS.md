@@ -50,7 +50,16 @@ Linux, and Windows; only developer tools (`dev_build::is_dev_build()` with
 **Wristper fork deviation (2026-11-04).** This fork is Wristper, whose paid
 core is dictating from an Apple Watch. The watch service (`watch`) is not a
 Labs feature: it starts with the macOS app, on by default, with no toggle.
-Everything else in this section still holds for new features.
+Watch-only setup asks for no Microphone (user decision 2026-11-04).
+Catalog speech models added by this fork (Whisper large-v3, medium, and
+small, Breeze ASR 25, Qwen3-ASR 1.7B) are not in Labs either: like NB-Whisper,
+Granite, and GigaAM they are plain catalog entries, never recommended, and
+only Parakeet Ultra and imports sit behind Labs. Known risks of those
+models: a Hex build older than them runs the default model for their saved IDs
+and a later save from it can replace the choice; an imported file is stored
+apart from the catalog copy, so one file can take disk twice (see
+`docs/features/dictation.md`). Everything else in this section still holds for
+new features.
 
 ## Feature Map
 
@@ -647,10 +656,20 @@ CoreAudio formats, AppleScript details, or event serialization.
   Keep saved values readable by older builds: an unchosen
   `meetings.retention` is omitted, not `null`. Do not omit optional fields
   whose absence restores a nonempty default, such as `paste_last_hotkey`.
-- On a new Mac, release dictation starts only after Microphone, Accessibility,
-  and the selected dictation model are ready. Hex never asks for Input
-  Monitoring: Accessibility also grants the listen-event access its shortcut
-  taps need (measured on macOS 26 and 27).
+- The listener starts once Accessibility and the selected model are ready, so
+  watch recordings transcribe and paste without the Microphone. Until the
+  Microphone is granted, `DictationAudio` never opens it: a dictation start
+  (shortcut, `hex dictation`, `/dictations`) records nothing and says nothing,
+  since Option+e and a click start the shortcut machine too. Only a press Hex
+  owns (past the hold threshold, Toggle's start after its grace, a lock),
+  `hex dictation`, or `/dictations` is a try: macOS's prompt the first time;
+  once refused, the error tone on each try and the Settings window once per
+  launch. A window no longer opens at launch only because the Microphone is
+  missing. The permission is read just before each open starts, not at the
+  opener's call: a revoke in that gap still reaches macOS, which has the last
+  word on opening the stream. Hex never asks for
+  Input Monitoring: Accessibility also grants the listen-event access its
+  shortcut taps need (measured on macOS 26 and 27).
 - The dictation shortcut defaults to Option but supports modifier-only,
   modifier-plus-key, standalone Globe/Fn, and standalone function-key bindings.
   Capturing a new binding suspends global matching.
@@ -763,9 +782,10 @@ CoreAudio formats, AppleScript details, or event serialization.
   against the thresholds.
 - When enabled, a second shortcut tap within 300 ms locks dictation. Press the
   shortcut again to finish.
-- Recording audio behavior and idle-sleep prevention begin only after the
-  intentional-hold threshold. Ordinary shortcut chords must not mute output,
-  pause media, or prevent sleep.
+- Recording audio behavior, idle-sleep prevention, and the microphone
+  permission prompt begin only after the intentional-hold threshold. Ordinary
+  shortcut chords must not mute output, pause media, prevent sleep, or ask for
+  the Microphone.
 - A modifier-only shortcut (not Globe/Fn) passes through, so once Hex owns
   the press (hold past the threshold, Toggle start after the 40 ms chord
   grace, lock-finishing press) it posts one marked press of unassigned key

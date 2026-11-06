@@ -57,6 +57,23 @@ Apple Watch                               // watch.pair, watch.dictate
 
 ## Behavior
 
+- **No Microphone needed (C1).** The listener starts once Accessibility and
+  the model are ready (`SetupStatus::listener_ready`), so a Mac that never
+  granted the Microphone still transcribes and pastes a watch recording. Until
+  the model and Accessibility are ready, `ListenerDictation::transcribe`
+  refuses a recording at once with the reason (`watch::listener_ready`), and
+  the watch reads the existing 500 `failed`. The Mac microphone stays closed
+  (`dictation::microphone_access`, held by the `DictationAudio` owner): the
+  shortcut start itself is silent (Option+e and a click start the machine too);
+  only an owned press (held past the threshold, Toggle's start after 40 ms, a
+  lock), `hex dictation`, or `/dictations` is a try: macOS's prompt once, then
+  the error tone on each try after a refusal and the Settings window once per
+  launch. A granted permission restores the saved Release-while-idle policy
+  after the first capture, which opens cold like a released microphone. A
+  Mac-only user whose microphone was revoked after setup now meets this at the
+  shortcut instead of a window at launch. Every real stream open logs
+  `microphone stream opened`. Onboarding still asks for the Microphone until
+  unit C2 wires `SetupStatus::ready_with_watch` to the Apple Watch page.
 - **Service.** `watch::service::WatchService` starts with the macOS app
   (`macos_rune::run`), on by default, no toggle. It reads or creates
   `relay-room`, `relay-secret`, and `device-id` in the data folder
@@ -190,6 +207,18 @@ Apple Watch                               // watch.pair, watch.dictate
   or key goes out, and lists every missing step with exit status 3. The first
   real run is `--stage 1 --targets textedit --langs en`; `--selftest` checks
   the ownership rules without an app or window.
+- C1: `dictation::microphone_access` covers the gate (a refused start
+  records nothing, opens nothing, and says nothing; an intentional try asks
+  once, then sounds; a grant restores the saved policy; a revoke closes the
+  warm input) and `recognition::gated_press` drives the real shortcut machine
+  with no permission (Option+e, click, drag, short tap, an early chord: no
+  prompt, tone, or window; a hold past the threshold or Toggle's grace: one
+  try) and `no_open_path_opens_the_microphone_without_permission` drives
+  startup, settings reloads, route and device changes, selection changes,
+  retry time, and every kind of start with a stream counter at zero.
+  `dictation::audio` adds the interrupted-stream path and the one stated
+  exception, Annotate's capture sink. `desktop::onboarding` and `macos_rune`
+  pin the Mac-only behavior (`a_mac_only_*`) and the watch-only launch.
 - Not verified: no real Apple Watch, no connection to the production relay,
   no TLS or proxy path (tests use `ws://127.0.0.1`), no end-to-end paste on a
   real Mac with the model loaded. A fixture recorded from a development watch
@@ -197,6 +226,39 @@ Apple Watch                               // watch.pair, watch.dictate
 
 ## Gaps And Constraints
 
+- Known limit (C1, accepted): `listener_ready::current()` says Accessibility and
+  the model are ready, but the listener thread starts on the runtime's next
+  tick, after setup turns ready and after its own startup; no bound is
+  measured. While the listener's queue (capacity 8) has a receiver, a
+  recording that arrives in that gap is queued and waits until the listener
+  reads it. If the queue is full or the receiver is gone, `try_send` fails at
+  once and the recording is refused with the reason (500 `failed`), not
+  queued. If a queued recording is still waiting at 50 s, the Mac watch
+  service answers `transcribing` (its own reply deadline, not a wait on the
+  watch); the watch then polls `/status`. No test drives that race.
+- Known limit (C1, accepted): a press counts as owned when the event that ends
+  it (the release, or a chord breaker such as a key joining a held
+  modifier) is stamped at or after the owned moment, judged by that event's
+  own timestamp inside the shortcut machine (`DictationHotkey::process`). So a
+  release queued behind later events in one batch is judged by its own stamp:
+  a tap stamped 100 ms is silent whatever else the batch holds, and one
+  stamped 400 ms asks once. A release that arrives in a later batch than the
+  clock tick that passed the owned moment is not rewound: the tick has
+  already counted the press. A key joining a Hold press after the threshold
+  is a try, as the tick would make it. HID key evidence that falls back to
+  arrival time because its clock can't be read (`src/audio/instant.rs`)
+  predates C1 and can order wrongly; C1 does not change it.
+- A permission revoked while the microphone is warm is applied when a capture
+  starts or ends or a setting reloads, and every open the input starts by
+  itself (route, device-list, selection change, stream retry) asks the
+  permission again first and is dropped when it is gone; the warm stream itself
+  closes at the next such moment.
+- Known limit (C1, accepted): the permission is read on the owner thread just
+  before an open starts (`RecoveringAudioInput::start_replacement`, and at
+  startup before the warm open), but the opener runs a moment later on its own
+  thread. A revoke inside that gap still reaches macOS, which decides whether
+  the stream opens. Not testable without a real Mac; it is on the real-Mac
+  verification list (open after a revoke, the prompt timing, the log line).
 - The live checks above have not been observed to pass in this unit's
   worktree: no real Apple Watch, no real Accessibility session, no Orca,
   Ghostty, Warp, or Claude Code and Codex inside a terminal yet. Linux and

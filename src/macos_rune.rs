@@ -314,8 +314,11 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
         .enabled
         .then(|| crate::keyboard_input_sources::current(mtm))
         .flatten();
-    let setup_ready = crate::desktop::onboarding::status(&settings.transcription).ready();
-    crate::desktop::onboarding::recheck_after_identity_change(&mut settings, setup_ready);
+    let setup = crate::desktop::onboarding::status(&settings.transcription);
+    // The listener starts without the microphone (watch recordings need none);
+    // the identity check still asks whether Mac dictation itself is ready.
+    let listener_ready = setup.listener_ready();
+    crate::desktop::onboarding::recheck_after_identity_change(&mut settings, setup.ready());
     let onboarding_completed = crate::desktop::onboarding::completion_recorded();
     let history = match crate::history::History::open_default(settings.history_retention) {
         Ok(history) => Some(history),
@@ -366,7 +369,8 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
             }
         })?;
 
-    // The microphone stays cold until setup is ready; the runtime starts it.
+    // The listener waits for Accessibility and the model; the runtime starts it.
+    // The microphone stays closed until it is granted (`MicrophoneAccess`).
     let (recognition_start, start_receiver) = mpsc::sync_channel(1);
     let recognition_indicator = indicator.clone();
     let recognition_history = history.clone();
@@ -375,7 +379,7 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
     let recognition = thread::Builder::new()
         .name("hex-listener".into())
         .spawn(move || {
-            if !setup_ready {
+            if !listener_ready {
                 loop {
                     if shutdown.load(Ordering::Relaxed) {
                         return;
@@ -438,7 +442,7 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
                 request_receiver,
                 &shared,
                 shutdown,
-                (!setup_ready).then_some(recognition_start),
+                (!listener_ready).then_some(recognition_start),
                 listener_failure,
             )
         })?;
@@ -465,12 +469,7 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig) -> Result<()
     let launch_window = if settings_error.is_some() {
         LaunchWindow::Open
     } else {
-        LaunchWindow::decide(
-            settings.show_dock_icon,
-            setup_ready,
-            onboarding_completed,
-            true,
-        )
+        LaunchWindow::for_setup(settings.show_dock_icon, setup, onboarding_completed, true)
     };
     let open_at_launch = launch_window == LaunchWindow::Open;
     if let Some(error) = settings_error {
@@ -801,7 +800,7 @@ impl Runtime {
             }
         }
         if self.recognition_start.is_some()
-            && crate::desktop::onboarding::status(&self.settings.transcription).ready()
+            && crate::desktop::onboarding::status(&self.settings.transcription).listener_ready()
             && let Some(start) = self.recognition_start.take()
         {
             let _ = start.try_send(());
@@ -1073,6 +1072,10 @@ impl Pump {
         }
         while let Ok(call) = self.control_calls.try_recv() {
             self.control(call);
+        }
+        // A dictation start found the microphone refused: Settings shows it.
+        if crate::dictation::microphone_access::take_settings_request() {
+            show(&self.window, Destination::Settings);
         }
         while let Some(action) = self
             .status_actions

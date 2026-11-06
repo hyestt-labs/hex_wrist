@@ -74,6 +74,15 @@ Context prompt (Whisper incl. ivrit.ai and NB-Whisper, Qwen3-ASR, QwenCleo)  // 
 │   slot; Qwen3-ASR: the system message
 ├── Output that only repeats the prompt (two or more terms) is dropped, as
 │   both models return it on silence or noise (README.md#get-ready)
+├── Known limit: only a whole-prompt echo is dropped (`drop_prompt_echo`,
+│   `gguf_session.rs`). A one-term list, or an echo of part of the list, still
+│   pastes; Wristper saw "Glossary" spoken back, and the four Whisper models
+│   unit F added (large-v3, medium, small, Breeze) may do the same, unmeasured.
+│   To observe it: add one or two terms to Settings › Vocabulary (the list is
+│   empty by default, and then no prompt is sent), dictate a silent or noisy
+│   clip with a Whisper model, and look for a term in History. Vocabulary
+│   biasing (Labs, off) is only Parakeet's; this prompt is always on once the
+│   list has terms
 └── "Sounds like" spellings are not sent; rewriting and search use them
 
 Recognition hints, folded in                // vocabulary.hints

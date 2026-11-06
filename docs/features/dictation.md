@@ -685,6 +685,20 @@ Release when idle -> Press shortcut                   // dictate.cold-microphone
      ├── Stream fails before the hold threshold -> Reopen for the same press
      └── Ready while held or locked -> Capture
   -> Capture idle -> Microphone can close             // accepted jobs do not keep it open
+
+Microphone not allowed (macOS)                        // dictate.microphone-gate
+  -> The listener still starts (Accessibility and the model are all it needs)
+     so Apple Watch recordings transcribe; the audio owner opens no stream
+  -> Press shortcut -> records nothing and says nothing  // Option+e, a click, a short tap
+     └── Held past the threshold (Toggle: 40 ms), or a lock -> an intentional try
+         ├── Never asked -> macOS's prompt, once
+         └── Refused, or granted and waiting for a restart -> error tone on each try;
+             the Settings window once per launch
+  -> `hex dictation start` and `/dictations` -> intentional at once; `hex dictation start`
+     answers busy "the microphone is not allowed"
+  -> Allowed later -> the first capture opens cold (no pre-roll), then the saved
+     Release-while-idle policy applies; revoked later -> the warm stream closes
+     once idle; the log line `microphone stream opened` marks each real open
 ```
 
 Source: `DictationCapture` in [dictation.rs](../../src/dictation.rs); checks:
@@ -827,6 +841,22 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   no hint) follows without a badge: on FLEURS test it trailed Parakeet
   │   Unified/v3 in every European language and tied Whisper turbo in Japanese
   │   (5.04% CER against 5.02%), Hex's run (#1252)
+  ├── Whisper large-v3, medium, and small, Breeze ASR 25 (MediaTek Research's
+  │   Whisper fine-tune, Mandarin and English only), and Qwen3-ASR 1.7B follow
+  │   without a badge (Wristper unit F; they are catalog models, not Labs
+  │   ones). Medium and small never offer Cantonese (their files have no `yue`
+  │   token); Settings says Filipino `fil` and a Whisper file lists `tl`, so every
+  │   Whisper (catalog, or an import whose file lists `tl`) accepts `fil` and
+  │   runs it as `tl`. Their speed is the catalog's
+  │   base M4 Metal figure on a Mac and "—" elsewhere, until measured; their
+  │   error rates are the catalog's FLEURS test figures, not Hex runs
+  ├── Known risks (Wristper unit F): a Hex build older than these models
+  │   can't read their saved IDs, so it runs the default model for that
+  │   session (`app_settings/persistence.rs`), and a later save from that build
+  │   can replace the saved choice. A Whisper medium or Qwen3-ASR 1.7B file
+  │   imported with "Add model file…" is stored apart from the catalog copy
+  │   (`models/custom/` against `models/`), so the same file can take disk
+  │   space twice; nothing links the two
   └── Every other available model follows without a badge, selectable and
       deletable; never auto-switched or auto-downloaded (setup.language-select)
 ```

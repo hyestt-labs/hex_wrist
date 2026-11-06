@@ -33,6 +33,13 @@ static INPUT_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static STREAM_GLITCHED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static AVOID_BLUETOOTH_MICROPHONE: AtomicBool = AtomicBool::new(true);
 
+/// The one line every successful stream open leaves, for checks that the
+/// microphone stayed closed (Apple Watch only setup grep the log for it). The
+/// device is a field, never part of the message.
+fn note_stream_opened(device: &str) {
+    tracing::info!(device, "microphone stream opened");
+}
+
 /// Whether `HEX_AUDIO_FIXTURE` names a WAV file that stands in for every
 /// microphone (benchmarks and tests; see `audio/fixture.rs`).
 pub fn uses_fixture() -> bool {
@@ -79,7 +86,7 @@ pub fn input_route_generation() -> u64 {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn notify_input_route_changed() {
+pub(crate) fn notify_input_route_changed() {
     INPUT_ROUTE_GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -274,7 +281,7 @@ type InputOpenResult = (u64, Result<Opened, String>);
 
 /// What an open resolves: `--device`, the saved microphone, and the open
 /// device's name, which is kept rather than reopened when it resolves again.
-struct OpenRequest {
+pub(crate) struct OpenRequest {
     device_override: Option<String>,
     selected_device: Option<String>,
     fallback: SelectedFallback,
@@ -297,7 +304,10 @@ impl OpenRequest {
     }
 }
 
-type Opener = Arc<dyn Fn(&OpenRequest) -> Result<Opened> + Send + Sync>;
+/// Whether the microphone may be opened now.
+pub(crate) type OpenGate = Arc<dyn Fn() -> bool + Send + Sync>;
+
+pub(crate) type Opener = Arc<dyn Fn(&OpenRequest) -> Result<Opened> + Send + Sync>;
 
 pub struct RecoveringAudioInput {
     input: Option<AudioInput>,
@@ -316,6 +326,9 @@ pub struct RecoveringAudioInput {
     opener: Opener,
     route_generation_source: fn() -> u64,
     outage: Option<Option<String>>, // why no input opens; `Some(None)` once taken
+    /// Asked before every open that starts: false means the owner may not
+    /// open the microphone now (permission), so the open is dropped.
+    may_open: Option<OpenGate>,
 }
 
 /// Whether a listener's capture is idle, so [`RecoveringAudioInput`] may
@@ -442,6 +455,8 @@ impl MicrophoneRecovery {
 impl AudioInput {
     #[cfg(test)]
     pub fn channel_for_test() -> (Self, Sender<(Vec<f32>, CaptureInstant)>) {
+        // A fake input stands for an opened stream, so it leaves the same line.
+        note_stream_opened("Test microphone");
         let (sender, chunks) = mpsc::channel();
         let (_, stream_errors) = mpsc::channel();
         (
@@ -518,6 +533,7 @@ impl AudioInput {
             &device_name,
             follows_default.then(|| device_name.clone()),
         )?;
+        note_stream_opened(&device_name);
 
         Ok(Self {
             _stream: Some(started.stream),
@@ -596,13 +612,35 @@ impl AudioInput {
 }
 
 impl RecoveringAudioInput {
+    // macOS opens through `open_with` so its owner can gate the open.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn open(
         device_override: Option<&str>,
         selection_revision: u64,
         selected_device: Option<&str>,
     ) -> Self {
-        let mut input = Self::closed(device_override, selection_revision, selected_device);
-        let opened = open_configured_input(&OpenRequest {
+        Self::open_with(
+            Arc::new(open_configured_input),
+            device_override,
+            selection_revision,
+            selected_device,
+        )
+    }
+
+    /// [`Self::open`] through `opener`, which every later open uses too.
+    pub fn open_with(
+        opener: Opener,
+        device_override: Option<&str>,
+        selection_revision: u64,
+        selected_device: Option<&str>,
+    ) -> Self {
+        let mut input = Self::closed_with(
+            opener.clone(),
+            device_override,
+            selection_revision,
+            selected_device,
+        );
+        let opened = opener(&OpenRequest {
             device_override: device_override.map(str::to_owned),
             selected_device: selected_device.map(str::to_owned),
             fallback: SelectedFallback::Immediate,
@@ -633,7 +671,24 @@ impl RecoveringAudioInput {
         }
     }
 
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn closed(
+        device_override: Option<&str>,
+        selection_revision: u64,
+        selected_device: Option<&str>,
+    ) -> Self {
+        Self::closed_with(
+            Arc::new(open_configured_input),
+            device_override,
+            selection_revision,
+            selected_device,
+        )
+    }
+
+    /// Nothing open, and nothing opens until [`Self::request_open`] or a
+    /// recovery asks `opener` to.
+    pub fn closed_with(
+        opener: Opener,
         device_override: Option<&str>,
         selection_revision: u64,
         selected_device: Option<&str>,
@@ -648,10 +703,18 @@ impl RecoveringAudioInput {
             route_generation: input_route_generation(),
             selection_retry: MICROPHONE_RETRY_INITIAL,
             reports_new_devices: cfg!(target_os = "macos"),
-            opener: Arc::new(open_configured_input),
+            opener,
             route_generation_source: input_route_generation,
             outage: None,
+            may_open: None,
         }
+    }
+
+    /// From now on every open (a start, a retry, a route or selection change)
+    /// first asks `gate`, and is dropped when it says no.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn set_open_gate(&mut self, gate: OpenGate) {
+        self.may_open = Some(gate);
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -875,6 +938,13 @@ impl RecoveringAudioInput {
     }
 
     fn start_replacement(&mut self) {
+        if self.may_open.as_ref().is_some_and(|gate| !gate()) {
+            // The permission went away since the open was asked for: drop it,
+            // and any recovery that wanted it, instead of opening a stream.
+            tracing::info!("microphone open skipped: not allowed");
+            self.recovery.recovered();
+            return;
+        }
         let revision = self
             .recovery
             .target_revision
@@ -1125,7 +1195,7 @@ fn description_name<E: std::fmt::Display>(
 /// Resolves and opens the input, or keeps the open one when it resolves to
 /// the same device. A listed saved microphone that will not open falls back
 /// to the system default.
-fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
+pub(crate) fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
     if let Some(path) = fixture::path() {
         if request.keep.as_deref() == Some(fixture::NAME) {
             return Ok(Opened::Unchanged {

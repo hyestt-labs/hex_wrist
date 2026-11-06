@@ -1764,7 +1764,7 @@ fn device_id_file_is_a_lowercase_uuid_kept_across_runs() {
 #[test]
 fn listener_dictation_names_a_full_queue_and_a_gone_listener() {
     let (controls, queue) = mpsc::sync_channel(1);
-    let dictation = ListenerDictation::new(controls);
+    let dictation = ListenerDictation::new(controls, || Ok(()));
     let (sink, _reports) = mpsc::channel();
     let delivery = |sink: &mpsc::Sender<crate::watch::delivery::DeliveryEvent>| {
         let sink = sink.clone();
@@ -1790,6 +1790,35 @@ fn listener_dictation_names_a_full_queue_and_a_gone_listener() {
         dictation.transcribe(vec![0.0; 16], delivery(&sink)),
         Err("the listener is not running".to_owned())
     );
+}
+
+/// The listener starts once Accessibility and the model are ready. A recording
+/// that arrives sooner is refused at once with the reason, not queued where
+/// nothing reads it until the watch's 50 s wait ends.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_recording_before_the_listener_can_run_is_refused_at_once() {
+    let (controls, queue) = mpsc::sync_channel(8);
+    let dictation = ListenerDictation::new(controls, || {
+        Err("Hex needs Accessibility to paste on this Mac".to_owned())
+    });
+    let (sink, _reports) = mpsc::channel();
+    let delivery = WatchDelivery::new(
+        crate::watch::delivery::Job {
+            id: ID.to_owned(),
+            language: "en".to_owned(),
+            expectation: crate::watch::field::Expectation::Current,
+            desktop: Desktop::null(),
+        },
+        move |event| {
+            let _ = sink.send(event);
+        },
+    );
+    assert_eq!(
+        dictation.transcribe(vec![0.0; 16], delivery),
+        Err("Hex needs Accessibility to paste on this Mac".to_owned())
+    );
+    assert!(queue.try_recv().is_err(), "nothing was queued");
 }
 
 #[test]
