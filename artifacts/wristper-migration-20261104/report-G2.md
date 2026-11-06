@@ -18,7 +18,7 @@
 ## 場景與預期變動的 golden
 - 新增場景：`output-chinese`（一個；沒有再加其他場景）。
 - 新增 golden 兩張（目前**不存在**，Linux 上會失敗，等你重生）：`tests/golden/rune-output-chinese-light.png`、`tests/golden/rune-output-chinese-dark.png`（PANE_SIZE）。
-- 現有 golden：預期**零張**改變。`output`、`output-trust`（portal 夾具，模型 ParakeetUnifiedEnglish）沒有中文也沒存值，卡不顯示（測試 `an_english_model_with_nothing_saved_hides_the_card` 對 `output`、`output-trust`、`output-empty` 斷言）。預設模型沒有中文的結論：這三個場景都由 `portal_fixture()` 設成 ParakeetUnifiedEnglish，未使用 `AppSettings::default()` 的模型；因此沒有「預設模型有中文」的情況要回報。
+- 現有 golden：預期**零張**改變。`output`、`output-trust`（portal 夾具，模型 ParakeetUnifiedEnglish）沒有中文也沒存值，卡不顯示（測試 `an_english_model_with_nothing_saved_hides_the_card` 對 `output`、`output-trust`、`output-empty` 斷言）。預設模型沒有中文：`TranscriptionModelId` 的 `#[default]` 是 `ParakeetUnifiedEnglish`（`src/transcription/models.rs:27-28`），語言預設 `en`（`:178-184`）；這三個場景也都由 `portal_fixture()` 明設成同一個模型。因此沒有「預設模型有中文」的情況要回報。
 - 驗收規則（側欄與其他窗格在容許內）：Output 頁以外沒動；Output 頁的新卡在第一張卡之後。其餘變動範圍預期只有 Output 頁內容區、新卡以下。
 - CI 實證（Check Linux run 42226350400，head `3fe1096e`）：`rune_ui::tests::goldens` 失敗，且**只列兩個缺檔**：
   - `tests/golden/rune-output-chinese-dark.png is missing`
