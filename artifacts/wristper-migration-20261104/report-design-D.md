@@ -1,7 +1,7 @@
 # 報告：單元 D 設計（授權與免費額度）
 
 工作目錄：`/Users/glenhsu/orca/workspaces/hex_wrist/d-design`，分支 `wristper/unit-d-design`（從 `origin/dev` `31c8a7c5`）。
-產出：`docs/plans/unit-d-design.md`（183 行）。只有文件，沒有程式、沒有改 UI。
+產出：`docs/plans/unit-d-design.md`（198 行）。只有文件，沒有程式、沒有改 UI。
 
 ## 改了什麼
 
@@ -24,7 +24,8 @@
 6. relay `/checkout` 不讀 `reference_id`（`worker.js:180-214`），它不是購買與裝置的綁定。
 7. `src/parakeet.rs` 非測試行數 1386，硬上限 1500。計數接點最多加 20 行。
 8. `DeliveryOutcome` 沒有額度結果（`src/watch/delivery.rs:20`），D2 要新增一種。
-9. e2e 驗證用 Wristper Test；啟用授權後每天第 11 次起會拿 402。設計要求 e2e 用暫存資料夾或 dev 專用開關。
+9. `commit()` 在 `verify()` 之前執行（`src/paste.rs:476` `commit_prepared_paste`，讀原始碼確認，不是推測）。所以計數不能放在 commit closure 裡，否則 target-changed 也會被扣額；設計改成貼上前 `admit()`、結果確定送達後才 `record_delivery()`。
+10. e2e 驗證用 Wristper Test；啟用授權後每天第 11 次起會拿 402。設計要求 e2e 用暫存資料夾或 dev 專用開關。
 
 ## 待使用者決定的問題（每題附建議）
 
@@ -35,13 +36,15 @@
 5. 深連結遇到已有有效授權：建議先問，不靜默替換。
 6. Mac 快捷鍵 20 秒：建議到時自動停止並貼上，不在使用者不知情時只截轉錄。
 
-協調者可自行決定、但文件已寫出理由的技術選擇：手寫美國太平洋時間規則（不加 tz 相依）、先去重再擋額度、commit 點嚴格扣額、損毀狀態檔時付費使用者靠鑰匙圈憑證進入寬限。
+以上六題不回覆就照建議做。
+
+協調者可自行決定、但文件已寫出理由的技術選擇：手寫美國太平洋時間規則（不加 tz 相依）、先去重再擋額度、commit 點嚴格扣額、損毀狀態檔時付費使用者靠鑰匙圈憑證進入寬限、匯入時先寫鑰匙圈再寫狀態檔、程式啟動的聽寫在額度用完時立刻拒絕。
 
 ## 檢查輸出
 
 ```
 $ wc -l docs/plans/unit-d-design.md
-     183 docs/plans/unit-d-design.md
+     198 docs/plans/unit-d-design.md
 $ git diff --check
 （無輸出）
 ```
