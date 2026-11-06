@@ -59,6 +59,10 @@ pub(crate) enum Flow {
 pub(crate) enum Step {
     Pick,
     Started,
+    /// Apple Watch pairing (macOS, a running watch service): after the
+    /// model step, before the demo. Not optional: it has no Skip, only
+    /// "Pair later".
+    Watch,
     Parked,
     YourTurn,
     Hearing,
@@ -453,6 +457,24 @@ impl Onboard {
         self.auto_due_at = Some(tf + typing::duration() + 1.15);
     }
 
+    /// The Apple Watch page. It holds until the person pairs a watch or
+    /// presses Pair later: nothing is due.
+    pub(crate) fn jump_to_watch(&mut self) {
+        self.manual_override = true;
+        self.sfx.clear();
+        self.practice.focused = false;
+        self.live_hold_from = None;
+        self.ensure_download(false);
+        self.step = Step::Watch;
+        self.auto_due_at = None;
+    }
+
+    /// A paired watch and no Mac microphone: the practice needs the Mac's
+    /// shortcut, so setup passes it over (`Flow::microphone_deferred`).
+    pub(crate) fn watch_only(&self) -> bool {
+        self.live.as_ref().is_some_and(Live::microphone_deferred)
+    }
+
     pub(crate) fn jump_to_permissions(&mut self) {
         self.manual_override = true;
         self.sfx.clear();
@@ -793,7 +815,13 @@ pub(super) fn first_run_next(s: &mut Onboard, now: f64) -> Option<f64> {
         Step::Pick | Step::Started if s.live.as_ref().is_some_and(super::live::Live::holds) => {
             Some(WAIT)
         }
-        Step::Pick | Step::Started => {
+        // The Apple Watch page waits for the person, not the clock.
+        Step::Pick | Step::Started if s.live.as_ref().is_some_and(|live| live.watch.offered()) => {
+            s.step = Step::Watch;
+            s.auto_due_at = None;
+            None
+        }
+        Step::Pick | Step::Started | Step::Watch => {
             s.step = Step::Parked;
             s.parked_from = Some(now);
             let tf = now + TYPING_LEAD;
@@ -835,6 +863,13 @@ pub(super) fn first_run_next(s: &mut Onboard, now: f64) -> Option<f64> {
         }
         Step::Waiting if !s.can_hear() => Some(WAIT),
         Step::Waiting if s.closed < 1.0 => Some(0.9),
+        // A watch-only setup has no practice: Hex is ready once the model is.
+        Step::Done | Step::Permissions | Step::Waiting if s.watch_only() => {
+            s.step = Step::Ready;
+            s.ready_from = Some(now);
+            s.sfx.on_ready(now);
+            None
+        }
         Step::Done | Step::Permissions | Step::Waiting => {
             s.step = Step::Try;
             s.take_from = None;

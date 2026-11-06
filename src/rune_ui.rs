@@ -64,8 +64,6 @@ mod spark;
 #[cfg(target_os = "macos")]
 pub(crate) mod story_link;
 mod vocabulary;
-#[cfg(target_os = "macos")]
-mod watch_host;
 mod watch_pane;
 #[cfg(target_os = "macos")]
 pub(crate) mod watch_status;

@@ -95,3 +95,37 @@ pub(in crate::rune_ui) fn scene(ui: &mut Ui, scene: Scene) {
         Scene::Unavailable => ui.platform.watch = None,
     }
 }
+
+/// The first run on a Mac whose watch service reports, at `page`: with a
+/// watch already paired (the Continue button, no Microphone row) or none.
+pub(in crate::rune_ui) fn first_run(
+    ui: &mut Ui,
+    paired: bool,
+    page: crate::rune_ui::onboarding_kit::live::Page,
+) {
+    use crate::rune_ui::onboarding;
+    *ui = crate::rune_ui::mac_fixture();
+    ui.watch.now = Some(now());
+    let devices = if paired {
+        vec![watches().remove(0)]
+    } else {
+        Vec::new()
+    };
+    ui.platform.watch = Some(snapshot(RelayState::Connected, devices));
+    if paired {
+        ui.watch.pair = Pair::Paired("Glen's Apple Watch".into());
+    }
+    onboarding::mac_fixture(ui, onboarding::MacStep::Setup);
+    crate::rune_ui::onboarding_kit::live::fixture(ui, page);
+}
+
+/// A paired watch, for tests that build their own snapshot.
+#[cfg(test)]
+pub(in crate::rune_ui) fn scene_watch() -> DeviceSummary {
+    watches().remove(0)
+}
+
+#[cfg(test)]
+pub(in crate::rune_ui) fn scene_snapshot(devices: Vec<DeviceSummary>) -> WatchSnapshot {
+    snapshot(RelayState::Connected, devices)
+}

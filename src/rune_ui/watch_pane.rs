@@ -7,6 +7,8 @@
 //! status line, and the app link (`watch_pane::pairing`).
 
 mod fixtures;
+#[cfg(target_os = "macos")]
+pub(in crate::rune_ui) mod host;
 mod pairing;
 #[cfg(test)]
 mod tests;
@@ -26,7 +28,9 @@ use crate::desktop::i18n::{tr, tr_fill, tr_named};
 use crate::watch::pairing::{DeviceStatus, DeviceSummary};
 use crate::watch::relay::RelayState;
 use crate::watch::service::{ClaimError, ClaimOk, WatchSnapshot};
-pub(super) use fixtures::{Scene, scene};
+pub(super) use fixtures::{Scene, first_run, scene};
+#[cfg(test)]
+pub(super) use fixtures::{scene_snapshot, scene_watch};
 pub(super) use pairing::{Pair, Tone};
 
 /// Where the watch app comes from.
@@ -184,16 +188,22 @@ pub(super) fn relay_status(snapshot: &WatchSnapshot) -> (&'static str, Tone) {
     }
 }
 
-/// The six-digit field, shared with first-run setup.
-pub(super) fn code_field(ui: &Ui, p: Paint) -> El {
-    TextInput::new(&ui.watch.code)
+/// The six-digit field, shared with first-run setup (`key` tells them apart).
+pub(super) fn code_input(code: &TextEdit, busy: bool, key: &'static str, p: Paint) -> El {
+    TextInput::new(code)
         .label(tr("Pairing code"))
         .placeholder("000000")
         .width(Some(120.0))
-        .disabled(ui.watch.pair.busy())
+        .disabled(busy)
         .on_edit(|ui: &mut Ui| &mut ui.watch.code)
         .build(p.k)
-        .key("watch-code")
+        .key(key)
+}
+
+/// Whether a paired watch can be served (not needing repair); false until
+/// the service has reported.
+pub(super) fn paired(ui: &Ui) -> bool {
+    crate::watch::view::paired(ui.platform.watch.as_ref()).unwrap_or(false)
 }
 
 /// Opens the watch app's page, as a live window does (scenes record nothing).
@@ -226,7 +236,7 @@ fn pair_rows(ui: &Ui, p: Paint) -> Vec<super::controls::CardRow> {
             Some(tr(
                 "On your watch, open Wristper › Pair a Mac and type the code it shows",
             )),
-            code_field(ui, p),
+            code_input(&ui.watch.code, ui.watch.pair.busy(), "watch-code", p),
         )
         .into(),
         folding("watch-code-fold", status),

@@ -713,6 +713,17 @@ pub(super) const SCENES: &[Scene] = &[
     ("mac-onboarding", |ui| {
         mac_first_run(ui, onboarding::MacStep::Setup, Page::Download)
     }),
+    // Apple Watch pairing after the model step, and a watch-only
+    // permissions page that asks for Accessibility alone.
+    ("mac-onboarding-watch", |ui| {
+        watch_pane::first_run(ui, false, Page::Watch)
+    }),
+    ("mac-onboarding-watch-paired", |ui| {
+        watch_pane::first_run(ui, true, Page::Watch)
+    }),
+    ("mac-onboarding-permissions-watch", |ui| {
+        watch_pane::first_run(ui, true, Page::Permissions)
+    }),
     ("mac-onboarding-permissions", |ui| {
         mac_first_run(ui, onboarding::MacStep::Setup, Page::Permissions)
     }),

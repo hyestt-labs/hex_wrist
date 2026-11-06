@@ -233,6 +233,15 @@ const PATHS: &[(&str, &str)] = &[
     ("mac-production", "Window/General/Production build"),
     ("mac-activity", "Window/Activity/Activity"),
     ("mac-onboarding", "Window/Onboarding/Setting up Hex"),
+    ("mac-onboarding-watch", "Window/Onboarding/Apple Watch"),
+    (
+        "mac-onboarding-watch-paired",
+        "Window/Onboarding/Apple Watch · paired",
+    ),
+    (
+        "mac-onboarding-permissions-watch",
+        "Window/Onboarding/Permissions · watch only",
+    ),
     (
         "mac-onboarding-permissions",
         "Window/Onboarding/Permissions",

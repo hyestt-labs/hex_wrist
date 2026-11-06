@@ -29,6 +29,7 @@ use super::super::{Request, Ui, onboarding};
 use super::fixture::{Language, Speech};
 use super::pill::set_other_label;
 use super::stories::{FRAME, Flow, Onboard, Step, advance_to};
+use super::watch;
 use crate::desktop::onboarding::{
     Input, ItemStatus, Practice, SetupItem, SetupStatus, Step as TourStep,
 };
@@ -83,6 +84,8 @@ pub(crate) struct Live {
     /// The scan for models on this computer hasn't answered yet.
     scanning: bool,
     pub(crate) practice: Practice,
+    /// What the story knows about Apple Watches (macOS).
+    pub(crate) watch: watch::Page,
     /// The model and language this run downloads.
     choice: TranscriptionSelection,
     granted_at: Option<f64>,
@@ -104,6 +107,11 @@ pub(crate) enum ModelStep {
 }
 
 impl Live {
+    /// A paired watch dictates while the Mac's microphone isn't allowed yet.
+    pub(crate) fn microphone_deferred(&self) -> bool {
+        self.watch.microphone_deferred()
+    }
+
     /// The story waits on the download page for the model step.
     pub(crate) fn holds(&self) -> bool {
         self.scanning
@@ -149,10 +157,11 @@ fn clock(ui: &Ui) -> f64 {
 }
 
 /// Every permission is ready, the desktop's paste permission included
-/// (or passed over), so the story needs no permissions page.
-fn granted(status: SetupStatus, paste: Option<PasteAccess>) -> bool {
+/// (or passed over), so the story needs no permissions page. With a paired
+/// watch (`deferred`) the Microphone waits for the first Mac dictation.
+fn granted(status: SetupStatus, paste: Option<PasteAccess>, deferred: bool) -> bool {
     use crate::desktop::onboarding::PermissionState::Ready;
-    status.microphone == Ready
+    (status.microphone == Ready || deferred)
         && status.accessibility == Ready
         && paste.is_none_or(PasteAccess::settled)
 }
@@ -211,7 +220,11 @@ pub(in crate::rune_ui) fn open(ui: &mut Ui) {
     set_other_label(transcription_models::language_name(&other.language));
     let had_model = installed(ui, &choice);
     let status = ui.platform.setup_status(had_model);
-    let granted = granted(status, ui.platform.paste);
+    let window = watch_window(ui, status);
+    let deferred = window.paired == Some(true) && !window.mic_ready;
+    let granted = granted(status, ui.platform.paste, deferred);
+    let mut watch = watch::Page::default();
+    watch.refresh(window);
 
     let mut s = Onboard::new(Flow::FirstRun);
     s.speech = Speech::AfterDownload;
@@ -244,6 +257,7 @@ pub(in crate::rune_ui) fn open(ui: &mut Ui) {
         pick_started: false,
         scanning: false,
         practice: Practice::Waiting,
+        watch,
         choice,
         granted_at: None,
         checked: None,
@@ -253,7 +267,21 @@ pub(in crate::rune_ui) fn open(ui: &mut Ui) {
     s.now = now;
     match tour_step {
         TourStep::Welcome => s.begin_live(now),
-        TourStep::Setup => s.jump_to_permissions(),
+        // Resumed at setup: a watch not yet paired is asked about again. The
+        // service's first snapshot may still be on its way.
+        TourStep::Setup => {
+            let watch = s.live.as_ref().map(|live| &live.watch);
+            let (offered, paired) = watch.map_or((false, false), |w| (w.offered(), w.is_paired()));
+            let waiting = ui.platform.caps.watch && ui.platform.watch.is_none();
+            if offered && !paired {
+                s.jump_to_watch();
+            } else {
+                s.jump_to_permissions();
+            }
+            if let Some(live) = s.live.as_mut().filter(|_| waiting) {
+                live.watch.resume_until = Some(now + watch::RESUME_WAIT);
+            }
+        }
         TourStep::TryIt if had_model => s.jump_to_try(),
         TourStep::TryIt => s.jump_to_waiting(),
         TourStep::Done => s.jump_to_ready(),
@@ -266,11 +294,26 @@ pub(in crate::rune_ui) fn open(ui: &mut Ui) {
     }
 }
 
+/// What the window's Apple Watch pane knows, for the story's page.
+fn watch_window(ui: &Ui, status: SetupStatus) -> watch::Window {
+    let snapshot = ui.platform.watch.as_ref();
+    watch::Window {
+        available: ui.platform.caps.watch && snapshot.is_some(),
+        paired: crate::watch::view::paired(snapshot),
+        mic_ready: status.microphone == crate::desktop::onboarding::PermissionState::Ready,
+        code: ui.watch.code.clone(),
+        status: ui.watch.pair.status(),
+        busy: ui.watch.pair.busy(),
+    }
+}
+
 /// A page of the first run, for scenes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::rune_ui) enum Page {
     /// `"Setting up Hex"`, or the model step when models were found.
     Download,
+    /// `"Set up your Apple Watch"` (macOS).
+    Watch,
     /// The demo, finished: `"Twice as fast"` and Continue.
     Demo,
     Permissions,
@@ -281,11 +324,12 @@ pub(in crate::rune_ui) enum Page {
     Ready,
 }
 
-/// The page the first run shows, for the window tests (Linux only).
-#[cfg(all(test, target_os = "linux"))]
+/// The page the first run shows, for the window tests.
+#[cfg(test)]
 pub(in crate::rune_ui) fn page(ui: &Ui) -> Option<Page> {
     Some(match ui.first_run.as_ref()?.step {
         Step::Pick | Step::Started => Page::Download,
+        Step::Watch => Page::Watch,
         Step::Parked | Step::YourTurn | Step::Hearing | Step::Heard | Step::Done => Page::Demo,
         Step::Permissions => Page::Permissions,
         Step::Waiting => Page::Waiting,
@@ -318,6 +362,7 @@ pub(in crate::rune_ui) fn fixture_resume(ui: &mut Ui, page: Page) {
     };
     let reached = |s: &Onboard| match page {
         Page::Download => matches!(s.step, Step::Pick | Step::Started),
+        Page::Watch => s.step == Step::Watch,
         Page::Demo => s.step == Step::Done,
         Page::Permissions => s.step == Step::Permissions,
         Page::Waiting => s.step == Step::Waiting,
@@ -331,7 +376,13 @@ pub(in crate::rune_ui) fn fixture_resume(ui: &mut Ui, page: Page) {
         if reached(s) {
             break;
         }
-        let Some(next) = super::stories::first_run_next(s, s.now) else {
+        let next = super::stories::first_run_next(s, s.now);
+        // The Apple Watch page waits for the person; a scene bound for a
+        // later page presses Pair later.
+        if next.is_none() && s.step == Step::Watch && page != Page::Watch {
+            continue;
+        }
+        let Some(next) = next else {
             break;
         };
         s.now += next;
@@ -430,9 +481,25 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
         checked.installed || tour_model == ItemStatus::Ready,
         checked.status,
     );
+    // The tour hears whether a watch is paired as soon as the service says.
+    let window = watch_window(ui, status);
+    let paired = window.paired;
+    let deferred = paired == Some(true) && !window.mic_ready;
+    if let Some(paired) = paired
+        && ui
+            .first_run
+            .as_ref()
+            .and_then(|s| s.live.as_ref())
+            .is_some_and(|live| live.watch.told != Some(paired))
+    {
+        onboarding::input(ui, Input::Watch(paired));
+        if let Some(live) = ui.first_run.as_mut().and_then(|s| s.live.as_mut()) {
+            live.watch.told = Some(paired);
+        }
+    }
     // Setup that is already ready never moves the tour past it by itself,
     // and the tour watches the practice dictation only once it has.
-    if status.ready()
+    if status.ready_with_watch(paired == Some(true))
         && ui
             .tour
             .as_ref()
@@ -444,6 +511,7 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
     let accessibility_renamed = ui.platform.accessibility_renamed;
     let relaunch_failed = ui.platform.relaunch_failed;
     let paste = ui.platform.paste;
+    let has_snapshot = ui.platform.watch.is_some();
     let live_window = !ui.is_fixture();
     let Some(s) = ui.first_run.as_mut() else {
         return false;
@@ -495,7 +563,8 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
         // A model already on this computer needs no download pill.
         s.had_model = tour_model == ItemStatus::Ready;
     }
-    let granted = granted(status, paste);
+    live.watch.refresh(window);
+    let granted = granted(status, paste, deferred);
     if granted {
         live.granted_at.get_or_insert(now);
     } else {
@@ -514,8 +583,18 @@ pub(in crate::rune_ui) fn poll(ui: &mut Ui, tx: &mut Tx) -> bool {
         .is_some_and(|(_, since)| now - since >= STALL_AFTER);
     live.failure = failure;
     live.using_file = using_file;
+    // A resumed setup chooses between the watch page and the permissions
+    // once the service says whether a watch is paired.
+    let resume = live.watch.resume_until;
+    let (offered, is_paired) = (live.watch.offered(), live.watch.is_paired());
+    if resume.is_some() && (has_snapshot || now >= resume.unwrap_or(f64::MAX)) {
+        live.watch.resume_until = None;
+    }
     s.granted = granted;
     s.caps = caps;
+    if resume.is_some() && has_snapshot && offered && !is_paired && s.step == Step::Permissions {
+        s.jump_to_watch();
+    }
     if let Some(download) = s.download.as_mut() {
         if let Some(total) = model.and_then(|m| m.download_bytes()) {
             download.total = total;
@@ -598,8 +677,9 @@ pub(in crate::rune_ui) fn continue_without_model(ui: &mut Ui) {
 /// "Start using Hex": closes the first run and the tour under it.
 pub(super) fn finish(ui: &mut Ui) {
     let installed = ui.picker.selected_installed(&ui.settings);
+    let paired = super::super::watch_pane::paired(ui);
     if ui.live()
-        && ui.platform.setup_status(installed).ready()
+        && ui.platform.setup_status(installed).ready_with_watch(paired)
         && !crate::desktop::onboarding::completion_recorded()
         && let Err(error) = crate::desktop::onboarding::record_completion()
     {

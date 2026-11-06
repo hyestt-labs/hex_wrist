@@ -544,7 +544,7 @@ struct MacHost {
     resetting: [bool; 3],
     reset_tx: mpsc::Sender<PermissionKind>,
     reset_rx: Receiver<PermissionKind>,
-    watch: super::watch_host::WatchFeed,
+    watch: super::watch_pane::host::WatchFeed,
     #[cfg(hex_capture)]
     scrawl: ScrawlHost,
 }
@@ -556,7 +556,7 @@ impl MacHost {
             .ok();
         let (reset_tx, reset_rx) = mpsc::channel();
         let mut host = Self {
-            watch: super::watch_host::WatchFeed::new(wake.clone()),
+            watch: super::watch_pane::host::WatchFeed::new(wake.clone()),
             wake,
             login,
             login_checking: false,

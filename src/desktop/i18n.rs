@@ -1642,6 +1642,7 @@ mod tests {
         include_str!("../rune_ui/onboarding_kit/pill.rs"),
         include_str!("../rune_ui/onboarding_kit/stories.rs"),
         include_str!("../rune_ui/onboarding_kit/versus.rs"),
+        include_str!("../rune_ui/onboarding_kit/watch.rs"),
         include_str!("../rune_ui/output.rs"),
         include_str!("../rune_ui/screenshot_thumbnail.rs"),
         include_str!("../screenshots.rs"),

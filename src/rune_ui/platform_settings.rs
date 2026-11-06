@@ -80,7 +80,10 @@ pub(super) fn permissions_section(ui: &Ui, p: Paint) -> Option<El> {
     if !ui.platform.caps.permissions {
         return None;
     }
-    let warnings = crate::desktop::onboarding::permission_warnings(ui.platform.permissions);
+    let warnings = crate::desktop::onboarding::permission_warnings(
+        ui.platform.permissions,
+        super::watch_pane::paired(ui),
+    );
     if warnings.is_empty() {
         return None;
     }

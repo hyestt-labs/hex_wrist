@@ -295,3 +295,141 @@ fn the_sidebar_puts_apple_watch_right_after_general() {
     assert!(y("nav-general") < y("nav-watch"));
     assert!(y("nav-watch") < y("nav-output"));
 }
+
+mod first_run {
+    use super::*;
+    use crate::desktop::onboarding::{PermissionState, Step as TourStep};
+    use crate::rune_ui::onboarding_kit::live::{self, Page};
+
+    fn page(rt: &Runtime<Ui>) -> Option<Page> {
+        live::page(&rt.state)
+    }
+
+    #[test]
+    fn the_watch_page_follows_the_model_step_and_pairs() {
+        let rt = runtime("mac-onboarding-watch");
+        assert_eq!(page(&rt), Some(Page::Watch));
+        for words in ["Set up your Apple Watch", "Get the watch app", "Pair later"] {
+            assert!(says(&rt, words), "missing {words:?} in {:?}", shown(&rt));
+        }
+        assert!(rt.find("watch-onboard-code").is_some());
+        assert!(rt.find("continue").is_none(), "nothing paired yet");
+        assert!(rt.find("skip").is_none(), "this page has no Skip");
+    }
+
+    #[test]
+    fn pair_later_goes_to_the_demo_and_records_nothing() {
+        let mut rt = runtime("mac-onboarding-watch");
+        tap(&mut rt, "pair-later");
+        assert_eq!(page(&rt), Some(Page::Demo), "the demo follows");
+        assert!(rt.state.first_run.is_some(), "onboarding stays open");
+        let tour = rt.state.tour.as_ref().expect("the tour is still running");
+        assert_eq!(tour.flow.step(), TourStep::Setup, "setup is not done");
+        // No platform request, no completion: a fixture never writes, and a
+        // skipped watch asks the host for nothing.
+        assert!(asked(&rt).is_empty(), "{:?}", asked(&rt));
+    }
+
+    #[test]
+    fn a_paired_watch_shows_continue_not_pair_later() {
+        let mut rt = runtime("mac-onboarding-watch-paired");
+        assert!(rt.find("pair-later").is_none());
+        assert!(says(&rt, "Paired with Glen's Apple Watch"));
+        tap(&mut rt, "continue");
+        assert_eq!(page(&rt), Some(Page::Demo));
+    }
+
+    #[test]
+    fn six_digits_on_the_watch_page_send_one_pair_request() {
+        let mut rt = runtime("mac-onboarding-watch");
+        rt.state.watch.code = TextEdit::new("217400");
+        refresh(&mut rt);
+        refresh(&mut rt);
+        assert_eq!(asked(&rt), [PlatformRequest::WatchPair("217400".into())]);
+    }
+
+    #[test]
+    fn watch_only_permissions_ask_only_for_accessibility() {
+        let rt = runtime("mac-onboarding-permissions-watch");
+        assert_eq!(page(&rt), Some(Page::Permissions));
+        assert!(rt.find("mic-row").is_none(), "no Microphone row");
+        assert!(rt.find("ax-row").is_some(), "Accessibility is still asked");
+        assert!(says(&rt, "Let Hex type for you"));
+        assert!(says(
+            &rt,
+            "Pastes what you dictate on your watch into the app you're using"
+        ));
+        // Without a watch the page asks for both, as it always did.
+        let rt = runtime("mac-onboarding-permissions");
+        assert!(rt.find("mic-row").is_some());
+        assert!(says(&rt, "Let Hex hear you and type for you"));
+    }
+
+    #[test]
+    fn watch_only_finishes_without_the_practice() {
+        let mut rt = runtime("mac-onboarding-permissions-watch");
+        // Accessibility granted and the model installed; the Microphone
+        // never is.
+        rt.update(|ui, tx| {
+            ui.platform.permissions.accessibility = PermissionState::Ready;
+            ui.picker.installed = Some(vec![ui.settings.transcription.model]);
+            if let Some(view) = &mut ui.view {
+                view.transcription.preparing = None;
+            }
+            live::poll(ui, tx);
+        });
+        assert_eq!(
+            rt.state.platform.permissions.microphone,
+            PermissionState::NeedsRequest
+        );
+        for _ in 0..40 {
+            rt.update(|ui, tx| {
+                if let Some(s) = ui.first_run.as_mut() {
+                    s.now += 1.0;
+                    s.move_on();
+                }
+                live::poll(ui, tx);
+            });
+            refresh(&mut rt);
+            if page(&rt) == Some(Page::Ready) {
+                break;
+            }
+            assert_ne!(page(&rt), Some(Page::Try), "the practice was not skipped");
+        }
+        assert_eq!(page(&rt), Some(Page::Ready));
+        assert!(
+            rt.find("try-again").is_none(),
+            "a Mac dictation can't be tried yet"
+        );
+        assert!(rt.find("start-using-hex").is_some());
+    }
+
+    #[test]
+    fn a_setup_resumed_before_pairing_asks_about_the_watch_again() {
+        // The tour quit at setup: unpaired shows the watch page, paired the permissions.
+        for (paired, expected) in [(false, Page::Watch), (true, Page::Permissions)] {
+            let mut rt = runtime("mac-onboarding-watch");
+            rt.update(|ui, _| {
+                let devices = if paired {
+                    vec![crate::rune_ui::watch_pane::scene_watch()]
+                } else {
+                    Vec::new()
+                };
+                ui.platform.watch = Some(crate::rune_ui::watch_pane::scene_snapshot(devices));
+                ui.first_run = None;
+                live::open(ui);
+            });
+            refresh(&mut rt);
+            assert_eq!(page(&rt), Some(expected), "paired: {paired}");
+        }
+    }
+
+    #[test]
+    fn a_mac_without_a_running_service_never_sees_the_watch_page() {
+        let mut rt = runtime("mac-onboarding");
+        rt.update(|ui, _| live::fixture_resume(ui, Page::Demo));
+        refresh(&mut rt);
+        assert_eq!(page(&rt), Some(Page::Demo), "straight to the demo");
+        assert!(rt.find("pair-later").is_none());
+    }
+}

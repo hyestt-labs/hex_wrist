@@ -5,11 +5,11 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use super::platform::{PlatformRequest, PlatformState};
-use super::watch_pane::WatchEvent;
+use super::WatchEvent;
+use crate::rune_ui::platform::{PlatformRequest, PlatformState};
 use crate::watch::service::{ClaimError, WatchSnapshot};
 
-pub(super) struct WatchFeed {
+pub(in crate::rune_ui) struct WatchFeed {
     events: Sender<WatchEvent>,
     replies: Receiver<WatchEvent>,
     /// The newest snapshot the service pushed and the window has not taken.
@@ -18,7 +18,7 @@ pub(super) struct WatchFeed {
 }
 
 impl WatchFeed {
-    pub(super) fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub(in crate::rune_ui) fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let (events, replies) = mpsc::channel();
         let pushed: Arc<Mutex<Option<WatchSnapshot>>> = Arc::default();
         let (slot, wake_window) = (Arc::clone(&pushed), Arc::clone(&wake));
@@ -36,7 +36,7 @@ impl WatchFeed {
     }
 
     /// Starts the work for a pairing or Remove request. False for any other.
-    pub(super) fn send(&self, request: &PlatformRequest) -> bool {
+    pub(in crate::rune_ui) fn send(&self, request: &PlatformRequest) -> bool {
         let (events, wake) = (self.events.clone(), Arc::clone(&self.wake));
         match request.clone() {
             PlatformRequest::WatchPair(code) => spawn("hex-watch-pair", move || {
@@ -61,7 +61,7 @@ impl WatchFeed {
     }
 
     /// Moves what arrived into the window's state.
-    pub(super) fn poll(&mut self, state: &mut PlatformState) -> bool {
+    pub(in crate::rune_ui) fn poll(&mut self, state: &mut PlatformState) -> bool {
         let mut changed = false;
         let pushed = self
             .pushed
