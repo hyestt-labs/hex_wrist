@@ -2247,6 +2247,10 @@ check_textedit() {
     same_id_set "$after_ids" "$before_ids" && step PASS "the windows that have a document are exactly the ones from before (the document-less panel TextEdit shows briefly is not counted)" || step FAIL "document window ids differ: before [$before_ids] after [$after_ids]"
     [ "$after_names" = "$before_names" ] && step PASS "TextEdit's document names are exactly the ones from before" || step FAIL "document names differ"
   fi
+  if app_running TextEdit; then
+    scan_now=$(te_scan) && step PASS "a real scan of all TextEdit windows is readable ($(grep -c . <<<"$scan_now") windows: $(grep -c '|/' <<<"$scan_now") with a file, $(grep -c '|$' <<<"$scan_now") untitled, $(grep -c '|!NODOC$' <<<"$scan_now") without a document)" || step FAIL "the scan of TextEdit's windows failed or could not be read"
+    [ "$(grep -c '|!ERR$' <<<"$scan_now")" = 0 ] && step PASS "…and no window has an unreadable document or path (!ERR)" || step FAIL "windows with an unreadable document or path: $(grep '|!ERR$' <<<"$scan_now" | cut -d'|' -f1 | tr '\n' ' ')"
+  fi
   row_refused && step FAIL "the gate refused something: $(tr '\n' ';' < "$tmp/row-refused")" || step PASS "the gate refused nothing"
   echo "  elapsed $(( ($(now_ms) - started) / 1000 )) s"
   teardown
@@ -2578,6 +2582,13 @@ selftest_main() {
   chmod 700 "$sub/tool/locked"
   st_check "a listing that fails (an unreadable folder in the tree) is not 'empty': the tree and the root are kept" bash -c "[ -f '$sub/tool/locked/x' ] && [ -d '$sub' ]"
   "$TRASH" "$sub"
+  st_sub kchild; sub=$SUB
+  mkdir -p "$sub/dir/inner"; : > "$sub/dir/inner/kept.txt"
+  printf 'te-keep\t%s\tfixture\n' "$sub/dir/inner/kept.txt" >> "$sub/registry.tsv"
+  st_run_sub do_trash "$sub/dir"
+  st_check "do_trash refuses a folder that holds a te-keep item (even if it were to be Trashed whole), and the item stays" bash -c "[ -f '$sub/dir/inner/kept.txt' ]"
+  st_check "…and do_trash of an unrelated sibling path still works (control)" bash -c ": > '$sub/free.txt'; ( tmp='$SUB'; TRASH=/usr/bin/trash; $(declare -f do_trash reg_list log); do_trash '$sub/free.txt' ); [ ! -e '$sub/free.txt' ]"
+  "$TRASH" "$sub"
   st_sub dirstate; sub=$SUB
   mkdir "$sub/d"; chmod 000 "$sub/d"
   st_eq() { [ "$1" = "$2" ]; }
@@ -2586,6 +2597,13 @@ selftest_main() {
   st_run_sub trash_own "$sub/d"
   chmod 700 "$sub/d"
   st_check "a registered folder that cannot be listed is not Trashed as if it were empty" bash -c "[ -d '$sub/d' ]"
+  # a listing that fails on a folder that really is empty (find stands in as failing): not known to be empty, so kept
+  mkdir "$sub/e"; printf 'path\t%s\t\n' "$sub/e" >> "$sub/registry.tsv"
+  st_failing_find_trash() { find() { return 1; }; trash_own "$1"; }
+  st_run_sub st_failing_find_trash "$sub/e"
+  st_check "(listing fails, folder is empty) the folder is kept: a failed listing is never read as empty" bash -c "[ -d '$sub/e' ]"
+  st_run_sub trash_own "$sub/e"
+  st_check "(control) with a working listing the same empty folder is Trashed" bash -c "[ ! -e '$sub/e' ]"
   st_check "dir_state says empty for an empty folder" st_eq "$(dir_state "$sub/d")" empty
   : > "$sub/d/f"
   st_check "…and nonempty for one with an item" st_eq "$(dir_state "$sub/d")" nonempty
@@ -3164,6 +3182,7 @@ selftest_main() {
   echo "[14b] static rules of the script itself"
   st_check "no 'rm' command anywhere in the script, the self-test and its stand-ins included (deleting is Trash only)" bash -c "! grep -nE '(^|[^a-zA-Z_])rm( |\$)' '$self'"
   st_check "outside the self-test, only do_trash calls the Trash command (one call site)" bash -c "[ \"\$(sed -n '1,/^# selftest: no GUI/p' '$self' | grep -c '\"\\\$TRASH\"')\" = 1 ]"
+  st_check "the TextEdit scan starts every window as unreadable (!ERR) and clears it only when the document and path were read" bash -c "grep -q \"set tag to \\\"!ERR\\\"\" '$self'"
   st_check "no pkill, killall, git clean, or removeItem either" bash -c "! grep -nE '(^|[^a-zA-Z_])(pkill|killall)( |\$)|git clean|removeItem' '$self' | grep -v 'st_check\|^[0-9]*:#'"
 
   echo "[15] the temp folder of the selftest itself: everything it made was registered, so the cleanup removes it all"
