@@ -153,6 +153,14 @@ real_path() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "
 #   switch    key = finder (the one app this run may bring to the front on purpose, in the app-switch scenario)
 #   ran       key = app name, extra = running|not-running at the start (written to the log only; it decides nothing)
 
+US=$'\037'   # separates the parts of a registry "extra" field
+# A process is identified by its pid, its start time, and its command line together. A pid alone can be reused.
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//'; }
+proc_cmd() { ps -o command= -p "$1" 2>/dev/null; }
+epoch_of() { date -j -f '%a %b %e %T %Y' "$1" +%s 2>/dev/null; }
+# The one Trash command (a variable only so the self-test can make it fail).
+TRASH=/usr/bin/trash
+
 reg_add() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$tmp/registry.tsv"; }
 reg_has() { [ -f "$tmp/registry.tsv" ] && awk -F'\t' -v k="$1" -v v="$2" '$1==k && $2==v {f=1} END{exit !f}' "$tmp/registry.tsv"; }
 reg_get() { [ -f "$tmp/registry.tsv" ] && awk -F'\t' -v k="$1" -v v="$2" '$1==k && $2==v {x=$3} END{print x}' "$tmp/registry.tsv"; }
@@ -191,9 +199,17 @@ OWNED_PID=
 owned_bg() {
   local marker=$1
   shift
-  perl -e 'use POSIX qw(setsid); setsid() or die "setsid: $!"; exec { $ARGV[0] } @ARGV or die "exec: $!"' "$@" &
+  # The new session registers ITSELF (pid, marker, start time) before it execs, so a signal that
+  # arrives right after the fork cannot leave a process the registry does not know.
+  WATCH_E2E_MARKER="$marker" perl -e '
+    use POSIX qw(setsid);
+    setsid() or die "setsid: $!";
+    my $started = `ps -o lstart= -p $$ 2>/dev/null`; $started =~ s/^\s+|\s+$//g;
+    my $marker = delete $ENV{WATCH_E2E_MARKER};
+    open(my $fh, ">>", "$ENV{WATCH_E2E_TMP}/registry.tsv") or die "registry: $!";
+    print $fh "pid\t$$\t$marker\x1f$started\n"; close $fh;
+    exec { $ARGV[0] } @ARGV or die "exec: $!";' "$@" &
   OWNED_PID=$!
-  reg_add pid "$OWNED_PID" "$marker"
 }
 owned_fg() {
   local rc
@@ -204,25 +220,42 @@ owned_fg() {
 }
 group_alive() { ps -axo pgid= | awk -v g="$1" '$1==g {f=1} END{exit !f}'; }
 # act_stop_group PGID: TERM to the whole group, wait until no member is left, then KILL.
+# act_stop_group PGID: TERM to the whole group, wait until no member is left, then KILL. The leader must
+# still be the process this run started (pid, start time, and command), before TERM and again before KILL.
+# If it cannot be proven (the leader is gone but members remain, or the numbers do not match) nothing is
+# killed: the row becomes INCOMPLETE.
 act_stop_group() {
-  local g=$1 marker own i
-  [[ $g =~ ^[0-9]+$ ]] && [ "$g" -gt 1 ] || { log "not stopping a group with the id '$g'"; return 1; }
+  local g=$1 extra marker started own i
+  [[ $g =~ ^[0-9]+$ ]] && [ "$g" -gt 1 ] || { refuse pid "$g" "not a usable process group id"; return 1; }
   own=$(ps -o pgid= -p $$ | tr -d ' ')
-  [ "$g" != "$own" ] || { log "not stopping this script's own process group"; return 1; }
-  marker=$(reg_get pid "$g")
-  if kill -0 "$g" 2>/dev/null && [[ $(ps -p "$g" -o command= 2>/dev/null) != *"$marker"* ]]; then
-    log "pid $g no longer runs $marker (the number was reused); not stopping it"
-    return 1
-  fi
+  [ "$g" != "$own" ] || { refuse pid "$g" "that is this script's own process group"; return 1; }
+  extra=$(reg_get pid "$g"); marker=${extra%%"$US"*}; started=${extra#*"$US"}
   group_alive "$g" || return 0
+  leader_is_ours "$g" "$marker" "$started" || return 1
   kill -TERM -- "-$g" 2>/dev/null
   for i in $(seq 1 40); do group_alive "$g" || return 0; sleep 0.25; done
+  leader_is_ours "$g" "$marker" "$started" || return 1   # it may have exited and its pid been reused meanwhile
   kill -KILL -- "-$g" 2>/dev/null
   for i in $(seq 1 20); do group_alive "$g" || return 0; sleep 0.25; done
-  log "process group $g would not stop"
+  refuse pid "$g" "the process group would not stop"
   return 1
 }
-stop_pid() { owned pid "$1" act_stop_group "$1"; local rc=$?; reg_del pid "$1"; return $rc; }
+leader_is_ours() { # pgid marker started
+  if ! kill -0 "$1" 2>/dev/null; then
+    refuse pid "$1" "its group still has members but the leader is gone, so the group cannot be proven this run's; not stopped"
+    return 1
+  fi
+  if [ -z "$3" ] || [ "$(proc_start "$1")" != "$3" ]; then
+    refuse pid "$1" "the start time does not match the registered one ('$(proc_start "$1")' now, '$3' registered); not stopped"
+    return 1
+  fi
+  if [[ $(proc_cmd "$1") != *"$2"* ]]; then
+    refuse pid "$1" "its command line no longer holds '$2'; not stopped"
+    return 1
+  fi
+}
+# The registry entry is dropped only when the group is really gone; a refusal or failure leaves it there.
+stop_pid() { owned pid "$1" act_stop_group "$1"; local rc=$?; [ $rc = 0 ] && reg_del pid "$1"; return $rc; }
 reap_all() { # every registered process group
   local pid rest
   while IFS=$'\t' read -r pid rest; do [ -n "$pid" ] && stop_pid "$pid"; done < <(reg_list pid)
@@ -232,27 +265,36 @@ reap_all() { # every registered process group
 # --- paths: only under the temp root, never through a link ------------------------------
 # act_trash_path PATH: Trash PATH only when its real location is inside $tmp.
 act_trash_path() {
-  local p=$1 real
+  local p=$1 real rc
   [ -e "$p" ] || [ -L "$p" ] || return 0
   # A link is judged by where the link itself sits (Trash moves the link, never its target); anything
   # else, and any path that goes THROUGH a link, by its real location.
   if [ -L "$p" ]; then real="$(real_path "$(dirname -- "$p")")/$(basename -- "$p")"; else real=$(real_path "$p"); fi
   case "$real" in
-    "$tmp_real"|"$tmp_real"/*) /usr/bin/trash "$p" >/dev/null 2>&1 ;;
+    "$tmp_real"|"$tmp_real"/*) ;;
     *) refuse path "$p" "its real path $real is outside the temp root $tmp_real"; return 99 ;;
   esac
+  "$TRASH" "$p" >/dev/null 2>&1; rc=$?
+  if [ $rc -ne 0 ] || [ -e "$p" ] || [ -L "$p" ]; then
+    refuse path "$p" "Trash failed (exit $rc) and the path is still there"
+    return 1
+  fi
 }
 trash_own() { owned path "$tmp" act_trash_path "$1"; }   # the registered root is the key; the act checks the real path is inside it
 # The one thing Trashed outside $tmp: four files of Wristper Test's own data folder (its relay room),
 # on the allowlist, only while this run's Wristper Test is stopped.
 act_trash_testdata() {
-  local p=$1 dir name
+  local p=$1 dir name rc
   dir=$(real_path "$(dirname -- "$p")"); name=$(basename -- "$p")
   [ "$dir" = "$(real_path "$TEST_DATA")" ] && [ "$(basename -- "$dir")" = "Wristper Test" ] || { refuse testdata "$p" "not inside Wristper Test's data folder"; return 99; }
   case "$name" in relay-room|relay-secret|paired-devices.json|delivered-ids.json) ;; *) refuse testdata "$p" "not on the allowlist"; return 99 ;; esac
   wt_running && { refuse testdata "$p" "Wristper Test is running"; return 99; }
-  [ -e "$p" ] && /usr/bin/trash "$p" >/dev/null 2>&1
-  return 0
+  [ -e "$p" ] || return 0
+  "$TRASH" "$p" >/dev/null 2>&1; rc=$?
+  if [ $rc -ne 0 ] || [ -e "$p" ]; then
+    refuse testdata "$p" "Trash failed (exit $rc) and the file is still there"
+    return 1
+  fi
 }
 
 # --- Wristper Test: only the one this run started ----------------------------------------
@@ -260,22 +302,54 @@ status_json() { "$hex" status --json 2>/dev/null; }
 # Pids whose whole command line is exactly the app's executable (hex status, hex watch pair, … carry arguments).
 wt_pids() { ps -axo pid=,command= | while read -r pid cmd; do [ "$cmd" = "$hex" ] && echo "$pid"; done; }
 wt_running() { status_json >/dev/null || [ -n "$(wt_pids)" ]; }
-act_quit_wt() { # pid
-  local pid=$1 i
-  "$hex" quit >/dev/null 2>&1
-  for i in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.25; done
-  [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "$hex" ] || return 0
+# act_quit_wt PID: quit the Wristper Test this run started. The registered pid must still be that process
+# (pid, start time, executable) BEFORE `hex quit` is sent, and `hex quit` goes only if the running service
+# reports that same pid. The same check is repeated before TERM and before KILL.
+act_quit_wt() {
+  local pid=$1 extra exe started i
+  extra=$(reg_get wt "$pid"); exe=${extra%%"$US"*}; started=${extra#*"$US"}
+  kill -0 "$pid" 2>/dev/null || return 0   # already gone: nothing to quit
+  wt_is_ours "$pid" "$exe" "$started" || return 1
+  if [ "$(status_json | jq -r .pid 2>/dev/null)" = "$pid" ]; then
+    "$hex" quit >/dev/null 2>&1
+    for i in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.25; done
+  fi
+  kill -0 "$pid" 2>/dev/null || return 0
+  wt_is_ours "$pid" "$exe" "$started" || return 1
   kill -TERM "$pid" 2>/dev/null
   for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.25; done
+  wt_is_ours "$pid" "$exe" "$started" || return 1
   kill -KILL "$pid" 2>/dev/null
-  return 0
+  for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.25; done
+  refuse wt "$pid" "Wristper Test would not stop"
+  return 1
+}
+wt_is_ours() { # pid exe started
+  if [ -z "$3" ] || [ "$(proc_start "$1")" != "$3" ] || [ "$(proc_cmd "$1")" != "$2" ]; then
+    refuse wt "$1" "that pid is not the Wristper Test this run started (start time '$(proc_start "$1")' vs '$3', command '$(proc_cmd "$1")'); not touched"
+    return 1
+  fi
+}
+# A Wristper Test that was launched but not yet registered (a signal or failure between `open` and the
+# registration) is found by its exact command line and a start time after the launch: start_app refused
+# to continue if one was already running, so any such process is this run's.
+adopt_launched_wt() {
+  local launched pid started
+  launched=$(reg_get wt-launch launch); [ -n "$launched" ] || return 0
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    reg_has wt "$pid" && continue
+    started=$(proc_start "$pid")
+    [ "$(epoch_of "$started")" -ge "$((launched - 2))" ] 2>/dev/null && reg_add wt "$pid" "$hex$US$started"
+  done < <(wt_pids)
+  reg_del wt-launch launch
 }
 stop_wristper_test() {
   local pid rest
+  adopt_launched_wt
   while IFS=$'\t' read -r pid rest; do
     [ -n "$pid" ] || continue
-    owned wt "$pid" act_quit_wt "$pid"
-    reg_del wt "$pid"
+    owned wt "$pid" act_quit_wt "$pid" && reg_del wt "$pid"
   done < <(reg_list wt)
   return 0
 }
@@ -285,7 +359,19 @@ simctl_own() { # simctl-subcommand args... : on the simulator this run made, not
   [ -n "${sim_udid:-}" ] || return 98
   owned sim "$sim_udid" xcrun simctl "$@"
 }
+# A simulator that was created but not yet registered is found by its run-specific name (it holds the run id,
+# so no other device can carry it).
+adopt_created_sim() {
+  [ -n "${sim_udid:-}" ] && return 0
+  reg_has sim-creating "$sim_name" || return 0
+  local udid
+  udid=$(xcrun simctl list devices -j 2>/dev/null | jq -r --arg n "$sim_name" '[.devices[][] | select(.name==$n)][0].udid // empty')
+  [ -n "$udid" ] || return 0
+  sim_udid=$udid
+  reg_add sim "$udid" "$sim_name"
+}
 delete_sim() {
+  adopt_created_sim
   [ -n "${sim_udid:-}" ] || return 0
   owned sim "$sim_udid" xcrun simctl shutdown "$sim_udid" >/dev/null 2>&1
   owned sim "$sim_udid" xcrun simctl delete "$sim_udid" >/dev/null 2>&1
@@ -316,26 +402,34 @@ win_extra() { # kind handle: what the registry holds for this window
     chrome) cut -d: -f2 <<<"$2" ;;
   esac
 }
-# Live identity: the window still exists and is the one registered.
-win_live() { # kind handle
-  local kind=$1 h=$2 id got
-  [ "$(reg_get window "$(win_key "$kind" "$h")")" = "$(win_extra "$kind" "$h")" ] || return 1
-  # Asking an app that is not running would launch it again: the person may have quit it meanwhile.
-  case "$kind" in textedit) app_running TextEdit || return 1 ;; terminal) app_running Terminal || return 1 ;; esac
+# Live identity, four answers: ours (the live window is the registered one), gone (no such window any
+# more, or its app is not running: the person closed it, nothing is left to act on), other (the id now
+# belongs to something else, or the registry disagrees), unknown (the question itself failed). Only `ours`
+# may be acted on; `other` and `unknown` are refusals; `gone` is a quiet success for cleanup.
+# An app that is not running is never asked (that would launch it again). An empty answer is never "fine".
+win_probe() { # kind handle
+  local kind=$1 h=$2 id running got rc
+  [ "$(reg_get window "$(win_key "$kind" "$h")")" = "$(win_extra "$kind" "$h")" ] || { echo other; return; }
   case "$kind" in
-    textedit)
+    textedit|terminal)
+      local app=TextEdit; [ "$kind" = terminal ] && app=Terminal
+      running=$(osascript -e "application \"$app\" is running" 2>/dev/null); rc=$?
+      [ $rc = 0 ] || { echo unknown; return; }
+      [ "$running" = true ] || { echo gone; return; }
       id=${h%%|*}
-      got=$(osascript -e 'tell application "TextEdit"' -e "if not (exists window id $id) then return \"\"" \
-        -e "return name of document of window id $id" -e 'end tell' 2>/dev/null)
-      [ -n "$got" ] && [ "$got" = "${h#*|}" ] ;;
-    terminal)
-      id=${h%%|*}
-      got=$(osascript -e 'tell application "Terminal"' -e "if not (exists window id $id) then return \"\"" \
-        -e "return tty of selected tab of window id $id" -e 'end tell' 2>/dev/null)
-      [ -n "$got" ] && [ "$got" = "${h#*|}" ] ;;
-    chrome) chrome_ready "$(win_extra chrome "$h")" ;;
+      if [ "$kind" = textedit ]; then
+        got=$(osascript -e 'tell application "TextEdit"' -e "if not (exists window id $id) then return \"\"" \
+          -e "return name of document of window id $id" -e 'end tell' 2>/dev/null); rc=$?
+      else
+        got=$(osascript -e 'tell application "Terminal"' -e "if not (exists window id $id) then return \"\"" \
+          -e "return tty of selected tab of window id $id" -e 'end tell' 2>/dev/null); rc=$?
+      fi
+      [ $rc = 0 ] || { echo unknown; return; }
+      if [ -z "$got" ]; then echo gone; elif [ "$got" = "${h#*|}" ]; then echo ours; else echo other; fi ;;
+    chrome) if chrome_ready "$(win_extra chrome "$h")"; then echo ours; else echo gone; fi ;;
   esac
 }
+win_live() { [ "$(win_probe "$1" "$2")" = ours ]; }
 
 # front_check KIND HANDLE: is the app in front this run's target window? lsappinfo needs no permission.
 front_check() {
@@ -361,7 +455,7 @@ act_switch_away() { open -a Finder && sleep 2; }
 front_hook() { printf '%q ' /bin/bash "$self" --front-check "$1" "$2"; }
 
 act_focus() { # kind handle
-  win_live "$1" "$2" || return 1
+  win_live "$1" "$2" || { refuse window "$(win_key "$1" "$2")" "the live window is not the one this run made ($(win_probe "$1" "$2")); not focused"; return 1; }
   case "$1" in
     textedit) osascript -e 'tell application "TextEdit"' -e 'activate' -e "set index of window id ${2%%|*} to 1" -e 'end tell' >/dev/null ;;
     terminal) osascript -e 'tell application "Terminal"' -e 'activate' -e "set index of window id ${2%%|*} to 1" -e 'end tell' >/dev/null ;;
@@ -372,7 +466,7 @@ act_focus() { # kind handle
   esac
 }
 act_read() { # kind handle
-  win_live "$1" "$2" || return 1
+  win_live "$1" "$2" || { refuse window "$(win_key "$1" "$2")" "the live window is not the one this run made ($(win_probe "$1" "$2")); not read"; return 1; }
   case "$1" in
     textedit) osascript -e "tell application \"TextEdit\" to return text of document of window id ${2%%|*}" ;;
     terminal) osascript -e "tell application \"Terminal\" to return contents of selected tab of window id ${2%%|*}" ;;
@@ -380,34 +474,68 @@ act_read() { # kind handle
   esac
 }
 # act_stop_tty_proc PID TTY: HUP the one process this run started in its window (never the tty).
+# act_stop_tty_proc PID TTY: HUP the one process this run started in its window. Besides the tty it must
+# match the start time and command line recorded when the window was made (a reused pid on the same tty
+# is not ours), before HUP and again before KILL. Never the whole tty.
 act_stop_tty_proc() {
-  local pid=$1 tty=$2 i seen
-  seen=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
-  [ -n "$seen" ] || return 0
-  [ "/dev/$seen" = "$tty" ] || [ "$seen" = "${tty#/dev/}" ] || { refuse tty-proc "$pid" "it is on $seen now, not $tty"; return 99; }
+  local pid=$1 tty=$2 extra rtty started cmd i
+  extra=$(reg_get tty-proc "$pid"); rtty=${extra%%"$US"*}; extra=${extra#*"$US"}; started=${extra%%"$US"*}; cmd=${extra#*"$US"}
+  kill -0 "$pid" 2>/dev/null || return 0   # gone: nothing left to stop
+  tty_proc_is_ours "$pid" "$tty" "$rtty" "$started" "$cmd" || return 1
   kill -HUP "$pid" 2>/dev/null
   for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.25; done
-  seen=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
-  { [ "/dev/$seen" = "$tty" ] || [ "$seen" = "${tty#/dev/}" ]; } && kill -KILL "$pid" 2>/dev/null
-  return 0
+  tty_proc_is_ours "$pid" "$tty" "$rtty" "$started" "$cmd" || return 1
+  kill -KILL "$pid" 2>/dev/null
+  for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || return 0; sleep 0.25; done
+  refuse tty-proc "$pid" "the process in $tty would not stop"
+  return 1
+}
+tty_proc_is_ours() { # pid tty registered-tty started cmd
+  local seen
+  seen=$(ps -o tty= -p "$1" 2>/dev/null | tr -d ' ')
+  if [ "$3" != "$2" ] || { [ "/dev/$seen" != "$2" ] && [ "$seen" != "${2#/dev/}" ]; }; then
+    refuse tty-proc "$1" "it is on '$seen' now, not on the registered $2; not touched"; return 1
+  fi
+  if [ -z "$4" ] || [ "$(proc_start "$1")" != "$4" ] || [ "$(proc_cmd "$1")" != "$5" ]; then
+    refuse tty-proc "$1" "its start time or command line differs from the registered ones (a reused pid?); not touched"; return 1
+  fi
 }
 act_close() { # kind handle
-  local kind=$1 h=$2 pid rest tty
-  win_live "$kind" "$h" || return 1
+  local kind=$1 h=$2 key state pid rest tty found=0 failed=0
+  key=$(win_key "$kind" "$h")
+  state=$(win_probe "$kind" "$h")
+  case "$state" in
+    ours|gone) ;;
+    *) refuse window "$key" "the window's identity is '$state' (not the one this run made); not closed"; return 1 ;;
+  esac
   case "$kind" in
-    textedit) osascript -e "tell application \"TextEdit\" to close window id ${h%%|*} saving no" >/dev/null 2>&1 ;;
+    textedit)
+      [ "$state" = ours ] && osascript -e "tell application \"TextEdit\" to close window id ${h%%|*} saving no" >/dev/null 2>&1 ;;
     terminal)
+      # The window is closed only after the one process this run started in it is proven ours and stopped.
+      # Without that proof, or if stopping fails, the window stays open and the row is INCOMPLETE. (If the
+      # person already closed the window, the process is still stopped when it is proven ours; no proof
+      # needed when nothing is left.)
       tty=${h#*|}
       while IFS=$'\t' read -r pid rest; do
-        [ "$rest" = "$tty" ] || continue
-        owned tty-proc "$pid" act_stop_tty_proc "$pid" "$tty"
-        reg_del tty-proc "$pid"
+        [ "${rest%%"$US"*}" = "$tty" ] || continue
+        found=1
+        if owned tty-proc "$pid" act_stop_tty_proc "$pid" "$tty"; then reg_del tty-proc "$pid"; else failed=1; fi
       done < <(reg_list tty-proc)
-      sleep 1
-      osascript -e "tell application \"Terminal\" to close window id ${h%%|*}" >/dev/null 2>&1 ;;
+      if [ "$state" = ours ]; then
+        if [ $found = 0 ]; then
+          refuse window "$key" "no registered process proves who runs in $tty; the window is left open"
+          return 1
+        fi
+        [ $failed = 0 ] || return 1
+        sleep 1
+        osascript -e "tell application \"Terminal\" to close window id ${h%%|*}" >/dev/null 2>&1
+      else
+        [ $failed = 0 ] || return 1
+      fi ;;
     chrome) chrome_close "$h" ;;
   esac
-  reg_del window "$(win_key "$kind" "$h")"
+  reg_del window "$key"
 }
 # The public names: all of them go through the gate.
 focus_target() { # target handle
@@ -512,9 +640,9 @@ open_target() {
       pid=$(tr -d ' \n' < "$pf" 2>/dev/null)
       seen=$(ps -o tty= -p "${pid:-0}" 2>/dev/null | tr -d ' ')
       if [[ ${pid:-} =~ ^[0-9]+$ ]] && { [ "/dev/$seen" = "$tty" ] || [ "$seen" = "${tty#/dev/}" ]; }; then
-        reg_add tty-proc "$pid" "$tty"
+        reg_add tty-proc "$pid" "$tty$US$(proc_start "$pid")$US$(proc_cmd "$pid")"
       else
-        log "could not prove which process runs in $tty; it will be left running (its window is still closed)"
+        log "could not prove which process runs in $tty; that window will be left open at the end (INCOMPLETE)"
       fi ;;
     chrome) chrome_open; return ;;
   esac
@@ -573,6 +701,9 @@ finish() {
 # =============================================================================
 CLIP_STATE=none   # none | saved | restored | failed
 CLIP_DETAIL=
+# Changing the clipboard is an input too: only while a verified backup of the person's clipboard exists.
+act_clip_set() { "$pbtool" set "$1"; }
+clip_set() { owned clipboard backup act_clip_set "$1"; }
 clip_backup() {
   [ "$CLIP_STATE" = none ] || return 0
   local msg rc
@@ -584,6 +715,7 @@ clip_backup() {
     *) die "could not back up the clipboard ($msg); nothing was changed" 2 ;;
   esac
   CLIP_STATE=saved
+  reg_add clipboard backup "$tmp/clipboard"
   log "clipboard backed up ($msg)"
 }
 clip_restore() {
@@ -599,8 +731,11 @@ clip_restore() {
 
 keep_setting_original=
 TORN_DOWN=0
+# A signal that arrives while the cleanup runs must not cut it short.
+mask_signals() { trap '' INT TERM HUP; }
 teardown() {
   [ "$TORN_DOWN" = 0 ] || return 0
+  mask_signals
   TORN_DOWN=1
   [ -n "$tmp" ] || return 0
   local key extra kind id name entry f
@@ -646,10 +781,16 @@ teardown() {
 }
 cleanup() {
   trap - EXIT
+  mask_signals
   teardown
 }
 
 init() { # prefix
+  # The traps come first, before anything is made, so a signal or a die at any later point still runs
+  # the cleanup (which only ever touches what the registry holds).
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
   out="$root/target/watch-e2e/${1}$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$out"
   results="$out/results.jsonl"
@@ -666,10 +807,6 @@ init() { # prefix
   reg_add switch finder "the app-switch scenario"
   export WATCH_E2E_TMP="$tmp" WATCH_E2E_OUT="$out"   # the gate's helper commands find the registry through these
   SC_FILE="$out/readback.txt"
-  trap cleanup EXIT
-  # A signal must still run the cleanup (it stops what this run started).
-  trap 'exit 130' INT
-  trap 'exit 143' TERM HUP
 }
 
 # =============================================================================
@@ -810,20 +947,24 @@ build_pbtool() {
 # Wristper Test
 # =============================================================================
 fresh_room() {
-  local f old_room=
+  local f old_room= failed=0
   case "$TEST_DATA" in */"Wristper Test") ;; *) die "refusing to reset a data folder that is not Wristper Test: $TEST_DATA" 2 ;; esac
   [ "$TEST_DATA" != "$OLD_DATA" ] || die "refusing to reset the installed app's data folder" 2
   [ ! -s "$TEST_DATA/relay-room" ] || old_room=$(cat "$TEST_DATA/relay-room")
   printf %s "$old_room" > "$tmp/old-room"
   for f in relay-room relay-secret paired-devices.json delivered-ids.json; do
     reg_add testdata "$TEST_DATA/$f" allowlist
-    owned testdata "$TEST_DATA/$f" act_trash_testdata "$TEST_DATA/$f"
+    owned testdata "$TEST_DATA/$f" act_trash_testdata "$TEST_DATA/$f" || failed=1
   done
+  return $failed
 }
 
 launch_wristper_test() {
-  local pid
+  local pid started
   log "launching Wristper Test in the background"
+  # Written BEFORE the launch: if a signal or a failure comes between `open` and the registration, the
+  # teardown still finds the app by this launch time (see adopt_launched_wt).
+  reg_add wt-launch launch "$(date +%s)"
   open -g "$app" || die "could not open $app"
   for _ in $(seq 1 60); do status_json >/dev/null && break; sleep 1; done
   status_json >/dev/null || die "Wristper Test did not answer hex status within 60 s"
@@ -831,9 +972,11 @@ launch_wristper_test() {
   [ -s "$TEST_DATA/relay-room" ] || die "no relay room in $TEST_DATA; the watch service did not start (see $TEST_DATA/logs/process.log)"
   # Its pid from its own status, and only if that pid runs exactly the app's executable.
   pid=$(status_json | jq -r .pid)
-  [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "$hex" ] \
-    || die "Wristper Test started, but its process could not be identified; it was not registered, so this script will not stop it. Quit it with: \"$hex\" quit"
-  reg_add wt "$pid" "$hex"
+  [ "$(proc_cmd "$pid")" = "$hex" ] \
+    || die "Wristper Test started, but its process could not be identified; this script will not stop it unless it can prove it started it. Quit it with: \"$hex\" quit"
+  started=$(proc_start "$pid")
+  reg_add wt "$pid" "$hex$US$started"
+  reg_del wt-launch launch
 }
 
 # An app that was already running is never stopped, reset, or driven: refuse, and say why.
@@ -851,7 +994,8 @@ start_app() {
 restart_with_new_room() {
   stop_wristper_test
   for _ in $(seq 1 30); do status_json >/dev/null || break; sleep 1; done
-  fresh_room
+  wt_running && die "Wristper Test did not stop (or another instance appeared); not resetting its data"
+  fresh_room || die "could not reset the relay room (see the REFUSED lines in $out/run.log); nothing was started on top of the old one"
   # Where Hex's log and the macOS log stood before this launch (mic-stays-closed reads what came after).
   proc_log_offset=$(stat -f%z "$TEST_DATA/logs/process.log" 2>/dev/null || echo 0)
   launch_time=$(date '+%Y-%m-%d %H:%M:%S')
@@ -1014,7 +1158,7 @@ pair_sim() { # stage
 act_sim_deliver() {
   local kind=$1 h=$2 audio=$3 after before
   shift 3
-  win_live "$kind" "$h" || return 98
+  win_live "$kind" "$h" || { refuse window "$(win_key "$kind" "$h")" "the live window is not the one this run made; nothing sent"; return 98; }
   before=$(front_hook "$kind" "$h")
   after=$before
   # The app-switch scenario: verify the target is in front, then move away on purpose, so the audio meets
@@ -1105,7 +1249,7 @@ scenario_clipboard() {
     # the clipboard is never written. This does NOT reach the final focus check
     # (after the clipboard write, right before the paste key): that window is
     # tens of ms and /status reports both refusals the same way (target-changed).
-    set_keep on; "$pbtool" set "$sentinel"
+    set_keep on; clip_set "$sentinel"
     SC_SWITCH=1
     sim_run textedit en
     board=$("$pbtool" get)
@@ -1118,7 +1262,7 @@ scenario_clipboard() {
 
   if want clipboard-keep-paste; then
     # keep_on_clipboard on, no switch: the dictation stays on the clipboard.
-    set_keep on; "$pbtool" set "$sentinel"
+    set_keep on; clip_set "$sentinel"
     sim_run textedit en
     sleep 5; board=$("$pbtool" get)
     sim_close textedit
@@ -1129,7 +1273,7 @@ scenario_clipboard() {
 
   if want clipboard-default-restore; then
     # keep_on_clipboard off (the default): the clipboard comes back after the paste.
-    set_keep off; "$pbtool" set "$sentinel"
+    set_keep off; clip_set "$sentinel"
     sim_run textedit en
     sleep 6; board=$("$pbtool" get)
     sim_close textedit
@@ -1312,6 +1456,9 @@ sim_device() {
   type=$SIM_TYPE
   xcrun simctl list devicetypes -j | jq -e --arg t "$type" '.devicetypes[] | select(.identifier==$t)' >/dev/null 2>&1 ||
     type=$(xcrun simctl list devicetypes -j | jq -r '[.devicetypes[] | select(.productFamily=="Apple Watch")] | last | .identifier')
+  # Written BEFORE the create: if a signal comes between the create and the registration, the teardown
+  # still finds the device by this run's unique name (adopt_created_sim).
+  reg_add sim-creating "$sim_name"
   udid=$(xcrun simctl create "$sim_name" "$type" "$runtime") || die "simctl create failed"
   echo "$udid"
 }
@@ -1328,8 +1475,8 @@ wait_log() { # pattern timeout-seconds start-line -> matching line
 
 # act_open_gate KIND HANDLE GATEFILE: lets the watch app upload, only if the target is still the window in front.
 act_open_gate() {
-  win_live "$1" "$2" || return 1
-  front_check "$1" "$2" || return 1
+  win_live "$1" "$2" || { refuse window "$(win_key "$1" "$2")" "the live window is not the one this run made; the watch app was not allowed to upload"; return 1; }
+  front_check "$1" "$2" || { refuse window "$(win_key "$1" "$2")" "the window this run made is not in front; the watch app was not allowed to upload"; return 1; }
   : > "$3"
 }
 
@@ -1450,19 +1597,14 @@ archive_stage2_log() { [ -s "$tmp/stage2-watch.log" ] && redact_pairing < "$tmp/
 # =============================================================================
 # Stage 4: the B2 live tests (opt in: --with-live)
 # =============================================================================
-# These Rust tests (src/watch/live_tests.rs) close the FRONT TextEdit document and send `exit` to the
-# FRONT Terminal window. This script cannot make them act on only what they made, so it refuses
-# unless TextEdit has no document open and Terminal has no window open.
+# These Rust tests (src/watch/live_tests.rs) drive real windows. Each one records the window id (and the
+# document name or tty) of the TextEdit document or Terminal window it makes, checks the live window against
+# that before it pastes, presses, or closes, and closes only that window by id. They never touch a front
+# document or front window, so there is nothing for this script to check beforehand. Still opt in (--with-live):
+# they send real keys (Return, Command-Z) and have not yet been seen to pass on a real Mac.
 stage4() {
-  local log4="$out/stage4-live.log" name res rc docs wins
+  local log4="$out/stage4-live.log" name res rc
   row_begin
-  docs=0; wins=0
-  app_running TextEdit && docs=$(osascript -e 'tell application "TextEdit" to count documents' 2>/dev/null)
-  app_running Terminal && wins=$(osascript -e 'tell application "Terminal" to count windows' 2>/dev/null)
-  if [ "${docs:-0}" != 0 ] || [ "${wins:-0}" != 0 ]; then
-    record 4 live - INCOMPLETE 0 refused 0 "" "$(jq -cn --arg f "refused: the live tests close the FRONT TextEdit document and the FRONT Terminal window, and you have $docs document(s) and $wins window(s) open. Close them yourself, or leave this stage out." '{fails:$f}')"
-    return 0
-  fi
   log "stage 4: cargo nextest run --locked --bin hex --run-ignored only -E 'test(watch_live)'"
   [ -f "$WATCH_E2E_B2_ENV" ] && . "$WATCH_E2E_B2_ENV"
   # One test at a time: both drive the same screen.
@@ -1554,7 +1696,8 @@ main() {
   [ -x "$hex" ] || die "$app is missing; run without --skip-build" 2
   [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "$TEST_BUNDLE" ] \
     || die "$app is not $TEST_BUNDLE" 2
-  if { [ "$build" = 1 ] || [ ! -x "$sim" ] || [ "$(cat "$(dirname "$sim")/built-from-commit" 2>/dev/null)" != "$WRISTPER_SRC_COMMIT" ]; } &&
+  if { [ "$build" = 1 ] || [ ! -x "$sim" ] || [ "$(cat "$(dirname "$sim")/built-from-commit" 2>/dev/null)" != "$WRISTPER_SRC_COMMIT" ] \
+       || [ "$root/scripts/watch-sim/main.swift" -nt "$sim" ] || [ "$root/scripts/watch-sim/WatchStoreShim.swift" -nt "$sim" ]; } &&
      { stage_on 1 || stage_on 3; }; then build_watch_sim; fi
   log "watch sources pinned: watch-sim $WRISTPER_SRC_COMMIT, stage 2 app $WRISTPER_HOOKS_COMMIT"
 
@@ -1608,6 +1751,7 @@ case "$args" in
     read -r w rest < "$STUB_DIR/front"; [ -z "$rest" ] || echo "$rest" > "$STUB_DIR/front"
     [ "$w" = ok ] && echo "101|Untitled 9" || echo "999|Elsewhere"; exit 0 ;;
   *"make new document"*) echo "101|Untitled 9" ;;
+  *"tty of selected tab of window id 303"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo "/dev/ttys303" || echo "" ;;
   *"name of document of window id 101"*) [ "$(cat "$STUB_DIR/live")" = live ] && echo "Untitled 9" || echo "" ;;
   *"is running"*) cat "$STUB_DIR/running" ;;
   *) : ;;
@@ -1640,6 +1784,14 @@ EOF
 }
 st_set() { printf '%s\n' "$2" > "$STUB_DIR/$1"; }
 st_not() { ! "$@"; }
+# Every send must come after its own gate: the audio after the after-focus gate, and each /enter or /undo after
+# one more gate of its kind than there were sends before it.
+st_order_ok() {
+  awk '/^gate:after-focus$/{ga=1} /^send:\/e2ee$/{if(!ga)bad=1}
+       /^gate:\/enter$/{ge++} /^send:\/enter$/{se++; if(se>ge)bad=1}
+       /^gate:\/undo$/{gu++} /^send:\/undo$/{su++; if(su>gu)bad=1}
+       END{exit bad+0}' <<<"$1"
+}
 st_sent() { [ -f "$STUB_DIR/sim-calls" ] && grep -c '^e2ee-sent' "$STUB_DIR/sim-calls"; return 0; }
 st_reset() { : > "$STUB_DIR/sim-calls"; : > "$STUB_DIR/asc.log"; : > "$tmp/row-refused"; ABORT_NOTE=; }
 
@@ -1676,12 +1828,13 @@ selftest_main() {
   st_check "a registered file inside the temp root is Trashed" bash -c "[ ! -e '$tmp/victim' ] && [ ! -s '$tmp/row-refused' ]"
   st_reset
   owned_bg sleep sleep 120 > /dev/null 2>&1
-  pid=$OWNED_PID
+  pid=$OWNED_PID; sleep 0.5
+  entry=$(reg_get pid "$pid")
   reg_del pid "$pid"
   owned pid "$pid" act_stop_group "$pid"
   st_check "stopping an unregistered process group is refused" row_refused
   st_check "…and the process is still running" kill -0 "$pid"
-  reg_add pid "$pid" sleep
+  reg_add pid "$pid" "$entry"
   stop_pid "$pid"
   st_check "a registered group is stopped until no member is left" bash -c "! kill -0 $pid 2>/dev/null"
   st_check "a bad group id is not accepted" st_not act_stop_group 1
@@ -1732,15 +1885,59 @@ selftest_main() {
     echo "  (skipped: $real_sim is not built; run the script once without --skip-build)"
   fi
 
+  echo "[6b] the real watch-sim, dry run (no network): the real order of the real code, and its exit codes"
+  if [ ! -x "$real_sim" ] || [ "$root/scripts/watch-sim/main.swift" -nt "$real_sim" ]; then
+    keep_sim=$sim; sim=$real_sim; build_watch_sim; sim=$keep_sim
+  fi
+  export WATCH_SIM_DRY_RUN=1
+  local o rc trace
+  # a) every gate passes: gates come before their sends; the two concurrent Enters each have their own gate
+  o=$("$real_sim" deliver --audio x --after-focus 'exit 0' --before-action 'exit 0' --enter --enter-twice --undo); rc=$?
+  trace=$(jq -r '.trace[]' <<<"$o")
+  st_check "all gates pass: exit 0" test "$rc" = 0
+  st_check "…every send has its gate first (order of the real code)" st_order_ok "$trace"
+  st_check "…three /enter sends, each with a gate" bash -c "[ \"\$(grep -c '^send:/enter' <<<'$trace')\" = 3 ] && [ \"\$(grep -c '^gate:/enter' <<<'$trace')\" = 3 ]"
+  st_check "…audio is sent after the after-focus gate, /undo after its gate" bash -c "[ \"\$(grep -c '^send:/e2ee' <<<'$trace')\" = 1 ] && [ \"\$(grep -c '^send:/undo' <<<'$trace')\" = 1 ]"
+  # the order check can fail: a trace that sends before its gate is caught
+  st_check "(control) the order check catches a send that comes before its gate" st_not st_order_ok "$(printf 'send:/focus\nsend:/e2ee\ngate:after-focus\n')"
+  st_check "(control) …and an Enter send without a gate" st_not st_order_ok "$(printf 'gate:after-focus\nsend:/e2ee\nsend:/enter\n')"
+  # b) the after-focus gate fails
+  o=$("$real_sim" deliver --audio x --after-focus 'exit 1' --before-action 'exit 0' --enter); rc=$?
+  trace=$(jq -r '.trace[]' <<<"$o")
+  st_check "after-focus gate fails: exit 1" test "$rc" = 1
+  st_check "…no audio and no Enter were sent" bash -c "! grep -qE '^send:/(e2ee|enter)' <<<'$trace'"
+  # c) no gate given at all
+  o=$("$real_sim" deliver --audio x --before-action 'exit 0' --enter); rc=$?
+  trace=$(jq -r '.trace[]' <<<"$o")
+  st_check "no after-focus gate given: exit 1 (fails closed)" test "$rc" = 1
+  st_check "…no audio was sent" bash -c "! grep -q '^send:/e2ee' <<<'$trace'"
+  # d) the before-action gate fails: the audio went (its own gate passed), the keys did not
+  o=$("$real_sim" deliver --audio x --after-focus 'exit 0' --before-action 'exit 1' --enter --enter-twice --undo); rc=$?
+  trace=$(jq -r '.trace[]' <<<"$o")
+  st_check "before-action gate fails: no /enter and no /undo were sent" bash -c "! grep -qE '^send:/(enter|undo)' <<<'$trace'"
+  st_check "…each action still ran its own gate (1 + 2 + 1)" bash -c "[ \"\$(grep -c '^gate:/' <<<'$trace')\" = 4 ]"
+  # e) the standalone action entry needs a gate too
+  o=$("$real_sim" action --path /enter --id 11111111-1111-1111-1111-111111111111); rc=$?
+  st_check "action with no gate: exit 1" test "$rc" = 1
+  st_check "…and nothing was sent" bash -c "! grep -q '^send:' <<<'$(jq -r '.trace[]' <<<"$o")'"
+  o=$("$real_sim" action --path /enter --id 11111111-1111-1111-1111-111111111111 --before-action 'exit 1'); rc=$?
+  st_check "action with a failing gate: exit 1" test "$rc" = 1
+  o=$("$real_sim" action --path /undo --id 11111111-1111-1111-1111-111111111111 --before-action 'exit 0'); rc=$?
+  st_check "action with a passing gate: exit 0, gate first then send" bash -c "[ $rc = 0 ] && [ \"\$(jq -r '.trace|join(\" \")' <<<'$o')\" = 'gate:/undo send:/undo' ]"
+  "$real_sim" action --path /focus --id 11111111-1111-1111-1111-111111111111 --before-action 'exit 0' >/dev/null 2>&1; rc=$?
+  st_check "action only takes /enter or /undo" test "$rc" != 0
+  unset WATCH_SIM_DRY_RUN
+
   echo "[7] the one process in a Terminal window: only that pid, only on that tty"
   st_reset
   owned_bg sleep sleep 120 > /dev/null 2>&1
-  pid=$OWNED_PID
-  reg_del pid "$pid"; reg_add tty-proc "$pid" /dev/ttys999
+  pid=$OWNED_PID; sleep 0.5
+  entry=$(reg_get pid "$pid")
+  reg_del pid "$pid"; reg_add tty-proc "$pid" "/dev/ttys999$US$(proc_start "$pid")$US$(proc_cmd "$pid")"
   owned tty-proc "$pid" act_stop_tty_proc "$pid" /dev/ttys999
   st_check "a process that is not on the registered tty is refused" row_refused
   st_check "…and it is still running" kill -0 "$pid"
-  reg_del tty-proc "$pid"; reg_add pid "$pid" sleep
+  reg_del tty-proc "$pid"; reg_add pid "$pid" "$entry"
   stop_pid "$pid"
   st_check "(test cleanup) the process is stopped" bash -c "! kill -0 $pid 2>/dev/null"
 
@@ -1749,6 +1946,8 @@ selftest_main() {
   reg_add window textedit:202 "Untitled 5"
   close_target textedit "202|Untitled 5"
   st_check "no window command was sent to the quit TextEdit" bash -c "! grep -q 'tell application \"TextEdit\"' '$STUB_DIR/asc.log'"
+  st_check "…and a window that is simply gone is not a refusal (nothing was left to close)" bash -c "[ ! -s '$tmp/row-refused' ]"
+  st_check "…its registry entry is dropped" bash -c "! grep -q 'textedit:202' '$tmp/registry.tsv'"
   st_set running true
 
   echo "[9] the switch-away action is a registered action"
@@ -1761,7 +1960,74 @@ selftest_main() {
   st_check "unregistered: nothing is opened" bash -c "[ ! -s '$STUB_DIR/open.log' ]"
   reg_add switch finder "restored"
 
-  echo "[10] the clipboard cannot be put back: its backup stays, the other secrets go, the gate refuses nothing"
+  echo "[10] identity: pid, start time, and command, not the pid alone"
+  st_reset
+  owned_bg sleep sleep 120 > /dev/null 2>&1
+  pid=$OWNED_PID; sleep 0.5
+  entry=$(reg_get pid "$pid")
+  reg_del pid "$pid"; reg_add pid "$pid" "sleep${US}Mon Jan  1 00:00:00 2001"
+  stop_pid "$pid"
+  st_check "a registered start time that does not match refuses to stop it" row_refused
+  st_check "…the process is still running" kill -0 "$pid"
+  st_check "…and the registry entry is kept (a failed stop does not forget it)" reg_has pid "$pid"
+  st_reset
+  reg_del pid "$pid"; reg_add pid "$pid" "no-such-program${US}$(proc_start "$pid")"
+  stop_pid "$pid"
+  st_check "a command line that no longer holds the marker refuses to stop it" row_refused
+  st_check "…the process is still running" kill -0 "$pid"
+  reg_del pid "$pid"; reg_add pid "$pid" "$entry"
+  stop_pid "$pid"
+  st_check "(test cleanup) stopped with the right identity" bash -c "! kill -0 $pid 2>/dev/null"
+  # A group whose leader has exited but still has a member: it cannot be proven ours, so nothing is killed.
+  st_reset
+  owned_bg sh sh -c 'sleep 120 & sleep 1' > /dev/null 2>&1
+  pid=$OWNED_PID; sleep 2.5
+  st_check "(setup) the leader is gone and a member remains" bash -c "! kill -0 $pid 2>/dev/null && ps -axo pgid= | grep -qx ' *$pid'"
+  stop_pid "$pid"
+  st_check "a group with a vanished leader is refused, not killed" row_refused
+  st_check "…its member is still there" bash -c "ps -axo pgid= | grep -qx ' *$pid'"
+  st_check "…and the registry keeps the entry" reg_has pid "$pid"
+  kill -TERM -- "-$pid" 2>/dev/null   # the test's own straggler
+  reg_del pid "$pid"
+
+  echo "[11] Wristper Test: hex quit is not sent before the pid is proven"
+  st_reset
+  hex="$tmp/fake-hex"
+  owned_bg sleep sleep 120 > /dev/null 2>&1
+  pid=$OWNED_PID; sleep 0.5
+  # The stand-in app reports THIS pid as its own, so `hex quit` would be sent if the identity check were missing.
+  printf '#!/bin/sh\nif [ "$1" = status ]; then echo "{\\"pid\\": %s}"; else echo "$*" >> "%s/hex.log"; fi\n' "$pid" "$STUB_DIR" > "$tmp/fake-hex"; chmod +x "$tmp/fake-hex"
+  entry=$(reg_get pid "$pid"); reg_del pid "$pid"
+  reg_add wt "$pid" "$hex${US}$(proc_start "$pid")"   # a live pid whose command is not the app's
+  : > "$STUB_DIR/hex.log"
+  owned wt "$pid" act_quit_wt "$pid"
+  st_check "a pid that does not run the app's executable is refused" row_refused
+  st_check "…no 'quit' was sent to the running service" bash -c "! grep -q quit '$STUB_DIR/hex.log'"
+  st_check "…and the process is untouched" kill -0 "$pid"
+  reg_del wt "$pid"; reg_add pid "$pid" "$entry"
+  stop_pid "$pid"
+
+  echo "[12] a Terminal window without a proven process is left open; a failed Trash is reported"
+  st_reset; st_set live live
+  reg_add window terminal:303 /dev/ttys303
+  : > "$STUB_DIR/asc.log"
+  close_target terminal "303|/dev/ttys303"
+  st_check "closing a window with no registered process is refused" row_refused
+  st_check "…and no close command was sent" bash -c "! grep -q 'close window' '$STUB_DIR/asc.log'"
+  reg_del window terminal:303   # the test's own fixture
+  st_reset
+  : > "$tmp/stuck"
+  printf '#!/bin/sh\nexit 1\n' > "$tmp/failing-trash"; chmod +x "$tmp/failing-trash"
+  keep_trash=$TRASH; TRASH="$tmp/failing-trash"
+  trash_own "$tmp/stuck"
+  TRASH=$keep_trash
+  st_check "a Trash that fails is refused and reported" row_refused
+  st_check "…and the file is still there" test -e "$tmp/stuck"
+
+  echo "[13] a signal cannot cut the cleanup short"
+  st_check "teardown masks INT, TERM, and HUP" bash -c "$(declare -f mask_signals); mask_signals; trap -p | grep -c SIG | grep -qx 3"
+
+  echo "[14] the clipboard cannot be put back: its backup stays, the other secrets go, the gate refuses nothing"
   mkdir -p "$tmp/clipboard"; echo '{"items":[]}' > "$tmp/clipboard/manifest.json"
   mkdir -p "$tmp/watch-sim-state"; echo "private key" > "$tmp/watch-sim-state/watch-state.json"
   printf '#!/bin/sh\nexit 1\n' > "$tmp/failing-pbtool"; chmod +x "$tmp/failing-pbtool"
