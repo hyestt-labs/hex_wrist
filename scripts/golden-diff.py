@@ -232,7 +232,7 @@ def collect(golden_dir, renders_dir, newer_than, diff_dir, skips=()):
         row = {"name": name, "over": "", "changed": "", "largest": "", "fail": True}
         skipped = next((why for glob, why in skips if fnmatch.fnmatchcase(name, glob)), None)
         if skipped is not None:
-            row.update(fail=False, skipped=True, note=f"not checked: {skipped}")
+            row.update(fail=False, skipped=True, note=skipped)
             results.append(row)
         elif name not in renders:
             row["note"] = "no render (the test skipped or never ran)"

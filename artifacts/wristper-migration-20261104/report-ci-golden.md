@@ -1,3 +1,34 @@
+# 報告：嚴格、可重跑的 golden 檢查（ci/golden-strict）
+
+## 結論
+
+- 新增 `.github/workflows/golden-strict.yml`、`scripts/golden-diff.py`、`scripts/test-golden-diff.py`，並更新 `AGENTS.md`、`docs/design-system.md`。
+- 實跑 dev（run 42162978501）的結果是 **FAIL，1 個場景超過容許**：`rune-mac-activity-light`，2619 個像素超過容許，最大通道差 233。其餘 126 個場景在容許內，48 個 capture-capsule 場景因為只能在 macOS 渲染而不檢查。
+- 原因：`src/rune_ui/activity.rs:73` 的 `Activity::fixture()` 用 `now_ms()` 當事件時間，畫面詳情顯示 `timestamp_ms`（golden 是 1793746393394，這次渲染是 1793940006144）。這個 golden 每次渲染都不同，現有測試只因為差異低於 0.2% 上限（5958 像素）才放行。這是產品碼的 fixture 問題，我依規定沒改，也沒重生 golden。
+
+## 建議的下一步
+
+1. 另開 PR 讓 `Activity::fixture()` 用固定時間（例如固定常數），再重生 `rune-mac-activity-light` 與同場景的 dark golden。修好後這個 workflow 會全綠。
+2. 合併本 PR 後，用 `gh workflow run golden-strict.yml --ref dev -f ref=<要檢查的分支>` 正式跑。
+
+## 實跑
+
+- 連結：https://github.com/hyestt-labs/hex_wrist/actions/runs/42162978501
+- artifact：`golden-renders`（175 張渲染）、`golden-diffs`（`rune-mac-activity-light.png`：差異像素標紅，其餘為調暗的 golden）。
+- `gh workflow run golden-strict.yml --ref ci/golden-strict -f ref=dev` 回 HTTP 404：GitHub 要求 `workflow_dispatch` 的檔案先在預設分支（dev）上。改法：在分支上暫時加 `push` 觸發（只限 `ci/golden-strict`）跑這次檢查，跑完已移除。最終版本（只有 `workflow_dispatch`）沒有在 CI 上跑過；與跑過的版本只差這個觸發設定，以及表格 skipped 說明文字少一個重複前綴。
+- 前幾次 run：第一次工具不在 dev 上（現改為從 workflow 所在的 ref 取工具）；第二、三次 apt 安裝卡住 9–30 分鐘（移除 `vulkan-tools` 後正常，原因未查明）；第四次發現 capture-capsule golden 只在 macOS 編譯，加了 skip。
+
+## 設計說明
+
+- 規則：逐通道差 > 12 的像素算超過容許；任何場景有一個這樣的像素就失敗，沒有數量容許。不用「任何像素不同」，因為驅動雜訊讓每個場景有數千到十萬像素差 1–4。
+- 渲染方式：先把 `tests/golden` 複製出來當核准版，建立時間標記，再用 `HEX_UPDATE_GOLDENS=1 HEX_REQUIRE_GPU=1 cargo test --locked --bin hex rune_ui` 在 runner 內重寫整個 `tests/golden`，之後比對核准版與重寫版。repo 不會被改。不用 `HEX_GOLDEN_RENDERS`，因為只有 121 張的測試會寫出，meeting capsule 的測試不寫。
+- 不被靜默略過：`HEX_REQUIRE_GPU` 只有 `check_golden` 會檢查，meeting／screenshot／capture capsule 的測試沒有 GPU 時直接略過。所以工具檢查每張渲染的修改時間是否晚於標記，沒被重寫就失敗（「render is older than the run」）。第一次完整實跑就靠這個抓到 48 張沒被重寫的 capture-capsule。
+- 不檢查清單：`--skip 'capture-capsule-*=…'`。這 48 張的測試是 `cfg(all(test, target_os = "macos"))`，只有 Mac 會渲染。表格明列為 skipped，不是悄悄通過。Mac 上的檢查需另跑，這次沒跑。
+- 工具：純 Python 標準庫（沒有新增依賴），自帶 PNG 解碼（五種 filter）；兩張 1960×3440 的圖約 1.2 秒。
+- 測試：`python3 scripts/test-golden-diff.py`（14 個，用程式內產生的合成 PNG）：完全相同、全圖差 = 12 通過、一個像素差 13 失敗、尺寸不同失敗、alpha 計入、缺 render／缺 golden、渲染時間早於標記、skip 規則、五種 filter 解碼。workflow 第一步會跑它（實跑中通過）。
+
+## 場景表格原文（run 42162978501 的 `GITHUB_STEP_SUMMARY`）
+
 ### Golden strict check: FAIL
 
 175 scenes, 48 not checked, 1 failing. A scene fails when any pixel's channel differs by more than 12 (no count allowance).
