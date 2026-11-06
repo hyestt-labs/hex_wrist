@@ -115,6 +115,7 @@ pub(super) fn sweep(directory: &Path, below: u64, keep: impl Fn(u64) -> bool) {
 /// when that is the one asked for, yielding to dictation, or loads its own
 /// copy for this run. Blocks; call it off the UI thread.
 pub fn retranscribe(path: &Path, selection: TranscriptionSelection) -> Result<String, String> {
+    let language = selection.language.clone();
     let file = fs::File::open(path).map_err(|_| "The recording is gone.".to_string())?;
     let clip = AudioClip::decode_wav(BufReader::new(file)).map_err(|error| match error {
         AudioError::Invalid | AudioError::Unsupported => "The recording could not be read.",
@@ -137,7 +138,8 @@ pub fn retranscribe(path: &Path, selection: TranscriptionSelection) -> Result<St
     // keeping it would make the shutdown wait forever after the result.
     drop(handle);
     service.shutdown();
-    result.map(|text| text.trim().to_string())
+    // In the chosen Chinese characters, so the versions of one entry read alike.
+    result.map(|text| crate::dictation::chinese_output::apply(text.trim(), &language))
 }
 
 fn describe(error: TranscriptionServiceError) -> String {
