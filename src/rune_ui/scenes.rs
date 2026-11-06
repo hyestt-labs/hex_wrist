@@ -412,6 +412,33 @@ pub(super) const SCENES: &[Scene] = &[
             held,
         };
     }),
+    ("mac-watch", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Connected)
+    }),
+    ("mac-watch-empty", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Empty)
+    }),
+    ("mac-watch-offline", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Offline)
+    }),
+    ("mac-watch-pairing", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Pairing)
+    }),
+    ("mac-watch-waiting", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Waiting)
+    }),
+    ("mac-watch-paired", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Paired)
+    }),
+    ("mac-watch-error", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Error)
+    }),
+    ("mac-watch-remove", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Remove)
+    }),
+    ("mac-watch-unavailable", |ui| {
+        watch_pane::scene(ui, watch_pane::Scene::Unavailable)
+    }),
     ("mac-settings-permissions", |ui| {
         platform_settings::mac_permissions_fixture(ui, false)
     }),

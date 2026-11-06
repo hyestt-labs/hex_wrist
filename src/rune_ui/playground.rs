@@ -106,6 +106,21 @@ const PATHS: &[(&str, &str)] = &[
     ),
     ("mac-local-build", "Window/General/Updates/Local build"),
     ("mac-test-build", "Window/General/Updates/Test build"),
+    ("mac-watch", "Window/Apple Watch/Settings"),
+    ("mac-watch-empty", "Window/Apple Watch/No watches"),
+    ("mac-watch-offline", "Window/Apple Watch/Offline"),
+    ("mac-watch-pairing", "Window/Apple Watch/Pairing"),
+    (
+        "mac-watch-waiting",
+        "Window/Apple Watch/Waiting for the watch",
+    ),
+    ("mac-watch-paired", "Window/Apple Watch/Paired"),
+    ("mac-watch-error", "Window/Apple Watch/Code not found"),
+    ("mac-watch-remove", "Window/Apple Watch/Remove · confirm"),
+    (
+        "mac-watch-unavailable",
+        "Window/Apple Watch/Service not running",
+    ),
     ("picker", "Window/Transcription model/Picker"),
     (
         "picker-downloading",

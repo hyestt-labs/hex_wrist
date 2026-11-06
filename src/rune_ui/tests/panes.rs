@@ -1585,6 +1585,15 @@ fn platform_goldens() {
         check_golden("meetings-summary-model-not-running", dark, (980.0, 1800.0));
         for scene in [
             "mac-settings",
+            "mac-watch",
+            "mac-watch-empty",
+            "mac-watch-offline",
+            "mac-watch-pairing",
+            "mac-watch-waiting",
+            "mac-watch-paired",
+            "mac-watch-error",
+            "mac-watch-remove",
+            "mac-watch-unavailable",
             "mac-input-source-models",
             "meetings",
             "meetings-settings",

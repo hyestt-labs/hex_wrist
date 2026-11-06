@@ -17,6 +17,10 @@ pub(super) fn table() -> &'static HashMap<&'static str, String> {
         super::TRANSLATIONS
             .iter()
             .map(|(english, translated)| (*english, convert(translated[simplified])))
+            .chain(
+                super::apple_watch::simplified()
+                    .map(|(english, translated)| (english, convert(translated))),
+            )
             .collect()
     })
 }
